@@ -154,6 +154,62 @@ TEST_CASE("FontEngine font loading and metrics") {
     CHECK(g_bold != g1);
 }
 
+TEST_CASE("FontEngine A8 masks have aligned strides for every glyph width") {
+    const auto path = find_test_font();
+    if (path.empty()) {
+        WARN("No system font found for testing, skipping");
+        return;
+    }
+    for (auto mode : {AntialiasMode::Grayscale, AntialiasMode::None}) {
+        FontEngine fonts(mode);
+        REQUIRE(fonts.load_font(path, 13.0));
+        for (char32_t cp = U'!'; cp <= U'~'; ++cp) {
+            CAPTURE(cp);
+            const auto* glyph = fonts.get_glyph(cp, false, false);
+            REQUIRE(glyph != nullptr);
+            if (glyph->width == 0 || glyph->height == 0) continue;
+            REQUIRE(glyph->mask.valid());
+            CHECK(glyph->mask.stride() >= glyph->width);
+            CHECK(glyph->mask.stride() % 4 == 0);
+        }
+    }
+}
+
+TEST_CASE("CpuRenderer cursor stays opaque and incremental frames match full redraws") {
+    FontEngine fonts;
+    TerminalEngine engine(4, 2);
+    CpuRenderer renderer(fonts);
+    const int width = 4 * fonts.metrics().cell_width;
+    const int height = 2 * fonts.metrics().cell_height;
+    gritty::util::PixmanImage target(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    gritty::util::PixmanImage reference(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    gritty::util::PixmanRegion damage;
+
+    auto check_frame = [&] {
+        renderer.render(engine, target.get(), &damage);
+        CpuRenderer fresh(fonts);
+        fresh.render(engine, reference.get(), nullptr, true);
+        const int count = height * target.stride() / 4;
+        for (int i = 0; i < count; ++i) {
+            REQUIRE(target.data()[i] == reference.data()[i]);
+            REQUIRE((target.data()[i] >> 24) == 255);
+        }
+    };
+    check_frame();
+    check_frame(); // unchanged frame must not erase/toggle the cursor
+    engine.set_cursor_pos(2, 1);
+    check_frame(); // previous cursor must be restored, including its damage
+    engine.set_cursor_visible(false);
+    check_frame();
+    engine.set_cursor_visible(true);
+    engine.set_cursor_shape(CursorShape::Beam, false);
+    check_frame();
+    engine.set_cursor_shape(CursorShape::Underline, false);
+    check_frame();
+}
+
 TEST_CASE("FontEngine LCD Subpixel antialiasing") {
     std::string font_path = find_test_font();
     if (font_path.empty()) {

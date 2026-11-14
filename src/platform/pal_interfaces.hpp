@@ -7,6 +7,7 @@
 #include <functional>
 #include <pixman.h>
 #include "util/raii.hpp"
+#include "input/input_events.hpp"
 
 namespace gritty::platform {
 
@@ -18,10 +19,22 @@ public:
     virtual void resize(int pixel_width, int pixel_height, double scale) = 0;
     virtual pixman_image_t* get_back_buffer() = 0;
     virtual void present(const util::PixmanRegion& damage) = 0;
+    virtual void set_title(const std::string& title) { (void)title; }
+    virtual void set_transparent(bool transparent) { (void)transparent; }
 
     [[nodiscard]] virtual int pixel_width() const noexcept = 0;
     [[nodiscard]] virtual int pixel_height() const noexcept = 0;
     [[nodiscard]] virtual double scale() const noexcept = 0;
+
+    using KeyCallback = std::function<void(const input::KeyEvent&)>;
+    using MouseCallback = std::function<void(const input::MouseEvent&)>;
+    using ResizeCallback = std::function<void(int px_w, int px_h, double scale)>;
+    using CloseCallback = std::function<void()>;
+
+    virtual void set_key_callback(KeyCallback cb) { (void)cb; }
+    virtual void set_mouse_callback(MouseCallback cb) { (void)cb; }
+    virtual void set_resize_callback(ResizeCallback cb) { (void)cb; }
+    virtual void set_close_callback(CloseCallback cb) { (void)cb; }
 };
 
 // Event loop interface (EpollEventLoop or KqueueRunLoop)
@@ -37,6 +50,8 @@ public:
 
     virtual void add_fd(int fd, uint32_t events, FdCallback cb) = 0;
     virtual void remove_fd(int fd) = 0;
+    // One-shot session watchdog. A nonpositive delay cancels it.
+    virtual void set_timer(int delay_ms, std::function<void()> callback) = 0;
     virtual void run() = 0;
     virtual void stop() = 0;
     virtual void wake() = 0;

@@ -76,6 +76,36 @@ TEST_CASE("TomlLoader deep-merge platform overrides") {
     CHECK((*res_linux)->font.size == 12.0); // inherits default size
 }
 
+TEST_CASE("Background opacity accepts numeric alpha and composes with AARRGGBB") {
+    auto result = TomlLoader::load_from_string("[colors]\nbackground = '#604020'\nalpha = 0.5\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->colors.alpha == 0.5);
+    CHECK((*result)->colors.background_argb() == 0x80604020);
+    result = TomlLoader::load_from_string("[colors]\nbackground = '#80604020'\nalpha = 0.5\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->colors.background_argb() == 0x40604020);
+    result = TomlLoader::load_from_string("[colors]\nalpha = 0\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->colors.background_argb() == 0x00111111);
+    result = TomlLoader::load_from_string("[colors]\nalpha = 1\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->colors.background_argb() == 0xff111111);
+    result = TomlLoader::load_from_string("[colors]\nalpha = 0.8\n[platform.macos.colors]\nalpha = 0.25\n", "macos");
+    REQUIRE(result.has_value());
+    CHECK((*result)->colors.background_argb() == 0x40111111);
+}
+
+TEST_CASE("Background opacity rejects invalid values") {
+    for (const auto* value : {"-0.1", "1.1", "nan", "inf", "'opaque'", "true", "[]"}) {
+        CAPTURE(value);
+        const auto result = TomlLoader::load_from_string(std::string("[colors]\nalpha = ") + value + "\n");
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().message.find("colors.alpha") != std::string::npos);
+    }
+    CHECK_FALSE(TomlLoader::parse_color("#8000000g").has_value());
+    CHECK_FALSE(TomlLoader::parse_color("#12345g").has_value());
+}
+
 TEST_CASE("TomlLoader parse hex colors utility") {
     CHECK(TomlLoader::parse_color("#ff0000") == 0xFFFF0000);
     CHECK(TomlLoader::parse_color("00ff00") == 0xFF00FF00);

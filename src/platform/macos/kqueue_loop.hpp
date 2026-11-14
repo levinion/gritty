@@ -18,6 +18,7 @@ public:
 
     void add_fd(int fd, uint32_t events, FdCallback cb) override;
     void remove_fd(int fd) override;
+    void set_timer(int delay_ms, std::function<void()> callback) override;
     void run() override;
     void stop() override;
     void wake() override;
@@ -31,6 +32,7 @@ private:
     util::UniqueFd wake_pipe_write_;
     std::atomic<bool> running_{false};
     std::unordered_map<int, FdCallback> callbacks_;
+    std::function<void()> timer_callback_;
 };
 
 } // namespace gritty::platform::macos

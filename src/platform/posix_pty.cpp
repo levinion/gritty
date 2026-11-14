@@ -16,16 +16,30 @@
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <utility>
 
 namespace gritty::platform {
 
 PosixPty::PosixPty() = default;
+
+PosixPty::PosixPty(PosixPty&& other) noexcept
+    : master_fd_(std::move(other.master_fd_)), child_pid_(std::exchange(other.child_pid_, -1)) {}
+
+PosixPty& PosixPty::operator=(PosixPty&& other) noexcept {
+    if (this != &other) {
+        terminate();
+        master_fd_ = std::move(other.master_fd_);
+        child_pid_ = std::exchange(other.child_pid_, -1);
+    }
+    return *this;
+}
 
 PosixPty::~PosixPty() {
     terminate();
 }
 
 bool PosixPty::spawn(const PtySpawnOptions& options) {
+    if (master_fd_.valid() || child_pid_ > 0) return false;
     struct winsize ws{};
     ws.ws_col = static_cast<unsigned short>(options.cols);
     ws.ws_row = static_cast<unsigned short>(options.rows);
@@ -66,6 +80,8 @@ bool PosixPty::spawn(const PtySpawnOptions& options) {
                 std::string k = e.substr(0, eq);
                 std::string v = e.substr(eq + 1);
                 ::setenv(k.c_str(), v.c_str(), 1);
+            } else {
+                ::unsetenv(e.c_str());
             }
         }
 
@@ -95,6 +111,7 @@ bool PosixPty::spawn(const PtySpawnOptions& options) {
     // Parent process
     child_pid_ = pid;
     master_fd_.reset(master);
+    ::fcntl(master, F_SETFD, FD_CLOEXEC);
 
     // Set master fd non-blocking
     int flags = ::fcntl(master_fd_.get(), F_GETFL, 0);
@@ -120,13 +137,16 @@ void PosixPty::resize(int cols, int rows, int pixel_width, int pixel_height) {
 bool PosixPty::is_alive() const noexcept {
     if (child_pid_ <= 0) return false;
     int status = 0;
-    pid_t res = ::waitpid(child_pid_, &status, WNOHANG);
+    pid_t res;
+    do { res = ::waitpid(child_pid_, &status, WNOHANG); } while (res < 0 && errno == EINTR);
+    if (res == child_pid_ || (res < 0 && errno == ECHILD)) child_pid_ = -1;
     return res == 0;
 }
 
 ssize_t PosixPty::read(std::span<uint8_t> buffer) {
     if (!master_fd_.valid() || buffer.empty()) return -1;
-    ssize_t n = ::read(master_fd_.get(), buffer.data(), buffer.size());
+    ssize_t n;
+    do { n = ::read(master_fd_.get(), buffer.data(), buffer.size()); } while (n < 0 && errno == EINTR);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
         return -1;
     }
@@ -135,7 +155,8 @@ ssize_t PosixPty::read(std::span<uint8_t> buffer) {
 
 ssize_t PosixPty::write(std::string_view data) {
     if (!master_fd_.valid() || data.empty()) return -1;
-    ssize_t n = ::write(master_fd_.get(), data.data(), data.size());
+    ssize_t n;
+    do { n = ::write(master_fd_.get(), data.data(), data.size()); } while (n < 0 && errno == EINTR);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
         return -1;
     }
@@ -143,7 +164,8 @@ ssize_t PosixPty::write(std::string_view data) {
 }
 
 void PosixPty::terminate() {
-    if (child_pid_ > 0) {
+    // Reap/check first: an already-reaped PID may have been reused by the OS.
+    if (is_alive()) {
         ::kill(child_pid_, SIGHUP);
         int status = 0;
         pid_t res = ::waitpid(child_pid_, &status, WNOHANG);
@@ -153,7 +175,7 @@ void PosixPty::terminate() {
             res = ::waitpid(child_pid_, &status, WNOHANG);
             if (res == 0) {
                 ::kill(child_pid_, SIGKILL);
-                ::waitpid(child_pid_, &status, 0);
+                while (::waitpid(child_pid_, &status, 0) < 0 && errno == EINTR) {}
             }
         }
         child_pid_ = -1;

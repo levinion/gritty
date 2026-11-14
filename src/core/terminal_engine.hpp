@@ -46,6 +46,9 @@ struct CursorState {
     CellAttributes attrs{};
     bool origin_mode{false};
     bool auto_wrap{true};
+    bool pending_wrap{false};
+    std::array<bool, 4> graphic_charsets{};
+    uint8_t selected_charset{0};
 };
 
 class TerminalEngine final {
@@ -69,7 +72,13 @@ public:
     [[nodiscard]] const ScreenGrid& alt_grid() const noexcept { return alt_grid_; }
 
     [[nodiscard]] bool is_alt_screen() const noexcept { return is_alt_screen_; }
-    void set_alt_screen(bool enable);
+    void set_alt_screen(bool enable, int mode = 1049);
+    void reset();
+    void designate_charset(unsigned int index, bool graphics) noexcept;
+    void select_charset(unsigned int index) noexcept;
+    void repeat_last_char(int count);
+    void scroll_up(int count);
+    void scroll_down(int count);
 
     // Cursor access
     [[nodiscard]] int cursor_col() const noexcept { return cursor_.col; }
@@ -153,6 +162,8 @@ public:
     void set_insert_mode(bool enable) noexcept { insert_mode_ = enable; }
     [[nodiscard]] bool cursor_key_mode() const noexcept { return cursor_key_mode_; }
     void set_cursor_key_mode(bool enable) noexcept { cursor_key_mode_ = enable; }
+    [[nodiscard]] int modify_other_keys() const noexcept { return modify_other_keys_; }
+    void set_modify_other_keys(int mode) noexcept { modify_other_keys_ = mode; }
 
     // Synchronized updates (DECSET 2026)
     [[nodiscard]] bool synchronized_updates() const noexcept { return synchronized_updates_; }
@@ -166,7 +177,8 @@ public:
 
     // Kitty Keyboard Protocol (CSI u)
     [[nodiscard]] uint32_t kitty_keyboard_flags() const noexcept {
-        return kitty_keyboard_stack_.empty() ? 0 : kitty_keyboard_stack_.back();
+        const auto& stack = kitty_keyboard_stacks_[is_alt_screen_ ? 1 : 0];
+        return stack.empty() ? 0 : stack.back();
     }
     void push_kitty_keyboard_flags(uint32_t flags);
     void pop_kitty_keyboard_flags(size_t count = 1);
@@ -204,6 +216,9 @@ private:
     CursorState saved_cursor_primary_;
     CursorState saved_cursor_alt_;
     bool wrap_next_{false}; // Pending wrap state
+    std::array<bool, 4> graphic_charsets_{};
+    uint8_t selected_charset_{0};
+    char32_t last_printed_{0};
 
     int margin_top_{0};
     int margin_bottom_{0};
@@ -220,11 +235,12 @@ private:
     bool insert_mode_{false};
     bool cursor_key_mode_{false};
     bool synchronized_updates_{false};
+    int modify_other_keys_{0};
 
     MouseTrackingMode mouse_tracking_{MouseTrackingMode::None};
     MouseFormat mouse_format_{MouseFormat::Normal};
 
-    std::vector<uint32_t> kitty_keyboard_stack_;
+    std::array<std::vector<uint32_t>, 2> kitty_keyboard_stacks_;
     std::vector<bool> tabs_;
     std::array<uint32_t, 256> palette_;
 

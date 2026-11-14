@@ -177,10 +177,7 @@ void ScreenGrid::erase_in_display(int x, int y, int mode, const Cell& empty_cell
                 erase_in_line(0, r, 2, empty_cell);
             }
             break;
-        case 3: // Entire screen and scrollback
-            for (int r = 0; r < rows_; ++r) {
-                erase_in_line(0, r, 2, empty_cell);
-            }
+        case 3: // Erase scrollback only (foot term_erase_scrollback).
             scrollback_.clear();
             view_offset_ = 0;
             break;

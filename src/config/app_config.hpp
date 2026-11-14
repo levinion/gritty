@@ -37,6 +37,8 @@ struct ColorsConfig {
     std::optional<uint32_t> selection_bg;
     std::array<uint32_t, 256> palette{};
     bool palette_customized{false};
+    double alpha{1.0}; // Default background only; text/explicit SGR backgrounds stay opaque.
+    [[nodiscard]] uint32_t background_argb() const noexcept;
 };
 
 struct ScrollbackConfig {

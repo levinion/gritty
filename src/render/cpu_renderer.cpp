@@ -13,9 +13,11 @@ pixman_color_t CpuRenderer::to_pixman_color(uint32_t argb) noexcept {
     uint8_t b = argb & 0xFF;
 
     return pixman_color_t{
-        .red = static_cast<uint16_t>((r * 65535) / 255),
-        .green = static_cast<uint16_t>((g * 65535) / 255),
-        .blue = static_cast<uint16_t>((b * 65535) / 255),
+        // Pixman and CGImage premultiplied-first both require RGB <= alpha.
+        // Match foot's color_hex_to_pixman_with_alpha(), not straight RGBA.
+        .red = static_cast<uint16_t>((static_cast<uint32_t>(r) * 257 * a) / 255),
+        .green = static_cast<uint16_t>((static_cast<uint32_t>(g) * 257 * a) / 255),
+        .blue = static_cast<uint16_t>((static_cast<uint32_t>(b) * 257 * a) / 255),
         .alpha = static_cast<uint16_t>((a * 65535) / 255)
     };
 }
@@ -40,18 +42,42 @@ void CpuRenderer::render(
     util::PixmanRegion* damage_out,
     bool full_redraw
 ) {
-    if (!target) return;
+    if (!target || engine.synchronized_updates()) return;
+    if (damage_out) damage_out->clear();
+    full_redraw |= config_changed_;
+    config_changed_ = false;
+    // LCD masks assume a known opaque backdrop. Keep the user's requested AA
+    // mode, but use grayscale while the window can expose the desktop behind it.
+    font_engine_.set_subpixel_allowed((config_.default_bg >> 24) == 255);
 
     auto& grid = engine.grid();
     const auto& metrics = font_engine_.metrics();
     int cell_w = metrics.cell_width;
     int cell_h = metrics.cell_height;
 
+    // Restore the cells underneath both the old and new cursor, even if
+    // terminal content did not change (cursor motion/visibility-only updates).
+    auto damage_cursor = [&](int col, int row) {
+        if (col < 0 || col >= grid.cols() || row < 0 || row >= grid.rows()) return;
+        if (grid.cell(col, row).attrs.width == 0 && col > 0) --col;
+        grid.row(row).mark_dirty(col);
+        if (grid.cell(col, row).attrs.width == 2 && col + 1 < grid.cols())
+            grid.row(row).mark_dirty(col + 1);
+    };
+    damage_cursor(previous_cursor_col_, previous_cursor_row_);
+    const bool draw_cursor = config_.render_cursor && engine.cursor_visible();
+    if (draw_cursor) damage_cursor(engine.cursor_col(), engine.cursor_row());
+
     if (full_redraw) {
+        const auto bg = to_pixman_color(config_.default_bg);
+        const pixman_rectangle16_t rect{0, 0,
+            static_cast<uint16_t>(pixman_image_get_width(target)),
+            static_cast<uint16_t>(pixman_image_get_height(target))};
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &bg, 1, &rect);
         grid.mark_all_dirty();
         if (damage_out) {
             damage_out->clear();
-            damage_out->union_rect(0, 0, grid.cols() * cell_w, grid.rows() * cell_h);
+            damage_out->union_rect(0, 0, pixman_image_get_width(target), pixman_image_get_height(target));
         }
     }
 
@@ -64,6 +90,8 @@ void CpuRenderer::render(
 
         int start_col = std::max(0, row.damage_start);
         int end_col = (row.damage_end >= 0) ? std::min(cols - 1, row.damage_end) : (cols - 1);
+        if (row.cells[start_col].attrs.width == 0 && start_col > 0) --start_col;
+        if (row.cells[end_col].attrs.width == 2 && end_col + 1 < cols) ++end_col;
 
         if (damage_out && !full_redraw) {
             damage_out->union_rect(start_col * cell_w, y * cell_h, (end_col - start_col + 1) * cell_w, cell_h);
@@ -77,7 +105,9 @@ void CpuRenderer::render(
         row.reset_damage();
     }
 
-    if (config_.render_cursor && engine.cursor_visible()) {
+    previous_cursor_col_ = draw_cursor ? engine.cursor_col() : -1;
+    previous_cursor_row_ = draw_cursor ? engine.cursor_row() : -1;
+    if (draw_cursor) {
         render_cursor(engine, cell_w, cell_h, target);
         if (damage_out) {
             damage_out->union_rect(engine.cursor_col() * cell_w, engine.cursor_row() * cell_h, cell_w, cell_h);
@@ -108,6 +138,10 @@ void CpuRenderer::render_cell(
     // SGR Inverse
     if (cell.attrs.inverse) {
         std::swap(fg_argb, bg_argb);
+        // As in foot, reverse video does not transfer background opacity to
+        // foreground glyphs, nor turn the highlight into a transparent cutout.
+        fg_argb |= 0xff000000;
+        bg_argb |= 0xff000000;
     }
 
     // SGR Dim
@@ -244,10 +278,18 @@ void CpuRenderer::render_cursor(
 
     switch (engine.cursor_shape()) {
         case core::CursorShape::Block: {
-            // Draw block with invert / XOR or alpha overlay
-            pixman_rectangle16_t r = {static_cast<int16_t>(cx), static_cast<int16_t>(cy), static_cast<uint16_t>(cell_w), static_cast<uint16_t>(cell_h)};
-            // Translucent or inverted
-            pixman_image_fill_rectangles(PIXMAN_OP_XOR, target, &cursor_pcol, 1, &r);
+            // Pixman's XOR is Porter-Duff XOR, not a bitwise color invert:
+            // XOR of two opaque pixels becomes transparent. Redraw instead.
+            int col = engine.cursor_col();
+            if (engine.grid().cell(col, engine.cursor_row()).attrs.width == 0 && col > 0) --col;
+            auto cell = engine.grid().cell(col, engine.cursor_row());
+            const auto bg = resolve_color(cell.attrs.inverse ? cell.fg : cell.bg, engine, !cell.attrs.inverse);
+            cell.fg = core::Color::make_rgb((bg >> 16) & 255, (bg >> 8) & 255, bg & 255);
+            cell.bg = core::Color::make_rgb((config_.cursor_color >> 16) & 255,
+                (config_.cursor_color >> 8) & 255, config_.cursor_color & 255);
+            cell.attrs.inverse = false;
+            render_cell(cell, col, engine.cursor_row(), cell_w, cell_h,
+                font_engine_.metrics(), engine, target);
             break;
         }
         case core::CursorShape::Beam: {

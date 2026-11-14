@@ -17,7 +17,11 @@ core_sources = files(
   'config/toml_loader.cpp',
   'core/screen_grid.cpp',
   'core/terminal_engine.cpp',
+  'core/terminal_modes.cpp',
   'core/vt_parser.cpp',
+  'core/vt_dispatch.cpp',
+  'core/vt_sgr.cpp',
+  'core/vt_strings.cpp',
   'core/terminal_session.cpp',
   'core/kitty_graphics.cpp',
   'core/sixel_decoder.cpp',
@@ -27,6 +31,7 @@ core_sources = files(
   'render/box_drawing.cpp',
   'render/cpu_renderer.cpp',
   'input/input_mapper.cpp',
+  'input/mouse_tracker.cpp',
 ) + platform_sources
 
 gritty_core_lib = static_library('gritty_core',

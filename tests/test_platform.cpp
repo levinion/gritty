@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <thread>
 #include <chrono>
+#include <fcntl.h>
 #include "input/input_mapper.hpp"
 #include "platform/posix_pty.hpp"
 
@@ -47,7 +48,8 @@ TEST_CASE("InputMapper Kitty Keyboard Protocol (CSI u)") {
     CHECK(InputMapper::map_key(ev_esc, engine) == "\x1b[27u");
 
     KeyEvent ev_enter{.key = KeyCode::Return};
-    CHECK(InputMapper::map_key(ev_enter, engine) == "\x1b[13u");
+    // foot/Kitty: disambiguation alone preserves unmodified Enter as CR.
+    CHECK(InputMapper::map_key(ev_enter, engine) == "\r");
 
     KeyEvent ev_tab{.key = KeyCode::Tab, .mods = {.shift = true}};
     // Shift is modifier 1 (param = 2)
@@ -104,6 +106,47 @@ TEST_CASE("PosixPty child process spawn and I/O") {
     CHECK(received.find("PTY_TEST_SUCCESS") != std::string::npos);
 }
 
+TEST_CASE("PosixPty moves transfer child ownership and reaping clears the PID") {
+    PosixPty target;
+    PtySpawnOptions waiting;
+    waiting.command = "/bin/sh";
+    waiting.args = {"-c", "read line"};
+    REQUIRE(target.spawn(waiting));
+    {
+        PosixPty source;
+        PtySpawnOptions options;
+        options.command = "/bin/sh";
+        options.args = {"-c", "read marker; printf MOVED_OK"};
+        REQUIRE(source.spawn(options));
+        const auto pid = source.child_pid();
+        CHECK((::fcntl(source.master_fd(), F_GETFD) & FD_CLOEXEC) != 0);
+        PosixPty moved(std::move(source));
+        CHECK(source.child_pid() == -1);
+        CHECK(source.master_fd() == -1);
+        target = std::move(moved);
+        CHECK(moved.child_pid() == -1);
+        CHECK(target.child_pid() == pid);
+    }
+    REQUIRE(target.write("go\n") == 3);
+    std::string received;
+    uint8_t buffer[256];
+    for (int i = 0; i < 100; ++i) {
+        const auto n = target.read(buffer);
+        if (n > 0) received.append(reinterpret_cast<char*>(buffer), n);
+        if (!target.is_alive()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    // The child may exit between the preceding read and waitpid; drain final output.
+    while (true) {
+        const auto n = target.read(buffer);
+        if (n <= 0) break;
+        received.append(reinterpret_cast<char*>(buffer), n);
+    }
+    CHECK(received.find("MOVED_OK") != std::string::npos);
+    CHECK_FALSE(target.is_alive());
+    CHECK(target.child_pid() == -1);
+}
+
 #if defined(PLATFORM_MACOS)
 TEST_CASE("CoreTextFinder font discovery") {
     macos::CoreTextFinder finder;
@@ -113,6 +156,19 @@ TEST_CASE("CoreTextFinder font discovery") {
 
     auto chain = finder.fallback_chain(FontPattern{.family = "Monaco"});
     CHECK(!chain.empty());
+}
+
+TEST_CASE("KqueueRunLoop one-shot timer and cancellation") {
+    macos::KqueueRunLoop loop;
+    bool fired = false;
+    loop.set_timer(5, [&] { fired = true; });
+    loop.poll_once(100);
+    CHECK(fired);
+    fired = false;
+    loop.set_timer(5, [&] { fired = true; });
+    loop.set_timer(0, {});
+    loop.poll_once(20);
+    CHECK_FALSE(fired);
 }
 
 TEST_CASE("KqueueRunLoop pipe wake") {

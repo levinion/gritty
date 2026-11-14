@@ -19,6 +19,10 @@ struct SessionConfig {
     int rows{24};
     std::string shell;
     std::string cwd;
+    std::vector<std::string> args;
+    unsigned int font_dpi{96};
+    render::AntialiasMode antialias{render::AntialiasMode::Grayscale};
+    render::RenderConfig render_config;
 };
 
 class TerminalSession final {
@@ -42,11 +46,15 @@ public:
     [[nodiscard]] platform::IWindowSurface& surface() noexcept { return *surface_; }
     [[nodiscard]] platform::IEventLoop& event_loop() noexcept { return *loop_; }
 
-private:
-    void handle_pty_read();
     void handle_key_event(const input::KeyEvent& ev);
     void handle_mouse_event(const input::MouseEvent& ev);
     void handle_surface_resize(int px_w, int px_h, double scale);
+    void write_pty(std::string_view data);
+
+private:
+    void handle_pty_read();
+    void flush_pty_write();
+    void watch_pty(bool writable);
 
     SessionConfig config_;
     std::unique_ptr<platform::IWindowSurface> surface_;
@@ -61,6 +69,10 @@ private:
 
     util::PixmanRegion damage_region_;
     std::string last_title_;
+    double font_scale_{1.0};
+    std::string pending_write_;
+    size_t write_offset_{0};
+    bool watching_write_{false};
 };
 
 } // namespace gritty::core

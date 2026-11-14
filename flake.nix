@@ -21,6 +21,7 @@
             pkgs.ninja
             pkgs.pkg-config
             pkgs.clang-tools
+            pkgs.tmux # Real terminal compatibility regression tests
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.wayland-scanner
           ];
@@ -55,6 +56,7 @@
             pkgs.meson
             pkgs.ninja
             pkgs.pkg-config
+            pkgs.tmux
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.wayland-scanner
           ];

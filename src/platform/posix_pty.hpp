@@ -13,7 +13,7 @@ struct PtySpawnOptions {
     std::string command; // Empty for default shell
     std::vector<std::string> args;
     std::string cwd;
-    std::vector<std::string> env;
+    std::vector<std::string> env; // NAME=value sets, bare NAME unsets.
     int cols{80};
     int rows{24};
     int pixel_width{640};
@@ -27,8 +27,8 @@ public:
 
     PosixPty(const PosixPty&) = delete;
     PosixPty& operator=(const PosixPty&) = delete;
-    PosixPty(PosixPty&&) noexcept = default;
-    PosixPty& operator=(PosixPty&&) noexcept = default;
+    PosixPty(PosixPty&& other) noexcept;
+    PosixPty& operator=(PosixPty&& other) noexcept;
 
     bool spawn(const PtySpawnOptions& options);
     void resize(int cols, int rows, int pixel_width, int pixel_height);
@@ -47,7 +47,7 @@ public:
 
 private:
     util::UniqueFd master_fd_;
-    pid_t child_pid_{-1};
+    mutable pid_t child_pid_{-1};
 };
 
 } // namespace gritty::platform

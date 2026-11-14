@@ -59,6 +59,7 @@ struct KeyEvent {
     Modifiers mods{};
     KeyAction action{KeyAction::Press};
     std::string text;
+    char32_t base_codepoint{0}; // Unshifted key, before Ctrl/Alt transforms.
 };
 
 enum class MouseButton : uint8_t {

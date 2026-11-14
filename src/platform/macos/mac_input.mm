@@ -1,5 +1,6 @@
 #include "platform/macos/mac_input.hpp"
 #import <Cocoa/Cocoa.h>
+#include <utf8proc.h>
 
 namespace gritty::platform::macos {
 
@@ -48,12 +49,20 @@ input::KeyEvent MacInput::translate_key_event(NSEvent* event) {
         default:  ev.key = input::KeyCode::Unknown; break;
     }
 
-    NSString* chars = [event characters];
-    if (chars && [chars length] > 0) {
-        ev.text = [chars UTF8String];
-        if ([chars length] == 1) {
-            ev.codepoint = [chars characterAtIndex:0];
-        }
+    const auto codepoint = [](NSString* value) -> char32_t {
+        if (!value || value.length == 0) return 0;
+        utf8proc_int32_t cp;
+        const auto count = utf8proc_iterate(reinterpret_cast<const uint8_t*>(value.UTF8String),
+            [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding], &cp);
+        return count > 0 ? static_cast<char32_t>(cp) : 0;
+    };
+    NSString* chars = ev.mods.alt ? event.charactersIgnoringModifiers : event.characters;
+    if (chars) ev.text.assign(chars.UTF8String, [chars lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+    if (ev.key == input::KeyCode::Unknown) {
+        // Ctrl+B must retain key 'b', not U+0002, for extended-key encoders.
+        // Decode UTF-8 rather than treating a UTF-16 surrogate as a codepoint.
+        ev.codepoint = codepoint(event.charactersIgnoringModifiers);
+        ev.base_codepoint = codepoint([event charactersByApplyingModifiers:0]);
     }
 
     return ev;
@@ -64,9 +73,12 @@ input::MouseEvent MacInput::translate_mouse_event(NSEvent* event, int cell_w, in
     ev.mods = translate_modifiers([event modifierFlags]);
 
     NSPoint loc = [event locationInWindow];
-    // Cocoa coordinates have (0, 0) at bottom-left, invert Y for top-left
-    int px = static_cast<int>(loc.x);
-    int py = static_cast<int>(view_height - loc.y);
+    NSView* view = event.window.contentView;
+    if (view) loc = [view convertPoint:loc fromView:nil];
+    const double scale = event.window ? event.window.backingScaleFactor : 1.0;
+    // Match the physical-pixel coordinate system used by the CPU renderer.
+    int px = static_cast<int>(loc.x * scale);
+    int py = static_cast<int>((view_height - loc.y) * scale);
 
     ev.pixel_x = px;
     ev.pixel_y = py;
@@ -103,7 +115,9 @@ input::MouseEvent MacInput::translate_mouse_event(NSEvent* event, int cell_w, in
         case NSEventTypeLeftMouseDragged:
         case NSEventTypeRightMouseDragged:
         case NSEventTypeOtherMouseDragged:
-            ev.button = input::MouseButton::None;
+            ev.button = type == NSEventTypeLeftMouseDragged ? input::MouseButton::Left :
+                type == NSEventTypeRightMouseDragged ? input::MouseButton::Right :
+                type == NSEventTypeOtherMouseDragged ? input::MouseButton::Middle : input::MouseButton::None;
             ev.action = input::MouseAction::Move;
             break;
         case NSEventTypeScrollWheel: {

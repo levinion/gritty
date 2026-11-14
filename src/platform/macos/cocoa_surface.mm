@@ -16,12 +16,15 @@
     if (self) {
         _surface = surface;
         [self setWantsLayer:YES];
-        self.layer.drawsAsynchronously = YES;
+        self.layer.drawsAsynchronously = NO;
+        self.layer.opaque = !surface->is_transparent();
+        self.layer.backgroundColor = (surface->is_transparent() ? NSColor.clearColor : NSColor.blackColor).CGColor;
         self.layer.contentsScale = [NSScreen mainScreen].backingScaleFactor;
     }
     return self;
 }
 
+- (BOOL)isOpaque { return _surface && !_surface->is_transparent(); }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)canBecomeKeyView { return YES; }
 
@@ -78,7 +81,7 @@
 - (void)handleMouse:(NSEvent *)event {
     if (_surface) {
         auto ev = gritty::platform::macos::MacInput::translate_mouse_event(
-            event, 8, 16, self.bounds.size.height);
+            event, 0, 0, self.bounds.size.height);
         _surface->on_mouse_event(ev);
     }
 }
@@ -98,16 +101,44 @@
 
 @end
 
+@interface GrittyWindowDelegate : NSObject <NSWindowDelegate> {
+    gritty::platform::macos::CocoaLayerSurface* _surface;
+}
+- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface;
+@end
+
+@implementation GrittyWindowDelegate
+- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface {
+    self = [super init];
+    if (self) {
+        _surface = surface;
+    }
+    return self;
+}
+- (void)windowWillClose:(NSNotification *)notification {
+    (void)notification;
+    if (_surface) {
+        _surface->on_window_close();
+    }
+}
+@end
+
 namespace gritty::platform::macos {
 
 namespace {
 
-void data_provider_noop_release(void*, const void*, size_t) {}
+void data_provider_release(void* image, const void*, size_t) {
+    pixman_image_unref(static_cast<pixman_image_t*>(image));
+}
 
 } // namespace
 
 CocoaLayerSurface::CocoaLayerSurface(int width, int height, double scale)
     : pixel_width_(width), pixel_height_(height), scale_(scale) {
+    @autoreleasepool {
+        if (scale_ <= 0) scale_ = [NSScreen mainScreen].backingScaleFactor;
+        if (scale_ <= 0) scale_ = 1.0;
+    }
     reallocate_buffer();
 }
 
@@ -115,8 +146,15 @@ CocoaLayerSurface::~CocoaLayerSurface() {
     @autoreleasepool {
         if (native_window_) {
             NSWindow* win = (NSWindow*)native_window_;
+            [win setDelegate:nil];
             [win close];
+            [win release];
             native_window_ = nullptr;
+            native_view_ = nullptr;
+        }
+        if (native_delegate_) {
+            [(id)native_delegate_ release];
+            native_delegate_ = nullptr;
         }
     }
 }
@@ -127,9 +165,11 @@ void CocoaLayerSurface::reallocate_buffer() {
     pixman_image_t* raw = pixman_image_create_bits(
         PIXMAN_a8r8g8b8, pixel_width_, pixel_height_, nullptr, stride);
     surface_.reset(raw);
+    buffer_shared_ = false;
 }
 
 void CocoaLayerSurface::resize(int pixel_width, int pixel_height, double scale) {
+    if (pixel_width <= 0 || pixel_height <= 0 || scale <= 0) return;
     if (pixel_width == pixel_width_ && pixel_height == pixel_height_ && scale == scale_) return;
     pixel_width_ = pixel_width;
     pixel_height_ = pixel_height;
@@ -138,6 +178,17 @@ void CocoaLayerSurface::resize(int pixel_width, int pixel_height, double scale) 
 }
 
 pixman_image_t* CocoaLayerSurface::get_back_buffer() {
+    if (buffer_shared_) {
+        // CALayer may consume the previous frame asynchronously. Keep it
+        // immutable and copy its contents so incremental damage stays valid.
+        util::PixmanImage next(pixman_image_create_bits(
+            PIXMAN_a8r8g8b8, pixel_width_, pixel_height_, nullptr, 0));
+        if (!next.valid()) return nullptr;
+        pixman_image_composite32(PIXMAN_OP_SRC, surface_.get(), nullptr, next.get(),
+            0, 0, 0, 0, 0, 0, pixel_width_, pixel_height_);
+        surface_ = std::move(next);
+        buffer_shared_ = false;
+    }
     return surface_.get();
 }
 
@@ -152,9 +203,13 @@ void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
         int stride = surface_.stride();
         uint32_t* data = surface_.data();
 
+        auto* retained = pixman_image_ref(surface_.get());
         CGDataProviderRef provider = CGDataProviderCreateWithData(
-            nullptr, data, h * stride, data_provider_noop_release);
-        if (!provider) return;
+            retained, data, static_cast<size_t>(h) * stride, data_provider_release);
+        if (!provider) {
+            pixman_image_unref(retained);
+            return;
+        }
 
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         // Zero copy matching PIXMAN_a8r8g8b8 on little-endian ARM64/x86_64
@@ -167,7 +222,11 @@ void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
         CGColorSpaceRelease(cs);
 
         if (cg_image) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
             view.layer.contents = (id)cg_image;
+            [CATransaction commit];
+            buffer_shared_ = true;
             CGImageRelease(cg_image);
         }
     }
@@ -198,6 +257,7 @@ void CocoaLayerSurface::show_window(const std::string& title) {
             NSImage* icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
             if (icon) {
                 [NSApp setApplicationIconImage:icon];
+                [icon release];
             }
         }
 
@@ -211,11 +271,20 @@ void CocoaLayerSurface::show_window(const std::string& title) {
                                                        styleMask:mask
                                                          backing:NSBackingStoreBuffered
                                                            defer:NO];
+        [window setReleasedWhenClosed:NO];
+        window.opaque = !transparent_;
+        window.backgroundColor = transparent_ ? NSColor.clearColor : NSColor.blackColor;
         window.title = [NSString stringWithUTF8String:title.c_str()];
         [window setAcceptsMouseMovedEvents:YES];
 
         GrittyView* view = [[GrittyView alloc] initWithSurface:this];
         [window setContentView:view];
+        [view release];
+
+        GrittyWindowDelegate* delegate = [[GrittyWindowDelegate alloc] initWithSurface:this];
+        [window setDelegate:delegate];
+        native_delegate_ = (void*)delegate;
+
         [window makeKeyAndOrderFront:nil];
         [window makeFirstResponder:view];
 
@@ -223,6 +292,24 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         native_view_ = (void*)view;
 
         [NSApp activateIgnoringOtherApps:YES];
+    }
+}
+
+void CocoaLayerSurface::set_transparent(bool transparent) {
+    transparent_ = transparent;
+    @autoreleasepool {
+        // Do not set NSWindow.alphaValue: that would fade the text as well.
+        if (native_window_) {
+            NSWindow* window = (NSWindow*)native_window_;
+            window.opaque = !transparent;
+            window.backgroundColor = transparent ? NSColor.clearColor : NSColor.blackColor;
+        }
+        if (native_view_) {
+            NSView* view = (NSView*)native_view_;
+            view.layer.opaque = !transparent;
+            view.layer.backgroundColor = (transparent ? NSColor.clearColor : NSColor.blackColor).CGColor;
+            [view setNeedsDisplay:YES];
+        }
     }
 }
 
@@ -246,6 +333,10 @@ void CocoaLayerSurface::on_mouse_event(const input::MouseEvent& ev) {
 void CocoaLayerSurface::on_view_resize(int px_w, int px_h, double scale) {
     resize(px_w, px_h, scale);
     if (resize_cb_) resize_cb_(px_w, px_h, scale);
+}
+
+void CocoaLayerSurface::on_window_close() {
+    if (close_cb_) close_cb_();
 }
 
 } // namespace gritty::platform::macos

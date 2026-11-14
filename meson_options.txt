@@ -1,3 +1,4 @@
 option('sixel', type: 'boolean', value: true, description: 'Enable Sixel graphics support')
 option('kitty_graphics', type: 'boolean', value: true, description: 'Enable Kitty Graphics Protocol support')
 option('tests', type: 'boolean', value: true, description: 'Build test suite')
+option('gui_tests', type: 'boolean', value: false, description: 'Run Cocoa window tests (requires a GUI session)')

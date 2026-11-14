@@ -1,62 +1,121 @@
 #include "input/input_mapper.hpp"
 #include <cstdio>
+#include <utility>
+#include <utf8proc.h>
 
 namespace gritty::input {
-
 namespace {
 
-int xterm_mod_param(const Modifiers& m) noexcept {
-    // xterm modifier encoding: 1 + (shift*1) + (alt*2) + (ctrl*4) + (meta*8)
-    int p = 1;
-    if (m.shift) p += 1;
-    if (m.alt)   p += 2;
-    if (m.ctrl)  p += 4;
-    if (m.meta)  p += 8;
-    return p;
+int xterm_mod_param(const Modifiers& mods) noexcept {
+    return 1 + mods.shift + 2 * mods.alt + 4 * mods.ctrl + 8 * mods.meta;
+}
+
+std::pair<uint32_t, char> kitty_key(const KeyEvent& event) {
+    switch (event.key) {
+        case KeyCode::Escape: return {27, 'u'};
+        case KeyCode::Return: return {13, 'u'};
+        case KeyCode::Tab: return {9, 'u'};
+        case KeyCode::Backspace: return {127, 'u'};
+        case KeyCode::Up: return {1, 'A'};
+        case KeyCode::Down: return {1, 'B'};
+        case KeyCode::Right: return {1, 'C'};
+        case KeyCode::Left: return {1, 'D'};
+        case KeyCode::Home: return {1, 'H'};
+        case KeyCode::End: return {1, 'F'};
+        case KeyCode::Insert: return {2, '~'};
+        case KeyCode::Delete: return {3, '~'};
+        case KeyCode::PageUp: return {5, '~'};
+        case KeyCode::PageDown: return {6, '~'};
+        default: break;
+    }
+    if (event.key >= KeyCode::F1 && event.key <= KeyCode::F12) {
+        const auto index = static_cast<int>(event.key) - static_cast<int>(KeyCode::F1);
+        constexpr uint32_t codes[] = {1, 1, 1, 1, 15, 17, 18, 19, 20, 21, 23, 24};
+        return {codes[index], index < 4 ? static_cast<char>('P' + index) : '~'};
+    }
+    return {event.base_codepoint ? event.base_codepoint : event.codepoint, 'u'};
+}
+
+bool printable_text(std::string_view text) {
+    if (text.empty()) return false;
+    while (!text.empty()) {
+        utf8proc_int32_t cp;
+        const auto n = utf8proc_iterate(reinterpret_cast<const uint8_t*>(text.data()), text.size(), &cp);
+        if (n <= 0 || cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return false;
+        text.remove_prefix(n);
+    }
+    return true;
 }
 
 } // namespace
 
 std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine& engine) {
-    if (ev.action == KeyAction::Release) {
-        // Only Kitty protocol reports releases if requested
-        uint32_t kflags = engine.kitty_keyboard_flags();
-        if (!(kflags & 2)) return ""; // Event types not enabled
-    }
+    const auto flags = engine.kitty_keyboard_flags();
+    const bool released = ev.action == KeyAction::Release;
+    if (released && !(flags & 2)) return "";
 
-    uint32_t kflags = engine.kitty_keyboard_flags();
-
-    // 1. Kitty Keyboard Protocol progressive enhancement (CSI u)
-    if (kflags != 0) {
-        uint32_t codepoint = ev.codepoint;
-        if (codepoint == 0) {
-            switch (ev.key) {
-                case KeyCode::Escape: codepoint = 27; break;
-                case KeyCode::Return: codepoint = 13; break;
-                case KeyCode::Tab: codepoint = 9; break;
-                case KeyCode::Backspace: codepoint = 127; break;
-                case KeyCode::Delete: codepoint = 57350; break;
-                case KeyCode::Up: codepoint = 57352; break;
-                case KeyCode::Down: codepoint = 57353; break;
-                case KeyCode::Left: codepoint = 57354; break;
-                case KeyCode::Right: codepoint = 57355; break;
-                default: break;
+    // foot input.c: disambiguation does NOT imply report-all. Plain text and
+    // unmodified Enter/Tab/Backspace keep their legacy form unless flag 8 is set.
+    if (flags && ((flags & (1 | 8)) || ev.action != KeyAction::Press)) {
+        const bool plain = ev.key == KeyCode::Unknown && !ev.mods.ctrl && !ev.mods.alt &&
+            !ev.mods.meta && printable_text(ev.text);
+        const bool basic = !ev.mods.ctrl && !ev.mods.alt && !ev.mods.meta && !ev.mods.shift &&
+            (ev.key == KeyCode::Return || ev.key == KeyCode::Tab || ev.key == KeyCode::Backspace);
+        if (!(flags & 8) && plain && !released) return ev.text;
+        if (!(flags & 8) && basic) {
+            if (released) return "";
+            return ev.key == KeyCode::Return ? "\r" : ev.key == KeyCode::Tab ? "\t" : "\x7f";
+        }
+        auto [key, final] = kitty_key(ev);
+        if (key == 0) return "";
+        const auto mods = ev.mods.to_kitty_mods() + 1;
+        std::string bytes = "\x1b[";
+        if (final == 'u' || final == '~') {
+            bytes += std::to_string(key);
+            if ((flags & 4) && ev.key == KeyCode::Unknown && ev.codepoint && ev.codepoint != key)
+                bytes += ":" + std::to_string(ev.codepoint);
+        } else if (mods > 1 || (flags & 2)) bytes += "1";
+        const bool associated = (flags & 16) && plain && !released && (final == 'u' || final == '~');
+        const bool emit_modifiers = mods > 1 || (flags & 2);
+        if (emit_modifiers) {
+            bytes += ";" + std::to_string(mods);
+            if (flags & 2) bytes += ev.action == KeyAction::Press ? ":1" : released ? ":3" : ":2";
+        }
+        if (associated) {
+            if (!emit_modifiers) bytes += ';';
+            std::string_view text = ev.text;
+            char separator = ';';
+            while (!text.empty()) {
+                utf8proc_int32_t cp;
+                const auto n = utf8proc_iterate(reinterpret_cast<const uint8_t*>(text.data()), text.size(), &cp);
+                if (n <= 0) break;
+                bytes += separator;
+                bytes += std::to_string(cp);
+                separator = ':';
+                text.remove_prefix(n);
             }
         }
+        bytes += final;
+        return bytes;
+    }
+    if (released) return "";
 
-        if (codepoint != 0) {
-            uint32_t kmods = ev.mods.to_kitty_mods();
-            int event_type = (ev.action == KeyAction::Press) ? 1 : ((ev.action == KeyAction::Repeat) ? 2 : 3);
-
-            char buf[64];
-            if (kflags & 2) { // Report event types
-                std::snprintf(buf, sizeof(buf), "\x1b[%u;%u:%uu", codepoint, kmods + 1, event_type);
-            } else if (kmods > 0) {
-                std::snprintf(buf, sizeof(buf), "\x1b[%u;%uu", codepoint, kmods + 1);
-            } else {
-                std::snprintf(buf, sizeof(buf), "\x1b[%uu", codepoint);
-            }
-            return std::string(buf);
+    // XTerm modifyOtherKeys mode 2 is separate from Kitty CSI-u.
+    // Like foot, Shift-only text needs encoding for Latin letters, not punctuation.
+    const auto mods = xterm_mod_param(ev.mods);
+    if (engine.modify_other_keys() == 2 && mods > 1) {
+        uint32_t cp = ev.codepoint;
+        if (ev.key == KeyCode::Return) cp = 13;
+        else if (ev.key == KeyCode::Tab) cp = 9;
+        else if (ev.key == KeyCode::Backspace) cp = 127;
+        else if (ev.key == KeyCode::Escape) cp = 27;
+        else if (ev.key != KeyCode::Unknown) cp = 0;
+        const bool encode = ev.mods.ctrl || ev.mods.alt || ev.mods.meta ||
+            (ev.mods.shift && ((cp >= 'A' && cp <= 'Z') || ev.key != KeyCode::Unknown));
+        if (cp && encode) {
+            char sequence[64];
+            std::snprintf(sequence, sizeof(sequence), "\x1b[27;%d;%u~", mods, cp);
+            return sequence;
         }
     }
 
@@ -88,8 +147,9 @@ std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine&
     if (ev.key >= KeyCode::F1 && ev.key <= KeyCode::F12) {
         int fnum = static_cast<int>(ev.key) - static_cast<int>(KeyCode::F1) + 1;
         char buf[32];
-        if (fnum <= 4 && !has_mod) {
-            std::snprintf(buf, sizeof(buf), "\x1bO%c", 'P' + (fnum - 1));
+        if (fnum <= 4) {
+            if (has_mod) std::snprintf(buf, sizeof(buf), "\x1b[1;%d%c", mod_param, 'P' + fnum - 1);
+            else std::snprintf(buf, sizeof(buf), "\x1bO%c", 'P' + fnum - 1);
         } else {
             static const int vt_codes[] = {11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24};
             int code = vt_codes[fnum - 1];
@@ -105,9 +165,9 @@ std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine&
     // Navigation keys
     switch (ev.key) {
         case KeyCode::Home:
-            return has_mod ? ("\x1b[1;" + std::to_string(mod_param) + "H") : "\x1b[H";
+            return has_mod ? ("\x1b[1;" + std::to_string(mod_param) + "H") : engine.cursor_key_mode() ? "\x1bOH" : "\x1b[H";
         case KeyCode::End:
-            return has_mod ? ("\x1b[1;" + std::to_string(mod_param) + "F") : "\x1b[F";
+            return has_mod ? ("\x1b[1;" + std::to_string(mod_param) + "F") : engine.cursor_key_mode() ? "\x1bOF" : "\x1b[F";
         case KeyCode::Insert:
             return has_mod ? ("\x1b[2;" + std::to_string(mod_param) + "~") : "\x1b[2~";
         case KeyCode::Delete:
@@ -139,6 +199,17 @@ std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine&
         return ev.mods.alt ? std::string("\x1b") + c : std::string(1, c);
     }
 
+    // Remaining ASCII control chords, including Ctrl+Space and Ctrl+[.
+    if (ev.mods.ctrl) {
+        const auto cp = ev.codepoint;
+        char control;
+        if (cp == ' ' || cp == '@' || cp == '2') control = 0;
+        else if (cp >= '[' && cp <= '_') control = static_cast<char>(cp - '@');
+        else if (cp == '?' || cp == '8') control = 127;
+        else return ev.text;
+        return (ev.mods.alt ? std::string("\x1b") : std::string{}) + std::string(1, control);
+    }
+
     // Normal text
     if (!ev.text.empty()) {
         if (ev.mods.alt) {
@@ -148,43 +219,6 @@ std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine&
     }
 
     return "";
-}
-
-std::string InputMapper::map_mouse(const MouseEvent& ev, const core::TerminalEngine& engine) {
-    if (engine.mouse_tracking() == core::MouseTrackingMode::None) {
-        return "";
-    }
-
-    // SGR (1006) encoding
-    int button_code = 0;
-    switch (ev.button) {
-        case MouseButton::Left: button_code = 0; break;
-        case MouseButton::Middle: button_code = 1; break;
-        case MouseButton::Right: button_code = 2; break;
-        case MouseButton::WheelUp: button_code = 64; break;
-        case MouseButton::WheelDown: button_code = 65; break;
-        default: button_code = 3; break;
-    }
-
-    if (ev.action == MouseAction::Move) {
-        button_code += 32;
-    }
-
-    // Modifiers in mouse events
-    if (ev.mods.shift) button_code += 4;
-    if (ev.mods.alt)   button_code += 8;
-    if (ev.mods.ctrl)  button_code += 16;
-
-    char final_char = (ev.action == MouseAction::Release) ? 'm' : 'M';
-    char buf[64];
-
-    if (engine.mouse_format() == core::MouseFormat::SgrPixels) {
-        std::snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", button_code, ev.pixel_x + 1, ev.pixel_y + 1, final_char);
-    } else { // Standard SGR 1006
-        std::snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c", button_code, ev.col + 1, ev.row + 1, final_char);
-    }
-
-    return std::string(buf);
 }
 
 } // namespace gritty::input

@@ -3,10 +3,11 @@
 #include <vector>
 #include <filesystem>
 #include <cstdlib>
+#include <cmath>
+#include <stdexcept>
 
 #include "config/toml_loader.hpp"
 #include "core/terminal_session.hpp"
-#include "input/input_mapper.hpp"
 
 #if defined(PLATFORM_MACOS)
 #include "platform/macos/cocoa_surface.hpp"
@@ -56,6 +57,11 @@ int main(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
+        if ((arg == "-c" || arg == "--config" || arg == "-f" || arg == "--font" ||
+             arg == "-s" || arg == "--size" || arg == "-t" || arg == "--title") && i + 1 >= argc) {
+            std::cerr << "Missing value for " << arg << "\n";
+            return 1;
+        }
         if (arg == "-h" || arg == "--help") {
             print_help(argv[0]);
             return 0;
@@ -67,15 +73,32 @@ int main(int argc, char* argv[]) {
         } else if (arg == "-f" || arg == "--font") {
             if (++i < argc) font_override = argv[i];
         } else if (arg == "-s" || arg == "--size") {
-            if (++i < argc) font_size_override = std::stod(argv[i]);
+            try {
+                const std::string value = argv[++i];
+                size_t used = 0;
+                font_size_override = std::stod(value, &used);
+                if (used != value.size() || !std::isfinite(font_size_override) ||
+                    font_size_override < 1 || font_size_override > 200)
+                    throw std::invalid_argument("font size out of range");
+            } catch (const std::exception&) {
+                std::cerr << "Invalid font size (expected 1..200 points)\n";
+                return 1;
+            }
         } else if (arg == "-t" || arg == "--title") {
             if (++i < argc) title_override = argv[i];
-        } else if (!arg.starts_with('-')) {
+        } else if (arg == "--" || !arg.starts_with('-')) {
+            if (arg == "--") {
+                if (++i >= argc) break;
+                arg = argv[i];
+            }
             command = arg;
             for (int j = i + 1; j < argc; ++j) {
                 command_args.push_back(argv[j]);
             }
             break;
+        } else {
+            std::cerr << "Unknown option: " << arg << "\n";
+            return 1;
         }
     }
 
@@ -84,13 +107,13 @@ int main(int argc, char* argv[]) {
     }
 
     std::shared_ptr<config::AppConfig> cfg;
-    if (!config_path.empty() && std::filesystem::exists(config_path)) {
+    if (!config_path.empty()) {
         auto res = config::TomlLoader::load_from_file(config_path);
         if (res) {
             cfg = *res;
         } else {
             std::cerr << "Config error in " << config_path << ": " << res.error().message << "\n";
-            cfg = std::make_shared<config::AppConfig>();
+            return 1;
         }
     } else {
         cfg = std::make_shared<config::AppConfig>();
@@ -121,15 +144,22 @@ int main(int argc, char* argv[]) {
         .font_size = cfg->font.size,
         .cols = 80,
         .rows = 24,
-        .shell = command,
-        .cwd = ""
+        .shell = command.empty() ? cfg->main.shell : command,
+        .cwd = "",
+        .args = command_args,
+        .font_dpi = cfg->font.dpi,
+        .antialias = cfg->font.antialias,
+        .render_config = {
+            .default_fg = cfg->colors.foreground,
+            .default_bg = cfg->colors.background_argb(),
+            .cursor_color = cfg->cursor.color
+        }
     };
 
-    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(80 * 8 * 2, 24 * 16 * 2, 2.0);
+    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(640, 384);
     auto loop = std::make_unique<platform::macos::KqueueRunLoop>();
     auto clipboard = std::make_unique<platform::macos::PasteboardClipboard>();
 
-    // Bridge callbacks
     platform::macos::CocoaLayerSurface* surf_ptr = surface.get();
 
     auto session = std::make_unique<core::TerminalSession>(
@@ -139,21 +169,29 @@ int main(int argc, char* argv[]) {
         std::move(clipboard)
     );
 
-    surf_ptr->set_key_callback([sess = session.get()](const input::KeyEvent& ev) {
-        std::string bytes = input::InputMapper::map_key(ev, sess->engine());
-        if (!bytes.empty()) {
-            // Write to pty via engine/session
-        }
-    });
+    session->engine().set_cursor_shape(cfg->cursor.style, cfg->cursor.blink);
+    session->engine().primary_grid().set_scrollback_capacity(cfg->scrollback.lines);
+    if (cfg->colors.palette_customized) {
+        for (size_t i = 0; i < cfg->colors.palette.size(); ++i)
+            session->engine().set_palette_color(i, cfg->colors.palette[i] & 0xffffff);
+    }
+
+    if (!session->start()) {
+        std::cerr << "Failed to start terminal session.\n";
+        return 1;
+    }
 
     surf_ptr->show_window(cfg->main.title);
+    session->render_frame(true);
 
-    std::cout << "Gritty Terminal initialized successfully.\n";
+    std::cout << "Gritty Terminal running.\n";
     std::cout << "Using font: " << resolved_font_path << " (" << cfg->font.size << "pt)\n";
+
+    session->run();
 
     return 0;
 #else
-    std::cout << "Linux platform initialized.\n";
-    return 0;
+    std::cerr << "Linux window backend is not implemented yet.\n";
+    return 1;
 #endif
 }

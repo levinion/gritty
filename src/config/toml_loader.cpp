@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <charconv>
+#include <cmath>
 
 namespace gritty::config {
 
@@ -32,13 +33,13 @@ std::optional<uint32_t> TomlLoader::parse_color(std::string_view str) noexcept {
     if (str.size() == 6) { // RRGGBB
         uint32_t val = 0;
         auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), val, 16);
-        if (ec == std::errc()) {
+        if (ec == std::errc() && ptr == str.data() + str.size()) {
             return 0xFF000000 | val;
         }
     } else if (str.size() == 8) { // AARRGGBB
         uint32_t val = 0;
         auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), val, 16);
-        if (ec == std::errc()) {
+        if (ec == std::errc() && ptr == str.data() + str.size()) {
             return val;
         }
     }
@@ -117,6 +118,12 @@ std::expected<std::shared_ptr<AppConfig>, ConfigError> TomlLoader::load_from_str
 
     // [colors]
     if (auto* clr = tbl["colors"].as_table()) {
+        if (const auto* node = clr->get("alpha")) {
+            const auto alpha = node->value<double>();
+            if (!alpha || !std::isfinite(*alpha) || *alpha < 0.0 || *alpha > 1.0)
+                return std::unexpected(ConfigError{.message = "colors.alpha must be a finite number between 0 and 1"});
+            cfg->colors.alpha = *alpha;
+        }
         if (auto fg = (*clr)["foreground"].value<std::string>()) {
             if (auto val = parse_color(*fg)) cfg->colors.foreground = *val;
         }

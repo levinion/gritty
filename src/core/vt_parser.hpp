@@ -24,6 +24,7 @@ enum class ParserState : uint8_t {
     DcsString,
     DcsIgnore,
     ApcString,
+    IgnoredString,
 };
 
 struct Parameter {
@@ -54,13 +55,26 @@ public:
     void set_dcs_handler(DcsHandler handler) { dcs_handler_ = std::move(handler); }
     void set_osc_handler(OscHandler handler) { osc_handler_ = std::move(handler); }
     void set_response_callback(ResponseCallback cb) { response_cb_ = std::move(cb); }
+    void set_sync_handler(std::function<void(bool)> handler) { sync_handler_ = std::move(handler); }
 
     void reset() noexcept;
+    void set_default_colors(uint32_t foreground, uint32_t background) noexcept {
+        default_fg_ = foreground;
+        default_bg_ = background;
+    }
 
 private:
     void process_byte(uint8_t byte);
     void handle_c0(uint8_t byte);
     void handle_escape(uint8_t byte);
+    void clear_sequence() noexcept;
+    void finish_string();
+    void append_string(uint8_t byte);
+    void print_codepoint(char32_t cp);
+    void handle_dcs();
+    void handle_query(uint8_t final_char);
+    int get_param(int idx, int fallback) const noexcept;
+    int dec_mode_status(int mode) const noexcept;
     void handle_csi(uint8_t final_char);
     void handle_sgr();
     void handle_osc();
@@ -93,10 +107,15 @@ private:
     DcsHandler dcs_handler_;
     OscHandler osc_handler_;
     ResponseCallback response_cb_;
+    std::function<void(bool)> sync_handler_;
 
     // UTF-8 state for multibyte characters in Ground state
     uint32_t utf8_state_{0};
     uint32_t utf8_codepoint_{0};
+    uint32_t utf8_minimum_{0};
+    bool string_overflow_{false};
+    uint32_t default_fg_{0xffdddddd};
+    uint32_t default_bg_{0xff111111};
 };
 
 } // namespace gritty::core

@@ -110,18 +110,29 @@ TEST_CASE("VtParser Alternate Screen Buffer (DECSET 1049)") {
     CHECK(engine.grid().cell(0, 0).codepoint == U'P');
     CHECK(!engine.is_alt_screen());
 
+    engine.set_cursor_pos(12, 5);
+    engine.sgr_bold(true);
+    engine.grid().reset_damage();
     // Switch to alt screen
     parser.feed("\x1b[?1049h");
     CHECK(engine.is_alt_screen());
     CHECK(engine.grid().cell(0, 0).codepoint == ' '); // cleared
 
-    parser.feed("Alt Screen Data");
+    // As in foot, entering the alternate grid retains the cursor position;
+    // the application explicitly homes it before drawing its frame.
+    parser.feed("\x1b[HAlt Screen Data");
     CHECK(engine.grid().cell(0, 0).codepoint == U'A');
 
     // Switch back to primary
     parser.feed("\x1b[?1049l");
     CHECK(!engine.is_alt_screen());
     CHECK(engine.grid().cell(0, 0).codepoint == U'P');
+    CHECK(engine.cursor_col() == 12);
+    CHECK(engine.cursor_row() == 5);
+    CHECK(engine.current_attrs().bold);
+    for (int row = 0; row < engine.rows(); ++row) {
+        CHECK(engine.grid().row(row).dirty);
+    }
 }
 
 TEST_CASE("VtParser Synchronized Updates (DECSET 2026)") {

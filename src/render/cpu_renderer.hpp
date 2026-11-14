@@ -28,7 +28,7 @@ public:
     [[nodiscard]] const FontEngine& font_engine() const noexcept { return font_engine_; }
 
     [[nodiscard]] const RenderConfig& config() const noexcept { return config_; }
-    void set_config(const RenderConfig& cfg) noexcept { config_ = cfg; }
+    void set_config(const RenderConfig& cfg) noexcept { config_ = cfg; config_changed_ = true; }
 
     // Render the terminal grid onto target PixmanImage.
     // If damage_out is non-null, populates it with the bounding pixel damage region.
@@ -64,10 +64,13 @@ private:
 
     FontEngine& font_engine_;
     RenderConfig config_;
+    bool config_changed_{true};
 
     // Cached solid color source for glyph compositing
     util::PixmanImage solid_src_;
     uint32_t current_solid_color_{0};
+    int previous_cursor_col_{-1};
+    int previous_cursor_row_{-1};
 };
 
 } // namespace gritty::render

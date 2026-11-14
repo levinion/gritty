@@ -10,8 +10,8 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_LCD_FILTER_H
-#include <harfbuzz/hb.h>
-#include <harfbuzz/hb-ft.h>
+#include <hb.h>
+#include <hb-ft.h>
 #include "util/raii.hpp"
 
 namespace gritty::render {
@@ -81,6 +81,13 @@ public:
     [[nodiscard]] const FontMetrics& metrics() const noexcept { return metrics_; }
     [[nodiscard]] AntialiasMode antialias_mode() const noexcept { return antialias_mode_; }
     void set_antialias_mode(AntialiasMode mode) noexcept { antialias_mode_ = mode; clear_cache(); }
+    [[nodiscard]] AntialiasMode effective_antialias_mode() const noexcept {
+        return antialias_mode_ == AntialiasMode::SubpixelLcd && !subpixel_allowed_
+            ? AntialiasMode::Grayscale : antialias_mode_;
+    }
+    void set_subpixel_allowed(bool allowed) noexcept {
+        if (subpixel_allowed_ != allowed) { subpixel_allowed_ = allowed; clear_cache(); }
+    }
 
     // Resolve and retrieve rasterized glyph
     const CachedGlyph* get_glyph(char32_t cp, bool bold, bool italic);
@@ -100,6 +107,7 @@ private:
 
     util::FtLibrary ft_lib_;
     AntialiasMode antialias_mode_{AntialiasMode::Grayscale};
+    bool subpixel_allowed_{true};
     double pt_size_{12.0};
     unsigned int dpi_{96};
     FontMetrics metrics_{};

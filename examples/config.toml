@@ -12,13 +12,16 @@ dpi = 96
 antialias = "grayscale" # grayscale | subpixel | none
 
 [cursor]
-style = "block" # block | beam | underline
+style = "block"   # block | beam | underline
 blink = false
 color = "#ffffff"
 
 [colors]
 foreground = "#dddddd"
-background = "#111111"
+background = "#111111" # Also accepts #AARRGGBB, e.g. #cc111111 (80% opaque)
+alpha = 0.8            # 0.0 = clear, 1.0 = opaque; try 0.8 for a translucent default background
+# alpha multiplies any alpha in background. Text and explicit app backgrounds stay opaque.
+# For Neovim transparency, set Normal/NormalNC/NormalFloat bg to NONE in your theme.
 cursor = "#ffffff"
 
 # ANSI 16 colors

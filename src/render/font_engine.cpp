@@ -143,7 +143,7 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
     FT_Int32 load_flags = FT_LOAD_DEFAULT;
     FT_Render_Mode render_mode = FT_RENDER_MODE_LIGHT;
 
-    switch (antialias_mode_) {
+    switch (effective_antialias_mode()) {
         case AntialiasMode::Grayscale:
             load_flags |= FT_LOAD_TARGET_LIGHT;
             render_mode = FT_RENDER_MODE_LIGHT;
