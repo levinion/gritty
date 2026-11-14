@@ -1,0 +1,85 @@
+#include <doctest/doctest.h>
+#include "config/toml_loader.hpp"
+
+using namespace squirt::config;
+
+TEST_CASE("TomlLoader parse basic config and hex colors") {
+    std::string toml_str = R"(
+        [main]
+        term = "foot"
+        title = "My Term"
+
+        [font]
+        family = "CustomFont"
+        size = 15.5
+        dpi = 144
+        antialias = "subpixel"
+
+        [cursor]
+        style = "beam"
+        blink = true
+        color = "#ff5500"
+
+        [colors]
+        foreground = "#abcdef"
+        background = "#123456"
+        regular1 = "#ff0000"
+
+        [scrollback]
+        lines = 5000
+    )";
+
+    auto res = TomlLoader::load_from_string(toml_str);
+    REQUIRE(res.has_value());
+    auto cfg = *res;
+
+    CHECK(cfg->main.term == "foot");
+    CHECK(cfg->main.title == "My Term");
+    CHECK(cfg->font.family == "CustomFont");
+    CHECK(cfg->font.size == 15.5);
+    CHECK(cfg->font.dpi == 144);
+    CHECK(cfg->font.antialias == squirt::render::AntialiasMode::SubpixelLcd);
+
+    CHECK(cfg->cursor.style == squirt::core::CursorShape::Beam);
+    CHECK(cfg->cursor.blink == true);
+    CHECK(cfg->cursor.color == 0xFFFF5500);
+
+    CHECK(cfg->colors.foreground == 0xFFABCDEF);
+    CHECK(cfg->colors.background == 0xFF123456);
+    CHECK(cfg->colors.palette[1] == 0x00FF0000);
+    CHECK(cfg->scrollback.lines == 5000);
+}
+
+TEST_CASE("TomlLoader deep-merge platform overrides") {
+    std::string toml_str = R"(
+        [font]
+        family = "DefaultFont"
+        size = 12.0
+
+        [platform.macos]
+        font = { family = "MacFont", size = 14.5 }
+
+        [platform.linux]
+        font = { family = "LinuxFont" }
+    )";
+
+    // Force platform override "macos"
+    auto res_mac = TomlLoader::load_from_string(toml_str, "macos");
+    REQUIRE(res_mac.has_value());
+    CHECK((*res_mac)->font.family == "MacFont");
+    CHECK((*res_mac)->font.size == 14.5);
+
+    // Force platform override "linux"
+    auto res_linux = TomlLoader::load_from_string(toml_str, "linux");
+    REQUIRE(res_linux.has_value());
+    CHECK((*res_linux)->font.family == "LinuxFont");
+    CHECK((*res_linux)->font.size == 12.0); // inherits default size
+}
+
+TEST_CASE("TomlLoader parse hex colors utility") {
+    CHECK(TomlLoader::parse_color("#ff0000") == 0xFFFF0000);
+    CHECK(TomlLoader::parse_color("00ff00") == 0xFF00FF00);
+    CHECK(TomlLoader::parse_color("0x0000ff") == 0xFF0000FF);
+    CHECK(TomlLoader::parse_color("#80112233") == 0x80112233);
+    CHECK(TomlLoader::parse_color("invalid") == std::nullopt);
+}

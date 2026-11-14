@@ -1,0 +1,10 @@
+build/
+subprojects/*
+!subprojects/*.wrap
+.cache/
+compile_commands.json
+.DS_Store
+result
+/AGENTS.md
+/docs/
+/benchmark/README.md

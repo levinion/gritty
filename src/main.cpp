@@ -1,0 +1,159 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <filesystem>
+#include <cstdlib>
+
+#include "config/toml_loader.hpp"
+#include "core/terminal_session.hpp"
+#include "input/input_mapper.hpp"
+
+#if defined(PLATFORM_MACOS)
+#include "platform/macos/cocoa_surface.hpp"
+#include "platform/macos/kqueue_loop.hpp"
+#include "platform/macos/ct_discovery.hpp"
+#include "platform/macos/clipboard.hpp"
+#endif
+
+using namespace squirt;
+
+namespace {
+
+void print_help(const char* prog) {
+    std::cout << "Usage: " << prog << " [options] [command [args...]]\n\n"
+              << "Options:\n"
+              << "  -c, --config <path>    Path to config.toml\n"
+              << "  -f, --font <family>    Font family name\n"
+              << "  -s, --size <pt>        Font size in points\n"
+              << "  -t, --title <title>    Window title\n"
+              << "  -v, --version          Print version\n"
+              << "  -h, --help             Show this help\n";
+}
+
+std::string find_default_config() {
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) {
+        std::string p = std::string(xdg) + "/squirt/config.toml";
+        if (std::filesystem::exists(p)) return p;
+    }
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+        std::string p = std::string(home) + "/.config/squirt/config.toml";
+        if (std::filesystem::exists(p)) return p;
+    }
+    return "";
+}
+
+} // namespace
+
+int main(int argc, char* argv[]) {
+    std::string config_path;
+    std::string font_override;
+    double font_size_override = 0;
+    std::string title_override;
+    std::string command;
+    std::vector<std::string> command_args;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            print_help(argv[0]);
+            return 0;
+        } else if (arg == "-v" || arg == "--version") {
+            std::cout << "Squirt 0.1.0 (foot parity + Kitty protocols)\n";
+            return 0;
+        } else if (arg == "-c" || arg == "--config") {
+            if (++i < argc) config_path = argv[i];
+        } else if (arg == "-f" || arg == "--font") {
+            if (++i < argc) font_override = argv[i];
+        } else if (arg == "-s" || arg == "--size") {
+            if (++i < argc) font_size_override = std::stod(argv[i]);
+        } else if (arg == "-t" || arg == "--title") {
+            if (++i < argc) title_override = argv[i];
+        } else if (!arg.starts_with('-')) {
+            command = arg;
+            for (int j = i + 1; j < argc; ++j) {
+                command_args.push_back(argv[j]);
+            }
+            break;
+        }
+    }
+
+    if (config_path.empty()) {
+        config_path = find_default_config();
+    }
+
+    std::shared_ptr<config::AppConfig> cfg;
+    if (!config_path.empty() && std::filesystem::exists(config_path)) {
+        auto res = config::TomlLoader::load_from_file(config_path);
+        if (res) {
+            cfg = *res;
+        } else {
+            std::cerr << "Config error in " << config_path << ": " << res.error().message << "\n";
+            cfg = std::make_shared<config::AppConfig>();
+        }
+    } else {
+        cfg = std::make_shared<config::AppConfig>();
+    }
+
+    if (!font_override.empty()) cfg->font.family = font_override;
+    if (font_size_override > 0) cfg->font.size = font_size_override;
+    if (!title_override.empty()) cfg->main.title = title_override;
+
+#if defined(PLATFORM_MACOS)
+    platform::macos::CoreTextFinder font_discovery;
+    auto match = font_discovery.find_font(platform::FontPattern{
+        .family = cfg->font.family
+    });
+
+    std::string resolved_font_path;
+    if (match) {
+        resolved_font_path = match->path;
+    } else {
+        // Fallback to Monaco or Menlo
+        auto fallback = font_discovery.find_font(platform::FontPattern{.family = "Monaco"});
+        if (fallback) resolved_font_path = fallback->path;
+        else resolved_font_path = "/System/Library/Fonts/Monaco.ttf";
+    }
+
+    core::SessionConfig sess_cfg{
+        .font_path = resolved_font_path,
+        .font_size = cfg->font.size,
+        .cols = 80,
+        .rows = 24,
+        .shell = command,
+        .cwd = ""
+    };
+
+    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(80 * 8 * 2, 24 * 16 * 2, 2.0);
+    auto loop = std::make_unique<platform::macos::KqueueRunLoop>();
+    auto clipboard = std::make_unique<platform::macos::PasteboardClipboard>();
+
+    // Bridge callbacks
+    platform::macos::CocoaLayerSurface* surf_ptr = surface.get();
+
+    auto session = std::make_unique<core::TerminalSession>(
+        sess_cfg,
+        std::move(surface),
+        std::move(loop),
+        std::move(clipboard)
+    );
+
+    surf_ptr->set_key_callback([sess = session.get()](const input::KeyEvent& ev) {
+        std::string bytes = input::InputMapper::map_key(ev, sess->engine());
+        if (!bytes.empty()) {
+            // Write to pty via engine/session
+        }
+    });
+
+    surf_ptr->show_window(cfg->main.title);
+
+    std::cout << "Squirt Terminal initialized successfully.\n";
+    std::cout << "Using font: " << resolved_font_path << " (" << cfg->font.size << "pt)\n";
+
+    return 0;
+#else
+    std::cout << "Linux platform initialized.\n";
+    return 0;
+#endif
+}

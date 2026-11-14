@@ -1,0 +1,53 @@
+# Squirt Terminal Configuration
+
+[main]
+shell = ""
+term = "xterm-256color"
+title = "Squirt"
+
+[font]
+family = "Monaco"
+size = 13.0
+dpi = 96
+antialias = "grayscale" # grayscale | subpixel | none
+
+[cursor]
+style = "block" # block | beam | underline
+blink = false
+color = "#ffffff"
+
+[colors]
+foreground = "#dddddd"
+background = "#111111"
+cursor = "#ffffff"
+
+# ANSI 16 colors
+regular0 = "#000000"
+regular1 = "#cc0403"
+regular2 = "#19cb00"
+regular3 = "#cecb00"
+regular4 = "#0d73cc"
+regular5 = "#cb1ed1"
+regular6 = "#0dcdcd"
+regular7 = "#dddddd"
+
+bright0 = "#767676"
+bright1 = "#f2201f"
+bright2 = "#23fd00"
+bright3 = "#fffd00"
+bright4 = "#1a8fff"
+bright5 = "#fd28ff"
+bright6 = "#14ffff"
+bright7 = "#ffffff"
+
+[scrollback]
+lines = 2000
+multiplier = 3
+
+# macOS Platform Overrides (automatically deep-merged on macOS)
+[platform.macos]
+font = { family = "JetBrainsMono Nerd Font", size = 14.0 }
+
+# Linux Platform Overrides (automatically deep-merged on Linux)
+[platform.linux]
+font = { family = "monospace", size = 11.0 }
