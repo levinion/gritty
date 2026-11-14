@@ -4,7 +4,7 @@
 #include <sstream>
 #include <charconv>
 
-namespace squirt::config {
+namespace gritty::config {
 
 namespace {
 
@@ -175,4 +175,4 @@ std::expected<std::shared_ptr<AppConfig>, ConfigError> TomlLoader::load_from_fil
     return load_from_string(buffer.str(), platform_override);
 }
 
-} // namespace squirt::config
+} // namespace gritty::config

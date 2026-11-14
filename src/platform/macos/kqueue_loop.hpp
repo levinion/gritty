@@ -6,7 +6,7 @@
 #include "platform/pal_interfaces.hpp"
 #include "util/raii.hpp"
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 class KqueueRunLoop final : public IEventLoop {
 public:
@@ -33,4 +33,4 @@ private:
     std::unordered_map<int, FdCallback> callbacks_;
 };
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

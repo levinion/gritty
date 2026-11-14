@@ -2,7 +2,7 @@
 
 #include "platform/pal_interfaces.hpp"
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 class CoreTextFinder final : public IFontDiscovery {
 public:
@@ -13,4 +13,4 @@ public:
     std::vector<FontMatch> fallback_chain(const FontPattern& pattern) override;
 };
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

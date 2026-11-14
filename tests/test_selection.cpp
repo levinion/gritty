@@ -3,7 +3,7 @@
 #include "core/overlays.hpp"
 #include "core/screen_grid.hpp"
 
-using namespace squirt::core;
+using namespace gritty::core;
 
 TEST_CASE("SelectionController normal stream selection") {
     ScreenGrid grid(10, 3);
@@ -63,17 +63,17 @@ TEST_CASE("SearchOverlay key interaction") {
     CHECK(search.is_active());
 
     // Type "foo"
-    search.handle_key(squirt::input::KeyEvent{.text = "f"});
-    search.handle_key(squirt::input::KeyEvent{.text = "o"});
-    search.handle_key(squirt::input::KeyEvent{.text = "o"});
+    search.handle_key(gritty::input::KeyEvent{.text = "f"});
+    search.handle_key(gritty::input::KeyEvent{.text = "o"});
+    search.handle_key(gritty::input::KeyEvent{.text = "o"});
     CHECK(search.query() == "foo");
 
     // Backspace
-    search.handle_key(squirt::input::KeyEvent{.key = squirt::input::KeyCode::Backspace});
+    search.handle_key(gritty::input::KeyEvent{.key = gritty::input::KeyCode::Backspace});
     CHECK(search.query() == "fo");
 
     // Escape closes overlay
-    search.handle_key(squirt::input::KeyEvent{.key = squirt::input::KeyCode::Escape});
+    search.handle_key(gritty::input::KeyEvent{.key = gritty::input::KeyCode::Escape});
     CHECK(!search.is_active());
 }
 
@@ -85,10 +85,10 @@ TEST_CASE("UrlOverlay hint interaction") {
     CHECK(url_overlay.is_active());
 
     // Type 'a'
-    url_overlay.handle_key(squirt::input::KeyEvent{.text = "a"});
+    url_overlay.handle_key(gritty::input::KeyEvent{.text = "a"});
     CHECK(url_overlay.is_active());
 
     // Type 'a' -> matches "aa", deactivates overlay
-    url_overlay.handle_key(squirt::input::KeyEvent{.text = "a"});
+    url_overlay.handle_key(gritty::input::KeyEvent{.text = "a"});
     CHECK(!url_overlay.is_active());
 }

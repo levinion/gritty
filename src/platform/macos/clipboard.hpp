@@ -2,7 +2,7 @@
 
 #include "platform/pal_interfaces.hpp"
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 class PasteboardClipboard final : public IClipboard {
 public:
@@ -13,4 +13,4 @@ public:
     std::string paste_text() override;
 };
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

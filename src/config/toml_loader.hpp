@@ -6,7 +6,7 @@
 #include <memory>
 #include "config/app_config.hpp"
 
-namespace squirt::config {
+namespace gritty::config {
 
 struct ConfigError {
     std::string message;
@@ -29,4 +29,4 @@ public:
     static std::optional<uint32_t> parse_color(std::string_view color_str) noexcept;
 };
 
-} // namespace squirt::config
+} // namespace gritty::config

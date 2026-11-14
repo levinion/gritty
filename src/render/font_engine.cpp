@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace squirt::render {
+namespace gritty::render {
 
 FontEngine::FontEngine(AntialiasMode antialias) : antialias_mode_(antialias) {
     if (ft_lib_.valid()) {
@@ -280,4 +280,4 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
     return &it->second;
 }
 
-} // namespace squirt::render
+} // namespace gritty::render

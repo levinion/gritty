@@ -14,7 +14,7 @@ class NSWindow;
 class NSView;
 #endif
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 class CocoaLayerSurface final : public IWindowSurface {
 public:
@@ -32,7 +32,7 @@ public:
     [[nodiscard]] int pixel_height() const noexcept override { return pixel_height_; }
     [[nodiscard]] double scale() const noexcept override { return scale_; }
 
-    void show_window(const std::string& title = "Squirt");
+    void show_window(const std::string& title = "Gritty");
     void set_title(const std::string& title);
 
     using KeyCallback = std::function<void(const input::KeyEvent&)>;
@@ -64,4 +64,4 @@ private:
     ResizeCallback resize_cb_;
 };
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

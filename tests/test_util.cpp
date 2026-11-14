@@ -3,7 +3,7 @@
 #include "util/ring_buffer.hpp"
 #include "util/arena.hpp"
 
-using namespace squirt::util;
+using namespace gritty::util;
 
 TEST_CASE("RingBuffer basic operations") {
     RingBuffer<int> rb(3);

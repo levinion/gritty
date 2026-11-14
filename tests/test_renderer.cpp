@@ -9,8 +9,8 @@
 #include "render/box_drawing.hpp"
 #include "render/cpu_renderer.hpp"
 
-using namespace squirt::core;
-using namespace squirt::render;
+using namespace gritty::core;
+using namespace gritty::render;
 
 namespace {
 
@@ -78,7 +78,7 @@ std::string find_test_font() {
 
 TEST_CASE("BoxDrawingRenderer block elements") {
     int w = 10, h = 20;
-    squirt::util::PixmanImage img(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, w * 4));
+    gritty::util::PixmanImage img(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, w * 4));
     CHECK(img.valid());
 
     // Clear to black
@@ -102,7 +102,7 @@ TEST_CASE("BoxDrawingRenderer block elements") {
 
 TEST_CASE("BoxDrawingRenderer half blocks") {
     int w = 10, h = 20;
-    squirt::util::PixmanImage img(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, w * 4));
+    gritty::util::PixmanImage img(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, w * 4));
 
     pixman_color_t black = {0, 0, 0, 0xffff};
     pixman_rectangle16_t all = {0, 0, static_cast<uint16_t>(w), static_cast<uint16_t>(h)};
@@ -190,7 +190,7 @@ TEST_CASE("CpuRenderer offline frame rendering and PNG verification") {
     // Feed a rich VT stream:
     // 1. Box drawing border
     parser.feed("\x1b[38;2;100;200;255m┌──────────────────────────────────────┐\r\n");
-    parser.feed("│ \x1b[1;38;2;255;255;100mSquirt Terminal Engine\x1b[0;38;2;100;200;255m               │\r\n");
+    parser.feed("│ \x1b[1;38;2;255;255;100mGritty Terminal Engine\x1b[0;38;2;100;200;255m               │\r\n");
     parser.feed("│ \x1b[3;38;2;255;100;200m100% CPU Rendered (pixman + fcft)\x1b[0;38;2;100;200;255m    │\r\n");
     parser.feed("│ \x1b[4:3;58;2;255;50;50mCurly Underline\x1b[0;38;2;100;200;255m   \x1b[9mStrikethrough\x1b[0;38;2;100;200;255m        │\r\n");
     parser.feed("│ \x1b[48;2;30;60;90;38;2;255;255;255m Colored Background \x1b[0;38;2;100;200;255m                 │\r\n");
@@ -203,11 +203,11 @@ TEST_CASE("CpuRenderer offline frame rendering and PNG verification") {
     int img_w = cols * metrics.cell_width;
     int img_h = rows * metrics.cell_height;
 
-    squirt::util::PixmanImage target(pixman_image_create_bits(
+    gritty::util::PixmanImage target(pixman_image_create_bits(
         PIXMAN_a8r8g8b8, img_w, img_h, nullptr, img_w * 4));
     REQUIRE(target.valid());
 
-    squirt::util::PixmanRegion damage;
+    gritty::util::PixmanRegion damage;
     renderer.render(term_engine, target.get(), &damage, true);
 
     CHECK(!damage.empty());

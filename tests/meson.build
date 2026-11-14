@@ -11,9 +11,9 @@ test_sources = files(
   'test_selection.cpp',
 )
 
-test_exe = executable('squirt_tests',
+test_exe = executable('gritty_tests',
   test_sources,
-  dependencies: [squirt_core_dep, doctest_dep],
+  dependencies: [gritty_core_dep, doctest_dep],
 )
 
 test('unit_tests', test_exe)

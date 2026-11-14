@@ -6,7 +6,7 @@
 #include <vector>
 #include <new>
 
-namespace squirt::util {
+namespace gritty::util {
 
 class ScratchArena {
 public:
@@ -71,4 +71,4 @@ private:
     size_t offset_;
 };
 
-} // namespace squirt::util
+} // namespace gritty::util

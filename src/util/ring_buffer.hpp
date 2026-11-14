@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace squirt::util {
+namespace gritty::util {
 
 template <typename T>
 class RingBuffer {
@@ -145,4 +145,4 @@ private:
     std::vector<T> storage_;
 };
 
-} // namespace squirt::util
+} // namespace gritty::util

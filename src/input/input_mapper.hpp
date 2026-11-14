@@ -5,7 +5,7 @@
 #include "input/input_events.hpp"
 #include "core/terminal_engine.hpp"
 
-namespace squirt::input {
+namespace gritty::input {
 
 class InputMapper final {
 public:
@@ -13,4 +13,4 @@ public:
     static std::string map_mouse(const MouseEvent& ev, const core::TerminalEngine& engine);
 };
 
-} // namespace squirt::input
+} // namespace gritty::input

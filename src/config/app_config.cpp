@@ -1,6 +1,6 @@
 #include "config/app_config.hpp"
 
-namespace squirt::config {
+namespace gritty::config {
 
 AppConfig::AppConfig() {
 #if defined(PLATFORM_MACOS)
@@ -26,4 +26,4 @@ ConfigStore::ConfigStore() : config_(std::make_shared<AppConfig>()) {}
 ConfigStore::ConfigStore(std::shared_ptr<const AppConfig> initial)
     : config_(std::move(initial)) {}
 
-} // namespace squirt::config
+} // namespace gritty::config

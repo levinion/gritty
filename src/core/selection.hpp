@@ -5,7 +5,7 @@
 #include <algorithm>
 #include "core/screen_grid.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 enum class SelectionMode : uint8_t {
     Normal,   // Character stream
@@ -82,4 +82,4 @@ private:
     int end_row_{0};
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

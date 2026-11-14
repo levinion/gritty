@@ -1,7 +1,7 @@
 #include "input/input_mapper.hpp"
 #include <cstdio>
 
-namespace squirt::input {
+namespace gritty::input {
 
 namespace {
 
@@ -187,4 +187,4 @@ std::string InputMapper::map_mouse(const MouseEvent& ev, const core::TerminalEng
     return std::string(buf);
 }
 
-} // namespace squirt::input
+} // namespace gritty::input

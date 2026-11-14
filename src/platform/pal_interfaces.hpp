@@ -8,7 +8,7 @@
 #include <pixman.h>
 #include "util/raii.hpp"
 
-namespace squirt::platform {
+namespace gritty::platform {
 
 // Window surface interface (WaylandShmSurface or CocoaLayerSurface)
 class IWindowSurface {
@@ -71,4 +71,4 @@ public:
     virtual std::string paste_text() = 0;
 };
 
-} // namespace squirt::platform
+} // namespace gritty::platform

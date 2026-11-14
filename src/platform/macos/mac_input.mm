@@ -1,7 +1,7 @@
 #include "platform/macos/mac_input.hpp"
 #import <Cocoa/Cocoa.h>
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 input::Modifiers MacInput::translate_modifiers(unsigned long flags) {
     input::Modifiers mods;
@@ -119,4 +119,4 @@ input::MouseEvent MacInput::translate_mouse_event(NSEvent* event, int cell_w, in
     return ev;
 }
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

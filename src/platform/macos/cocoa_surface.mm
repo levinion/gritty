@@ -3,15 +3,15 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 
-@interface SquirtView : NSView <NSTextInputClient> {
-    squirt::platform::macos::CocoaLayerSurface* _surface;
+@interface GrittyView : NSView <NSTextInputClient> {
+    gritty::platform::macos::CocoaLayerSurface* _surface;
 }
-- (instancetype)initWithSurface:(squirt::platform::macos::CocoaLayerSurface*)surface;
+- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface;
 @end
 
-@implementation SquirtView
+@implementation GrittyView
 
-- (instancetype)initWithSurface:(squirt::platform::macos::CocoaLayerSurface*)surface {
+- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface {
     self = [super initWithFrame:NSZeroRect];
     if (self) {
         _surface = surface;
@@ -45,15 +45,15 @@
 
 - (void)keyDown:(NSEvent *)event {
     if (_surface) {
-        auto ev = squirt::platform::macos::MacInput::translate_key_event(event);
+        auto ev = gritty::platform::macos::MacInput::translate_key_event(event);
         _surface->on_key_event(ev);
     }
 }
 
 - (void)keyUp:(NSEvent *)event {
     if (_surface) {
-        auto ev = squirt::platform::macos::MacInput::translate_key_event(event);
-        ev.action = squirt::input::KeyAction::Release;
+        auto ev = gritty::platform::macos::MacInput::translate_key_event(event);
+        ev.action = gritty::input::KeyAction::Release;
         _surface->on_key_event(ev);
     }
 }
@@ -77,7 +77,7 @@
 
 - (void)handleMouse:(NSEvent *)event {
     if (_surface) {
-        auto ev = squirt::platform::macos::MacInput::translate_mouse_event(
+        auto ev = gritty::platform::macos::MacInput::translate_mouse_event(
             event, 8, 16, self.bounds.size.height);
         _surface->on_mouse_event(ev);
     }
@@ -98,7 +98,7 @@
 
 @end
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 namespace {
 
@@ -146,7 +146,7 @@ void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
     if (!surface_.valid() || !native_view_) return;
 
     @autoreleasepool {
-        SquirtView* view = (SquirtView*)native_view_;
+        GrittyView* view = (GrittyView*)native_view_;
         int w = surface_.width();
         int h = surface_.height();
         int stride = surface_.stride();
@@ -178,6 +178,29 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
+        // Set application icon from resources
+        NSString* iconPath = [[NSBundle mainBundle] pathForResource:@"gritty" ofType:@"icns"];
+        if (!iconPath || ![[NSFileManager defaultManager] fileExistsAtPath:iconPath]) {
+            NSArray* searchPaths = @[
+                @"resources/gritty.icns",
+                @"../resources/gritty.icns",
+                @"resources/gritty.png",
+                @"../resources/gritty.png"
+            ];
+            for (NSString* p in searchPaths) {
+                if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
+                    iconPath = p;
+                    break;
+                }
+            }
+        }
+        if (iconPath) {
+            NSImage* icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
+            if (icon) {
+                [NSApp setApplicationIconImage:icon];
+            }
+        }
+
         NSRect frame = NSMakeRect(100, 100, pixel_width_ / scale_, pixel_height_ / scale_);
         NSWindowStyleMask mask = NSWindowStyleMaskTitled |
                                  NSWindowStyleMaskClosable |
@@ -191,7 +214,7 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         window.title = [NSString stringWithUTF8String:title.c_str()];
         [window setAcceptsMouseMovedEvents:YES];
 
-        SquirtView* view = [[SquirtView alloc] initWithSurface:this];
+        GrittyView* view = [[GrittyView alloc] initWithSurface:this];
         [window setContentView:view];
         [window makeKeyAndOrderFront:nil];
         [window makeFirstResponder:view];
@@ -225,4 +248,4 @@ void CocoaLayerSurface::on_view_resize(int px_w, int px_h, double scale) {
     if (resize_cb_) resize_cb_(px_w, px_h, scale);
 }
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

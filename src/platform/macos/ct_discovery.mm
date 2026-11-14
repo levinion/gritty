@@ -2,7 +2,7 @@
 #import <CoreText/CoreText.h>
 #import <CoreFoundation/CoreFoundation.h>
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 std::optional<FontMatch> CoreTextFinder::find_font(const FontPattern& pattern) {
     @autoreleasepool {
@@ -85,4 +85,4 @@ std::vector<FontMatch> CoreTextFinder::fallback_chain(const FontPattern& pattern
     return results;
 }
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

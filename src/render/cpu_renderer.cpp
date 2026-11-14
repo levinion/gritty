@@ -1,7 +1,7 @@
 #include "render/cpu_renderer.hpp"
 #include <algorithm>
 
-namespace squirt::render {
+namespace gritty::render {
 
 CpuRenderer::CpuRenderer(FontEngine& font_engine, RenderConfig config)
     : font_engine_(font_engine), config_(config) {}
@@ -265,4 +265,4 @@ void CpuRenderer::render_cursor(
     }
 }
 
-} // namespace squirt::render
+} // namespace gritty::render

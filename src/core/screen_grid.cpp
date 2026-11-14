@@ -1,6 +1,6 @@
 #include "core/screen_grid.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 ScreenGrid::ScreenGrid(int cols, int rows, size_t scrollback_capacity)
     : cols_(cols), rows_(rows), scrollback_(scrollback_capacity) {
@@ -263,4 +263,4 @@ std::span<const char32_t> ScreenGrid::get_combining_codepoints(uint32_t idx) con
     return combining_table_[idx - 1];
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

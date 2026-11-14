@@ -1,7 +1,7 @@
 #include "core/terminal_session.hpp"
 #include "input/input_mapper.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 TerminalSession::TerminalSession(
     const SessionConfig& config,
@@ -126,4 +126,4 @@ void TerminalSession::run() {
     }
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

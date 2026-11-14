@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <charconv>
 
-namespace squirt::core {
+namespace gritty::core {
 
 std::optional<util::PixmanImage> SixelDecoder::decode(std::string_view stream) {
     if (stream.empty()) return std::nullopt;
@@ -165,4 +165,4 @@ std::optional<util::PixmanImage> SixelDecoder::decode(std::string_view stream) {
     return result;
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

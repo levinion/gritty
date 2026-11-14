@@ -8,7 +8,7 @@
 #include <optional>
 #include "util/raii.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 enum class KittyAction : uint8_t {
     Transmit = 't',
@@ -91,4 +91,4 @@ private:
     std::vector<KittyPlacement> placements_;
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

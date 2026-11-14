@@ -7,11 +7,11 @@
 #include <array>
 #include "util/raii.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 class SixelDecoder final {
 public:
     static std::optional<util::PixmanImage> decode(std::string_view sixel_stream);
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

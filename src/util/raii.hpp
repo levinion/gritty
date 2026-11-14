@@ -7,7 +7,7 @@
 #include FT_FREETYPE_H
 #include <harfbuzz/hb.h>
 
-namespace squirt::util {
+namespace gritty::util {
 
 // RAII wrapper for POSIX file descriptors
 class UniqueFd {
@@ -364,4 +364,4 @@ private:
     hb_buffer_t* buf_;
 };
 
-} // namespace squirt::util
+} // namespace gritty::util

@@ -2,7 +2,7 @@
 #include "core/terminal_engine.hpp"
 #include "core/vt_parser.hpp"
 
-using namespace squirt::core;
+using namespace gritty::core;
 
 TEST_CASE("VtParser basic text and cursor movement") {
     TerminalEngine engine(80, 24);

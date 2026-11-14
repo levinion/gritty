@@ -2,7 +2,7 @@
 #include <utf8proc.h>
 #include <algorithm>
 
-namespace squirt::core {
+namespace gritty::core {
 
 namespace {
 
@@ -452,4 +452,4 @@ void TerminalEngine::set_current_hyperlink(std::string_view url) {
     current_hyperlink_id_ = get_or_create_hyperlink_id(url);
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

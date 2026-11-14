@@ -1,9 +1,9 @@
-# Squirt Terminal Configuration
+# Gritty Terminal Configuration
 
 [main]
 shell = ""
 term = "xterm-256color"
-title = "Squirt"
+title = "Gritty"
 
 [font]
 family = "Monaco"

@@ -6,7 +6,7 @@
 #include "input/input_events.hpp"
 #include "render/font_engine.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 class IOverlay {
 public:
@@ -80,4 +80,4 @@ private:
     std::vector<UrlHint> hints_;
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

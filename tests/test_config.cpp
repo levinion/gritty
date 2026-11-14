@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 #include "config/toml_loader.hpp"
 
-using namespace squirt::config;
+using namespace gritty::config;
 
 TEST_CASE("TomlLoader parse basic config and hex colors") {
     std::string toml_str = R"(
@@ -38,9 +38,9 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
     CHECK(cfg->font.family == "CustomFont");
     CHECK(cfg->font.size == 15.5);
     CHECK(cfg->font.dpi == 144);
-    CHECK(cfg->font.antialias == squirt::render::AntialiasMode::SubpixelLcd);
+    CHECK(cfg->font.antialias == gritty::render::AntialiasMode::SubpixelLcd);
 
-    CHECK(cfg->cursor.style == squirt::core::CursorShape::Beam);
+    CHECK(cfg->cursor.style == gritty::core::CursorShape::Beam);
     CHECK(cfg->cursor.blink == true);
     CHECK(cfg->cursor.color == 0xFFFF5500);
 

@@ -8,12 +8,12 @@
 #include "core/terminal_engine.hpp"
 #include "render/font_engine.hpp"
 
-namespace squirt::config {
+namespace gritty::config {
 
 struct MainConfig {
     std::string shell;
     std::string term{"xterm-256color"};
-    std::string title{"Squirt"};
+    std::string title{"Gritty"};
 };
 
 struct FontConfig {
@@ -71,4 +71,4 @@ private:
     std::shared_ptr<const AppConfig> config_;
 };
 
-} // namespace squirt::config
+} // namespace gritty::config

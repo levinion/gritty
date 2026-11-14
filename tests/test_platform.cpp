@@ -10,11 +10,11 @@
 #include "platform/macos/kqueue_loop.hpp"
 #endif
 
-using namespace squirt::input;
-using namespace squirt::platform;
+using namespace gritty::input;
+using namespace gritty::platform;
 
 TEST_CASE("InputMapper legacy key translation") {
-    squirt::core::TerminalEngine engine(80, 24);
+    gritty::core::TerminalEngine engine(80, 24);
 
     // Up arrow normal
     KeyEvent ev_up{.key = KeyCode::Up};
@@ -39,7 +39,7 @@ TEST_CASE("InputMapper legacy key translation") {
 }
 
 TEST_CASE("InputMapper Kitty Keyboard Protocol (CSI u)") {
-    squirt::core::TerminalEngine engine(80, 24);
+    gritty::core::TerminalEngine engine(80, 24);
     // Push flag 1 (disambiguate)
     engine.push_kitty_keyboard_flags(1);
 
@@ -55,9 +55,9 @@ TEST_CASE("InputMapper Kitty Keyboard Protocol (CSI u)") {
 }
 
 TEST_CASE("InputMapper SGR Mouse reporting") {
-    squirt::core::TerminalEngine engine(80, 24);
-    engine.set_mouse_tracking(squirt::core::MouseTrackingMode::Normal);
-    engine.set_mouse_format(squirt::core::MouseFormat::Sgr);
+    gritty::core::TerminalEngine engine(80, 24);
+    engine.set_mouse_tracking(gritty::core::MouseTrackingMode::Normal);
+    engine.set_mouse_format(gritty::core::MouseFormat::Sgr);
 
     // Left click at col 10, row 5
     MouseEvent ev_click{

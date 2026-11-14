@@ -29,24 +29,24 @@ core_sources = files(
   'input/input_mapper.cpp',
 ) + platform_sources
 
-squirt_core_lib = static_library('squirt_core',
+gritty_core_lib = static_library('gritty_core',
   core_sources,
   include_directories: inc_dir,
   dependencies: [common_deps, platform_deps],
 )
 
-squirt_core_dep = declare_dependency(
-  link_with: squirt_core_lib,
+gritty_core_dep = declare_dependency(
+  link_with: gritty_core_lib,
   include_directories: inc_dir,
   dependencies: [common_deps, platform_deps],
 )
 
-squirt_sources = files(
+gritty_sources = files(
   'main.cpp',
 )
 
-squirt_exe = executable('squirt',
-  squirt_sources,
-  dependencies: [squirt_core_dep],
+gritty_exe = executable('gritty',
+  gritty_sources,
+  dependencies: [gritty_core_dep],
   install: true,
 )

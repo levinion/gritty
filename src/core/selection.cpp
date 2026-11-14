@@ -1,7 +1,7 @@
 #include "core/selection.hpp"
 #include <utf8proc.h>
 
-namespace squirt::core {
+namespace gritty::core {
 
 namespace {
 
@@ -53,4 +53,4 @@ std::string SelectionController::extract_text(const ScreenGrid& grid) const {
     return result;
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

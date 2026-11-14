@@ -7,7 +7,7 @@
 #include <algorithm>
 #include "util/ring_buffer.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 enum class ColorType : uint8_t {
     Default = 0,
@@ -182,4 +182,4 @@ private:
     std::vector<std::vector<char32_t>> combining_table_;
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

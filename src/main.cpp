@@ -15,7 +15,7 @@
 #include "platform/macos/clipboard.hpp"
 #endif
 
-using namespace squirt;
+using namespace gritty;
 
 namespace {
 
@@ -33,12 +33,12 @@ void print_help(const char* prog) {
 std::string find_default_config() {
     const char* xdg = std::getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) {
-        std::string p = std::string(xdg) + "/squirt/config.toml";
+        std::string p = std::string(xdg) + "/gritty/config.toml";
         if (std::filesystem::exists(p)) return p;
     }
     const char* home = std::getenv("HOME");
     if (home && *home) {
-        std::string p = std::string(home) + "/.config/squirt/config.toml";
+        std::string p = std::string(home) + "/.config/gritty/config.toml";
         if (std::filesystem::exists(p)) return p;
     }
     return "";
@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
             print_help(argv[0]);
             return 0;
         } else if (arg == "-v" || arg == "--version") {
-            std::cout << "Squirt 0.1.0 (foot parity + Kitty protocols)\n";
+            std::cout << "Gritty 0.1.0 (foot parity + Kitty protocols)\n";
             return 0;
         } else if (arg == "-c" || arg == "--config") {
             if (++i < argc) config_path = argv[i];
@@ -148,7 +148,7 @@ int main(int argc, char* argv[]) {
 
     surf_ptr->show_window(cfg->main.title);
 
-    std::cout << "Squirt Terminal initialized successfully.\n";
+    std::cout << "Gritty Terminal initialized successfully.\n";
     std::cout << "Using font: " << resolved_font_path << " (" << cfg->font.size << "pt)\n";
 
     return 0;

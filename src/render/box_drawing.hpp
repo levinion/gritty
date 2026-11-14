@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <pixman.h>
 
-namespace squirt::render {
+namespace gritty::render {
 
 class BoxDrawingRenderer final {
 public:
@@ -24,4 +24,4 @@ public:
     ) noexcept;
 };
 
-} // namespace squirt::render
+} // namespace gritty::render

@@ -5,7 +5,7 @@
 #include <cstring>
 #include <charconv>
 
-namespace squirt::core {
+namespace gritty::core {
 
 namespace {
 
@@ -364,4 +364,4 @@ void KittyGraphicsEngine::clear() {
     current_memory_ = 0;
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

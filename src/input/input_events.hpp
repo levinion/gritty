@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-namespace squirt::input {
+namespace gritty::input {
 
 enum class KeyAction : uint8_t {
     Press,
@@ -86,4 +86,4 @@ struct MouseEvent {
     Modifiers mods{};
 };
 
-} // namespace squirt::input
+} // namespace gritty::input

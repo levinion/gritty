@@ -14,7 +14,7 @@
 #include <harfbuzz/hb-ft.h>
 #include "util/raii.hpp"
 
-namespace squirt::render {
+namespace gritty::render {
 
 enum class AntialiasMode : uint8_t {
     Grayscale,
@@ -108,4 +108,4 @@ private:
     std::unordered_map<GlyphKey, CachedGlyph, GlyphKeyHash> glyph_cache_;
 };
 
-} // namespace squirt::render
+} // namespace gritty::render

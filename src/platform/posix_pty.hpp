@@ -7,7 +7,7 @@
 #include <sys/types.h>
 #include "util/raii.hpp"
 
-namespace squirt::platform {
+namespace gritty::platform {
 
 struct PtySpawnOptions {
     std::string command; // Empty for default shell
@@ -50,4 +50,4 @@ private:
     pid_t child_pid_{-1};
 };
 
-} // namespace squirt::platform
+} // namespace gritty::platform

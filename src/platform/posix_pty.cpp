@@ -17,7 +17,7 @@
 #include <cstring>
 #include <cerrno>
 
-namespace squirt::platform {
+namespace gritty::platform {
 
 PosixPty::PosixPty() = default;
 
@@ -57,7 +57,7 @@ bool PosixPty::spawn(const PtySpawnOptions& options) {
         // Setup environment
         ::setenv("TERM", "xterm-256color", 1);
         ::setenv("COLORTERM", "truecolor", 1);
-        ::setenv("TERM_PROGRAM", "squirt", 1);
+        ::setenv("TERM_PROGRAM", "gritty", 1);
         ::setenv("TERM_PROGRAM_VERSION", "0.1.0", 1);
 
         for (const auto& e : options.env) {
@@ -161,4 +161,4 @@ void PosixPty::terminate() {
     master_fd_.reset();
 }
 
-} // namespace squirt::platform
+} // namespace gritty::platform

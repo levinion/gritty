@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <cerrno>
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 KqueueRunLoop::KqueueRunLoop() {
     int kq = ::kqueue();
@@ -116,4 +116,4 @@ void KqueueRunLoop::run() {
     }
 }
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 #include "core/kitty_graphics.hpp"
 
-using namespace squirt::core;
+using namespace gritty::core;
 
 TEST_CASE("KittyGraphicsEngine query and delete actions") {
     KittyGraphicsEngine engine;

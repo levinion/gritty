@@ -1,5 +1,5 @@
 {
-  description = "Squirt - Fast, CPU-rendered terminal emulator in Modern C++";
+  description = "Gritty - Fast, CPU-rendered terminal emulator in Modern C++";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -47,7 +47,7 @@
 
       packages = forAllSystems (pkgs: {
         default = pkgs.stdenv.mkDerivation {
-          pname = "squirt";
+          pname = "gritty";
           version = "0.1.0";
           src = ./.;
 

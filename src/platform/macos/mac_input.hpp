@@ -8,7 +8,7 @@
 class NSEvent;
 #endif
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 class MacInput final {
 public:
@@ -17,4 +17,4 @@ public:
     static input::Modifiers translate_modifiers(unsigned long flags);
 };
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

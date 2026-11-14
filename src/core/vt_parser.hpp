@@ -7,7 +7,7 @@
 #include <functional>
 #include "core/terminal_engine.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 enum class ParserState : uint8_t {
     Ground,
@@ -99,4 +99,4 @@ private:
     uint32_t utf8_codepoint_{0};
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

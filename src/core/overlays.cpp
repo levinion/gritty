@@ -1,6 +1,6 @@
 #include "core/overlays.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 bool SearchOverlay::handle_key(const input::KeyEvent& ev) {
     if (!active_) return false;
@@ -137,4 +137,4 @@ void UrlOverlay::render(
     pixman_image_unref(solid_fg);
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

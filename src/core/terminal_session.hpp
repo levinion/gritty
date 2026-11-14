@@ -10,7 +10,7 @@
 #include "platform/pal_interfaces.hpp"
 #include "input/input_events.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 struct SessionConfig {
     std::string font_path;
@@ -63,4 +63,4 @@ private:
     std::string last_title_;
 };
 
-} // namespace squirt::core
+} // namespace gritty::core

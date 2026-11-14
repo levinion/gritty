@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 #include "core/sixel_decoder.hpp"
 
-using namespace squirt::core;
+using namespace gritty::core;
 
 TEST_CASE("SixelDecoder basic stream decode") {
     // Defines color 1 as Red (100% R, 0% G, 0% B), selects #1, draws 2 sixels of all 6 bits (~)

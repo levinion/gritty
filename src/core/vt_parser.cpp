@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace squirt::core {
+namespace gritty::core {
 
 VtParser::VtParser(TerminalEngine& engine) : engine_(engine) {
     reset();
@@ -646,4 +646,4 @@ void VtParser::handle_osc() {
     }
 }
 
-} // namespace squirt::core
+} // namespace gritty::core

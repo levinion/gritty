@@ -1,7 +1,7 @@
 #include "platform/macos/clipboard.hpp"
 #import <Cocoa/Cocoa.h>
 
-namespace squirt::platform::macos {
+namespace gritty::platform::macos {
 
 void PasteboardClipboard::copy_text(std::string_view text) {
     @autoreleasepool {
@@ -25,4 +25,4 @@ std::string PasteboardClipboard::paste_text() {
     }
 }
 
-} // namespace squirt::platform::macos
+} // namespace gritty::platform::macos

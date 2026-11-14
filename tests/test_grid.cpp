@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 #include "core/screen_grid.hpp"
 
-using namespace squirt::core;
+using namespace gritty::core;
 
 TEST_CASE("ScreenGrid initialization and cell access") {
     ScreenGrid grid(80, 24, 100);

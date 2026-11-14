@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <array>
 
-namespace squirt::render {
+namespace gritty::render {
 
 namespace {
 
@@ -293,4 +293,4 @@ bool BoxDrawingRenderer::render(
     return false;
 }
 
-} // namespace squirt::render
+} // namespace gritty::render

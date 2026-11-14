@@ -7,7 +7,7 @@
 #include "render/box_drawing.hpp"
 #include "util/raii.hpp"
 
-namespace squirt::render {
+namespace gritty::render {
 
 struct RenderConfig {
     uint32_t default_fg{0xffdddddd};
@@ -70,4 +70,4 @@ private:
     uint32_t current_solid_color_{0};
 };
 
-} // namespace squirt::render
+} // namespace gritty::render

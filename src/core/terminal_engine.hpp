@@ -8,7 +8,7 @@
 #include <memory>
 #include "core/screen_grid.hpp"
 
-namespace squirt::core {
+namespace gritty::core {
 
 enum class CursorShape : uint8_t {
     Block = 0,
@@ -233,4 +233,4 @@ private:
     std::vector<std::string> hyperlinks_;
 };
 
-} // namespace squirt::core
+} // namespace gritty::core
