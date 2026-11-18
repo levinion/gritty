@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <string_view>
+#include <span>
 #include <cstdint>
 #include "core/screen_grid.hpp"
 #include "core/kitty_graphics.hpp"
@@ -157,6 +158,9 @@ public:
     // Fast path for a run of printable single-width ASCII with no active
     // charset translation or insert mode. Falls back to print_char otherwise.
     void print_ascii_run(std::string_view ascii);
+    // Fast path for a run of common double-width CJK codepoints. Falls back
+    // to print_char() when charset translation or insert mode is active.
+    void print_wide_run(std::span<const char32_t> cps);
     void print_utf8(std::string_view utf8_str);
 
     // Editing operations

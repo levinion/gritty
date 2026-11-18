@@ -343,16 +343,16 @@ void TerminalSession::handle_pty_read() {
                     last_immediate_commit_ = now;
                 } else if (!coalesce_pending_) {
                     // A burst of tiny writes must not submit one surface per
-                    // packet; use the existing 1 ms coalescing window.
+                    // packet; use a 2 ms coalescing window.
                     coalesce_pending_ = true;
-                    loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 1, [this] {
+                    loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 2, [this] {
                         coalesce_pending_ = false;
                         render_frame(false);
                     });
                 }
             } else if (!coalesce_pending_) {
                 coalesce_pending_ = true;
-                loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 1, [this] {
+                loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 2, [this] {
                     coalesce_pending_ = false;
                     render_frame(false);
                 });

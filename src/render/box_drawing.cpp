@@ -1,6 +1,7 @@
 #include "render/box_drawing.hpp"
 #include <algorithm>
 #include <array>
+#include <cstdint>
 
 namespace gritty::render {
 
@@ -99,6 +100,36 @@ BoxSides decode_box_char(char32_t cp) noexcept {
     }
 }
 
+// Opaque a8r8g8b8 cells are the overwhelmingly common case for box drawing.
+// Pixman's 16-bit color channels convert to bytes by taking the high byte.
+bool fill_opaque_rect(pixman_image_t* dst, const pixman_color_t& color,
+                      int x, int y, int width, int height) noexcept {
+    if (!dst || pixman_image_get_format(dst) != PIXMAN_a8r8g8b8 ||
+        color.alpha != 0xffff || width <= 0 || height <= 0) return false;
+
+    const int image_w = pixman_image_get_width(dst);
+    const int image_h = pixman_image_get_height(dst);
+    x = std::max(x, 0);
+    y = std::max(y, 0);
+    width = std::min(width, image_w - x);
+    height = std::min(height, image_h - y);
+    if (width <= 0 || height <= 0) return false;
+
+    const uint32_t pixel = (static_cast<uint32_t>(color.alpha >> 8) << 24) |
+                           (static_cast<uint32_t>(color.red >> 8) << 16) |
+                           (static_cast<uint32_t>(color.green >> 8) << 8) |
+                           static_cast<uint32_t>(color.blue >> 8);
+    auto* data = reinterpret_cast<uint8_t*>(pixman_image_get_data(dst));
+    if (!data) return false;
+    const int stride = pixman_image_get_stride(dst);
+    for (int row = 0; row < height; ++row) {
+        auto* pixels = reinterpret_cast<uint32_t*>(data + static_cast<size_t>(y + row) * stride +
+                                                   static_cast<size_t>(x) * 4);
+        std::fill_n(pixels, static_cast<size_t>(width), pixel);
+    }
+    return true;
+}
+
 } // namespace
 
 bool BoxDrawingRenderer::render(
@@ -118,6 +149,7 @@ bool BoxDrawingRenderer::render(
         int num_rects = 0;
 
         if (cp == 0x2588) { // Full block
+            if (fill_opaque_rect(dst, color, cell_x, cell_y, cell_width, cell_height)) return true;
             rects[0] = {static_cast<int16_t>(cell_x), static_cast<int16_t>(cell_y),
                         static_cast<uint16_t>(cell_width), static_cast<uint16_t>(cell_height)};
             num_rects = 1;
@@ -233,6 +265,14 @@ bool BoxDrawingRenderer::render(
 
     int mid_x = cell_x + cell_width / 2;
     int mid_y = cell_y + cell_height / 2;
+
+    if (cp == 0x2500) {
+        const int t = light_thick;
+        if (fill_opaque_rect(dst, color, cell_x, mid_y - t / 2, cell_width, t)) return true;
+    } else if (cp == 0x2502) {
+        const int t = light_thick;
+        if (fill_opaque_rect(dst, color, mid_x - t / 2, cell_y, t, cell_height)) return true;
+    }
 
     pixman_rectangle16_t rects[8];
     int num_rects = 0;

@@ -7,7 +7,7 @@
 namespace gritty::render {
 namespace {
 constexpr size_t non_ascii_l1_slot(char32_t cp) noexcept {
-    return static_cast<size_t>((static_cast<uint32_t>(cp) * 2654435761u) >> 22) & 0x3ffu;
+    return static_cast<size_t>((static_cast<uint32_t>(cp) * 2654435761u) >> 20) & 0xfffu;
 }
 } // namespace
 

@@ -365,6 +365,140 @@ void TerminalEngine::print_ascii_run(std::string_view ascii) {
     }
 }
 
+void TerminalEngine::print_wide_run(std::span<const char32_t> cps) {
+    if (cps.empty()) return;
+    if (graphic_charsets_[selected_charset_] || insert_mode_) {
+        for (const char32_t cp : cps) print_char(cp);
+        return;
+    }
+
+    const uint16_t extra_idx = active_grid_->intern_cell_extra(CellExtra{
+        .combining_idx = 0,
+        .underline_color = current_underline_color_,
+        .hyperlink_id = current_hyperlink_id_,
+    });
+
+    size_t i = 0;
+    while (i < cps.size()) {
+        if (wrap_next_) {
+            if (auto_wrap_) {
+                active_grid_->row(cursor_.row).wrapped = true;
+                cursor_.col = 0;
+                line_feed();
+            } else {
+                cursor_.col = cols_ - 1;
+            }
+            wrap_next_ = false;
+        }
+
+        const int remaining = cols_ - cursor_.col;
+        if (remaining <= 0) {
+            if (auto_wrap_) {
+                active_grid_->row(cursor_.row).wrapped = true;
+                cursor_.col = 0;
+                line_feed();
+            } else {
+                cursor_.col = cols_ - 1;
+            }
+            continue;
+        }
+
+        auto& row = active_grid_->row(cursor_.row);
+        auto* cells = row.cells.data();
+        int dirty_min = cols_, dirty_max = -1;
+        const int slots = remaining / 2;
+        size_t written = 0;
+        for (; written < static_cast<size_t>(slots) && i < cps.size(); ++written, ++i) {
+            const int col = cursor_.col + static_cast<int>(written) * 2;
+            CellAttributes leader_attrs = current_attrs_;
+            leader_attrs.width = 2;
+            Cell leader;
+            leader.codepoint = cps[i];
+            leader.fg = current_fg_;
+            leader.bg = current_bg_;
+            leader.attrs = leader_attrs;
+            leader.extra_idx = extra_idx;
+            if (cells[col] != leader) {
+                cells[col] = leader;
+                dirty_min = std::min(dirty_min, col);
+                dirty_max = std::max(dirty_max, col);
+            }
+
+            CellAttributes cont_attrs = current_attrs_;
+            cont_attrs.width = 0;
+            Cell cont;
+            cont.codepoint = 0;
+            cont.fg = current_fg_;
+            cont.bg = current_bg_;
+            cont.attrs = cont_attrs;
+            if (cells[col + 1] != cont) {
+                cells[col + 1] = cont;
+                dirty_min = std::min(dirty_min, col + 1);
+                dirty_max = std::max(dirty_max, col + 1);
+            }
+            last_printed_ = cps[i];
+        }
+        if (dirty_max >= dirty_min) row.mark_dirty_range(dirty_min, dirty_max);
+
+        cursor_.col += static_cast<int>(written) * 2;
+        if (cursor_.col >= cols_) {
+            cursor_.col = cols_ - 1;
+            if (auto_wrap_) wrap_next_ = true;
+        }
+        if (i >= cps.size()) break;
+        if (written != 0) continue;
+
+        // Only the final odd column is left. print_char() writes a lone wide
+        // leader there when wrapping is disabled; with auto-wrap it moves to
+        // the next row instead (two columns never fit in one cell).
+        const int col = cols_ - 1;
+        if (!auto_wrap_) {
+            CellAttributes attrs = current_attrs_;
+            attrs.width = 2;
+            Cell leader;
+            leader.codepoint = cps[i];
+            leader.fg = current_fg_;
+            leader.bg = current_bg_;
+            leader.attrs = attrs;
+            leader.extra_idx = extra_idx;
+            if (cells[col] != leader) {
+                cells[col] = leader;
+                row.mark_dirty(col);
+            }
+            last_printed_ = cps[i++];
+            cursor_.col = cols_ - 1;
+            continue;
+        }
+        if (cols_ == 1) {
+            // print_char() also wraps a double-width codepoint that starts on
+            // the final column, even when that column is the entire row.
+            row.wrapped = true;
+            cursor_.col = 0;
+            line_feed();
+            auto& narrow_row = active_grid_->row(cursor_.row);
+            CellAttributes attrs = current_attrs_;
+            attrs.width = 2;
+            Cell leader;
+            leader.codepoint = cps[i];
+            leader.fg = current_fg_;
+            leader.bg = current_bg_;
+            leader.attrs = attrs;
+            leader.extra_idx = extra_idx;
+            if (narrow_row.cells[0] != leader) {
+                narrow_row.cells[0] = leader;
+                narrow_row.mark_dirty(0);
+            }
+            last_printed_ = cps[i++];
+            cursor_.col = 0;
+            wrap_next_ = true;
+            continue;
+        }
+        row.wrapped = true;
+        cursor_.col = 0;
+        line_feed();
+    }
+}
+
 void TerminalEngine::print_utf8(std::string_view utf8_str) {
     const uint8_t* ptr = reinterpret_cast<const uint8_t*>(utf8_str.data());
     size_t len = utf8_str.size();

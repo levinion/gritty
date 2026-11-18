@@ -214,10 +214,10 @@ private:
         GlyphKey key{};
     };
     mutable AsciiGlyphSlot ascii_glyph_table_[4][95]{};
-    // 1024-slot direct-mapped L1 for non-ASCII codepoints. The folded index can
+    // 4096-slot direct-mapped L1 for non-ASCII codepoints. The folded index can
     // collide, so parallel tags validate the cached pointer.
-    mutable const CachedGlyph* non_ascii_l1_[4][1024]{};
-    mutable char32_t non_ascii_l1_cp_[4][1024]{};
+    mutable const CachedGlyph* non_ascii_l1_[4][4096]{};
+    mutable char32_t non_ascii_l1_cp_[4][4096]{};
 };
 
 } // namespace gritty::render

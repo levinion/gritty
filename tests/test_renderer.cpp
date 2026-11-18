@@ -2,6 +2,7 @@
 #include "font_fixture.hpp"
 #include <png.h>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include <filesystem>
 #include "core/terminal_engine.hpp"
@@ -88,6 +89,35 @@ TEST_CASE("BoxDrawingRenderer block elements") {
     CHECK(pixels[(h / 2) * w + (w / 2)] == 0xFFFFFFFF);
     // Bottom-right pixel should be white
     CHECK(pixels[(h - 1) * w + (w - 1)] == 0xFFFFFFFF);
+
+    // Thin line fast fills must stay pixel-identical to Pixman rectangles,
+    // including non-white premultiplied colors.
+    const int fw = 16, fh = 24;
+    gritty::util::PixmanImage direct(pixman_image_create_bits(PIXMAN_a8r8g8b8, fw, fh, nullptr, fw * 4));
+    gritty::util::PixmanImage reference(pixman_image_create_bits(PIXMAN_a8r8g8b8, fw, fh, nullptr, fw * 4));
+    REQUIRE(direct.valid());
+    REQUIRE(reference.valid());
+    const pixman_rectangle16_t full = {0, 0, static_cast<uint16_t>(fw), static_cast<uint16_t>(fh)};
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, direct.get(), &black, 1, &full);
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, reference.get(), &black, 1, &full);
+    const pixman_color_t tint = {0x8000, 0x4000, 0x00ff, 0xffff};
+    const int thick = std::max(1, fh / 12);
+
+    REQUIRE(BoxDrawingRenderer::render(direct.get(), 0x2500, 0, 0, fw, fh, tint));
+    const pixman_rectangle16_t horizontal = {
+        0, static_cast<int16_t>(fh / 2 - thick / 2),
+        static_cast<uint16_t>(fw), static_cast<uint16_t>(thick)};
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, reference.get(), &tint, 1, &horizontal);
+    CHECK(std::memcmp(direct.data(), reference.data(), static_cast<size_t>(fw * fh) * 4) == 0);
+
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, direct.get(), &black, 1, &full);
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, reference.get(), &black, 1, &full);
+    REQUIRE(BoxDrawingRenderer::render(direct.get(), 0x2502, 0, 0, fw, fh, tint));
+    const pixman_rectangle16_t vertical = {
+        static_cast<int16_t>(fw / 2 - thick / 2), 0,
+        static_cast<uint16_t>(thick), static_cast<uint16_t>(fh)};
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, reference.get(), &tint, 1, &vertical);
+    CHECK(std::memcmp(direct.data(), reference.data(), static_cast<size_t>(fw * fh) * 4) == 0);
 }
 
 TEST_CASE("BoxDrawingRenderer half blocks") {

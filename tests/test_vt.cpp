@@ -46,6 +46,36 @@ TEST_CASE("VtParser UTF-8 multibyte and wide characters") {
     CHECK(engine.grid().cell(3, 0).attrs.width == 0);
     // Cursor advanced by 4 columns
     CHECK(engine.cursor_col() == 4);
+
+    // Bulk path must match print_char() byte-for-byte, including the odd
+    // trailing column wrap on a 7-column screen.
+    TerminalEngine fast(7, 3), slow(7, 3);
+    const char32_t run[] = {U'一', U'二', U'三', U'四', U'五'};
+    fast.print_wide_run(run);
+    for (const char32_t cp : run) slow.print_char(cp);
+    CHECK(fast.cursor_col() == slow.cursor_col());
+    CHECK(fast.cursor_row() == slow.cursor_row());
+    CHECK(fast.grid().row(0).wrapped == slow.grid().row(0).wrapped);
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 7; ++x)
+            CHECK(fast.grid().cell(x, y) == slow.grid().cell(x, y));
+
+    TerminalEngine parsed(16, 2);
+    VtParser bulk_parser(parsed);
+    bulk_parser.feed("一二三四");
+    CHECK(parsed.cursor_col() == 8);
+    CHECK(parsed.grid().cell(0, 0).codepoint == U'一');
+    CHECK(parsed.grid().cell(6, 0).codepoint == U'四');
+    CHECK(parsed.grid().cell(7, 0).attrs.width == 0);
+
+    TerminalEngine narrow_fast(1, 2), narrow_slow(1, 2);
+    const char32_t narrow_run[] = {U'一', U'二', U'三', U'四'};
+    narrow_fast.print_wide_run(narrow_run);
+    for (const char32_t cp : narrow_run) narrow_slow.print_char(cp);
+    CHECK(narrow_fast.cursor_col() == narrow_slow.cursor_col());
+    CHECK(narrow_fast.cursor_row() == narrow_slow.cursor_row());
+    for (int y = 0; y < 2; ++y)
+        CHECK(narrow_fast.grid().cell(0, y) == narrow_slow.grid().cell(0, y));
 }
 
 TEST_CASE("VtParser SGR styling and colors") {

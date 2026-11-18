@@ -1,6 +1,8 @@
 #include "core/vt_parser.hpp"
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <span>
 #if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
 #endif
@@ -47,6 +49,36 @@ size_t printable_ascii_run(const uint8_t* data, size_t length) {
     }
     while (i < length && data[i] >= 0x20 && data[i] <= 0x7e) ++i;
     return i;
+}
+
+// Codepoints eligible for the bulk wide-character path. These are the common
+// three-byte CJK ranges; everything else keeps the exact print_char() path.
+bool common_wide_run_char(char32_t cp) noexcept {
+    if (cp == 0x3099 || cp == 0x309a) return false;
+    return (cp >= 0x4e00 && cp <= 0x9fff) ||
+           (cp >= 0x3040 && cp <= 0x30ff) ||
+           (cp >= 0xac00 && cp <= 0xd7af);
+}
+
+struct WideRun {
+    size_t bytes{0};
+    size_t count{0};
+};
+
+WideRun common_wide_run(const uint8_t* data, size_t length, char32_t* out, size_t capacity) noexcept {
+    WideRun result;
+    while (result.count < capacity && length - result.bytes >= 3) {
+        const uint8_t* p = data + result.bytes;
+        if (p[0] < 0xe0 || p[0] > 0xef ||
+            (p[1] & 0xc0) != 0x80 || (p[2] & 0xc0) != 0x80) break;
+        const char32_t cp = ((static_cast<char32_t>(p[0] & 0x0f) << 12) |
+                             (static_cast<char32_t>(p[1] & 0x3f) << 6) |
+                             static_cast<char32_t>(p[2] & 0x3f));
+        if (!common_wide_run_char(cp)) break;
+        out[result.count++] = cp;
+        result.bytes += 3;
+    }
+    return result;
 }
 
 // Returns the length of a payload run containing no terminal control byte.
@@ -189,6 +221,17 @@ void VtParser::feed(const uint8_t* data, size_t length) {
                 }
             }
             if (complete) continue;
+        }
+
+        if (state_ == ParserState::Ground && utf8_state_ == 0 &&
+            length - i >= 12) { // Four three-byte codepoints.
+            std::array<char32_t, 32> wide{};
+            const auto run = common_wide_run(data + i, length - i, wide.data(), wide.size());
+            if (run.count >= 4) {
+                engine_.print_wide_run(std::span<const char32_t>(wide.data(), run.count));
+                i += run.bytes;
+                continue;
+            }
         }
 
         if (state_ == ParserState::Ground && utf8_state_ == 0 && data[i] >= 0x80) {
