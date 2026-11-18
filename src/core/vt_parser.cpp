@@ -177,10 +177,7 @@ void VtParser::feed(const uint8_t* data, size_t length) {
             size_t j = i + 2;
             const uint8_t lead = data[j];
             if (lead >= '<' && lead <= '?') {
-                is_private_ = lead == '?';
-                has_greater_ = lead == '>';
-                has_less_ = lead == '<';
-                has_equal_ = lead == '=';
+                set_csi_prefix(lead);
                 ++j;
             }
 
@@ -188,25 +185,10 @@ void VtParser::feed(const uint8_t* data, size_t length) {
             while (j < length) {
                 const uint8_t byte = data[j];
                 if (byte >= '0' && byte <= '9') {
-                    if (current_param_idx_ >= 32) break;
-                    ensure_csi_param(current_param_idx_);
-                    int& value = current_subparam_idx_ >= 0
-                        ? params_[current_param_idx_].subparams[current_subparam_idx_]
-                        : params_[current_param_idx_].value;
-                    value = std::min(65535, std::max(0, value) * 10 + byte - '0');
-                    param_count_ = current_param_idx_ + 1;
+                    append_csi_digit(byte);
                     ++j;
-                } else if (byte == ';') {
-                    if (++current_param_idx_ >= 32) break;
-                    ensure_csi_param(current_param_idx_);
-                    current_subparam_idx_ = -1;
-                    param_count_ = current_param_idx_ + 1;
-                    ++j;
-                } else if (byte == ':') {
-                    ensure_csi_param(current_param_idx_);
-                    if (++current_subparam_idx_ >= 8) break;
-                    params_[current_param_idx_].subparam_count = current_subparam_idx_ + 1;
-                    param_count_ = current_param_idx_ + 1;
+                } else if (byte == ';' || byte == ':') {
+                    if (!advance_csi_param(byte)) break;
                     ++j;
                 } else if (byte >= 0x40 && byte <= 0x7e) {
                     handle_csi(byte);
@@ -481,10 +463,7 @@ void VtParser::handle_escape(uint8_t byte) {
 
 void VtParser::parse_csi_param_byte(uint8_t byte) {
     if (state_ == ParserState::CsiEntry && byte >= '<' && byte <= '?') {
-        is_private_ = byte == '?';
-        has_greater_ = byte == '>';
-        has_less_ = byte == '<';
-        has_equal_ = byte == '=';
+        set_csi_prefix(byte);
         state_ = ParserState::CsiParam;
         return;
     }
@@ -501,25 +480,7 @@ void VtParser::parse_csi_param_byte(uint8_t byte) {
     }
     if (state_ == ParserState::CsiIntermediate) { state_ = ParserState::CsiIgnore; return; }
     state_ = ParserState::CsiParam;
-    if (byte >= '0' && byte <= '9') {
-        ensure_csi_param(current_param_idx_);
-        int& value = current_subparam_idx_ >= 0
-            ? params_[current_param_idx_].subparams[current_subparam_idx_]
-            : params_[current_param_idx_].value;
-        // Saturate before multiplication to avoid signed overflow and unbounded work.
-        value = std::min(65535, std::max(0, value) * 10 + byte - '0');
-        param_count_ = current_param_idx_ + 1;
-    } else if (byte == ';') {
-        if (++current_param_idx_ >= 32) { state_ = ParserState::CsiIgnore; return; }
-        ensure_csi_param(current_param_idx_);
-        current_subparam_idx_ = -1;
-        param_count_ = current_param_idx_ + 1;
-    } else if (byte == ':') {
-        ensure_csi_param(current_param_idx_);
-        if (++current_subparam_idx_ >= 8) { state_ = ParserState::CsiIgnore; return; }
-        params_[current_param_idx_].subparam_count = current_subparam_idx_ + 1;
-        param_count_ = current_param_idx_ + 1;
-    } else state_ = ParserState::CsiIgnore;
+    if (!consume_csi_param_byte(byte)) state_ = ParserState::CsiIgnore;
 }
 
 } // namespace gritty::core

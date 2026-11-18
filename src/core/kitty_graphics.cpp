@@ -1,6 +1,5 @@
 #include "core/kitty_graphics.hpp"
 #include <png.h>
-#include "core/kitty_placeholder.hpp"
 #include <zlib.h>
 #include <algorithm>
 #include <charconv>
@@ -12,6 +11,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include "util/base64.hpp"
 #include "util/mapped_buffer.hpp"
 
 namespace gritty::core {
@@ -79,46 +79,6 @@ bool path_is_under(const std::filesystem::path& path, const std::filesystem::pat
 
 KittyGraphicsEngine::KittyGraphicsEngine(size_t max_memory_bytes)
     : max_memory_(max_memory_bytes) {}
-
-std::vector<uint8_t> KittyGraphicsEngine::decode_base64(std::string_view input) {
-    static const int8_t b64_table[256] = {
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
-        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
-        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
-        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
-    };
-
-    std::vector<uint8_t> out;
-    out.reserve((input.size() * 3) / 4);
-
-    uint32_t val = 0;
-    int valb = -8;
-    for (char c : input) {
-        if (c == '\r' || c == '\n' || c == ' ') continue;
-        if (c == '=') break;
-        int d = b64_table[static_cast<uint8_t>(c)];
-        if (d < 0) continue;
-        val = (val << 6) | d;
-        valb += 6;
-        if (valb >= 0) {
-            out.push_back(static_cast<uint8_t>((val >> valb) & 0xFF));
-            valb -= 8;
-        }
-    }
-    return out;
-}
 
 std::optional<util::PixmanImage> KittyGraphicsEngine::decode_image(
     std::span<const uint8_t> raw_data,
@@ -247,45 +207,38 @@ std::optional<util::PixmanImage> KittyGraphicsEngine::decode_image(
     return std::nullopt;
 }
 
-std::string KittyGraphicsEngine::process_apc_sequence(
-    std::string_view payload,
-    int cursor_col,
-    int cursor_row
+KittyGraphicsEngine::KittyRequest KittyGraphicsEngine::parse_control(
+    std::string_view control_part,
+    const PendingChunkTransmission& pending
 ) {
-    if (!payload.starts_with('G')) return "";
-    payload.remove_prefix(1);
-
-    size_t semicolon = payload.find(';');
-    std::string_view control_part = (semicolon != std::string::npos) ? payload.substr(0, semicolon) : payload;
-    std::string_view data_part = (semicolon != std::string::npos) ? payload.substr(semicolon + 1) : "";
-
-    KittyAction action = pending_chunk_.in_progress ? pending_chunk_.action : KittyAction::TransmitAndDisplay;
-    KittyMedium medium = pending_chunk_.in_progress ? pending_chunk_.medium : KittyMedium::Direct;
-    KittyFormat format = pending_chunk_.in_progress ? pending_chunk_.format : KittyFormat::Rgba;
-    bool compressed = pending_chunk_.in_progress ? pending_chunk_.compressed : false;
-    uint32_t image_id = pending_chunk_.in_progress ? pending_chunk_.image_id : 0;
-    bool has_image_id = pending_chunk_.in_progress;
-    uint32_t placement_id = pending_chunk_.in_progress ? pending_chunk_.placement_id : 0;
-    int width = pending_chunk_.in_progress ? pending_chunk_.width : 0;
-    int height = pending_chunk_.in_progress ? pending_chunk_.height : 0;
-    int cols = pending_chunk_.in_progress ? pending_chunk_.cols : 0;
-    int rows = pending_chunk_.in_progress ? pending_chunk_.rows : 0;
-    int z_index = pending_chunk_.in_progress ? pending_chunk_.z_index : 0;
-    int unicode_placeholder = pending_chunk_.in_progress ? pending_chunk_.unicode_placeholder : 0;
-    int quiet = pending_chunk_.in_progress ? pending_chunk_.quiet : 0;
-    int cursor_policy = pending_chunk_.in_progress ? pending_chunk_.cursor_policy : 1;
-    char delete_target = pending_chunk_.in_progress ? pending_chunk_.delete_target : 'a';
-    int src_x = pending_chunk_.in_progress ? pending_chunk_.src_x : 0;
-    int src_y = pending_chunk_.in_progress ? pending_chunk_.src_y : 0;
-    int src_w = pending_chunk_.in_progress ? pending_chunk_.src_w : 0;
-    int src_h = pending_chunk_.in_progress ? pending_chunk_.src_h : 0;
-    char feature = 0;
-    int more_data = 0;
+    KittyRequest request;
+    if (pending.in_progress) {
+        request.action = pending.action;
+        request.medium = pending.medium;
+        request.format = pending.format;
+        request.compressed = pending.compressed;
+        request.image_id = pending.image_id;
+        request.has_image_id = true;
+        request.placement_id = pending.placement_id;
+        request.width = pending.width;
+        request.height = pending.height;
+        request.cols = pending.cols;
+        request.rows = pending.rows;
+        request.z_index = pending.z_index;
+        request.unicode_placeholder = pending.unicode_placeholder;
+        request.quiet = pending.quiet;
+        request.cursor_policy = pending.cursor_policy;
+        request.delete_target = pending.delete_target;
+        request.src_x = pending.src_x;
+        request.src_y = pending.src_y;
+        request.src_w = pending.src_w;
+        request.src_h = pending.src_h;
+    }
 
     size_t pos = 0;
     while (pos < control_part.size()) {
-        size_t next_comma = control_part.find(',', pos);
-        std::string_view kv = (next_comma != std::string::npos)
+        const size_t next_comma = control_part.find(',', pos);
+        const std::string_view kv = (next_comma != std::string::npos)
             ? control_part.substr(pos, next_comma - pos)
             : control_part.substr(pos);
         const size_t eq = kv.find('=');
@@ -295,111 +248,212 @@ std::string KittyGraphicsEngine::process_apc_sequence(
             int int_val = 0;
             std::from_chars(val.data(), val.data() + val.size(), int_val);
             switch (key) {
-                case 'a': if (!val.empty()) action = static_cast<KittyAction>(val[0]); break;
-                case 'f': format = static_cast<KittyFormat>(int_val); break;
-                case 'o': compressed = (val == "z"); break;
-                case 'i': image_id = static_cast<uint32_t>(int_val); has_image_id = true; break;
-                case 'p': placement_id = static_cast<uint32_t>(int_val); break;
-                case 's': width = int_val; break;
-                case 'v': height = int_val; break;
-                case 'c': cols = int_val; break;
-                case 'r': rows = int_val; break;
-                case 'z': z_index = int_val; break;
-                case 'm': more_data = int_val; break;
-                case 'U': unicode_placeholder = int_val; break;
-                case 'q': quiet = int_val; break;
-                case 'e': feature = val.empty() ? 0 : val[0]; break;
-                case 'C': cursor_policy = int_val; break;
-                case 't': if (!val.empty()) medium = static_cast<KittyMedium>(val[0]); break;
-                case 'd': if (!val.empty()) delete_target = val[0]; break;
-                case 'x': src_x = int_val; break;
-                case 'y': src_y = int_val; break;
-                case 'w': src_w = int_val; break;
-                case 'h': src_h = int_val; break;
+                case 'a': if (!val.empty()) request.action = static_cast<KittyAction>(val[0]); break;
+                case 'f': request.format = static_cast<KittyFormat>(int_val); break;
+                case 'o': request.compressed = (val == "z"); break;
+                case 'i': request.image_id = static_cast<uint32_t>(int_val); request.has_image_id = true; break;
+                case 'p': request.placement_id = static_cast<uint32_t>(int_val); break;
+                case 's': request.width = int_val; break;
+                case 'v': request.height = int_val; break;
+                case 'c': request.cols = int_val; break;
+                case 'r': request.rows = int_val; break;
+                case 'z': request.z_index = int_val; break;
+                case 'm': request.more_data = int_val; break;
+                case 'U': request.unicode_placeholder = int_val; break;
+                case 'q': request.quiet = int_val; break;
+                case 'e': request.feature = val.empty() ? 0 : val[0]; break;
+                case 'C': request.cursor_policy = int_val; break;
+                case 't': if (!val.empty()) request.medium = static_cast<KittyMedium>(val[0]); break;
+                case 'd': if (!val.empty()) request.delete_target = val[0]; break;
+                case 'x': request.src_x = int_val; break;
+                case 'y': request.src_y = int_val; break;
+                case 'w': request.src_w = int_val; break;
+                case 'h': request.src_h = int_val; break;
                 default: break;
             }
         }
         if (next_comma == std::string::npos) break;
         pos = next_comma + 1;
     }
+    return request;
+}
 
-    auto reply = [&](std::string_view status) {
-        if (quiet >= 2) return std::string{};
-        if (quiet >= 1 && status == "OK") return std::string{};
-        return "\x1b_Gi=" + std::to_string(image_id) + ";" + std::string(status) + "\x1b\\";
-    };
+bool KittyGraphicsEngine::handle_delete(
+    const KittyRequest& request, int cursor_col, int cursor_row
+) {
+    if (request.action != KittyAction::Delete) return false;
 
     // Delete must happen before auto-id allocation: a=d without i= targets all
     // visible placements (or the requested d= class), not a newly minted image.
-    if (action == KittyAction::Delete) {
-        if (delete_target == 'i' || delete_target == 'I') {
-            if (has_image_id) delete_image(image_id);
-        } else if (delete_target == 'p' || delete_target == 'P') {
-            if (has_image_id) {
-                if (delete_target == 'P') delete_image(image_id);
-                else delete_placements(KittyPlacement{.image_id = image_id, .placement_id = placement_id});
-            }
-        } else if (delete_target == 'c' || delete_target == 'C') {
-            std::vector<uint32_t> affected;
-            for (const auto& p : placements_)
-                if (cursor_col >= p.col && cursor_col < p.col + p.cols &&
-                    cursor_row >= p.row && cursor_row < p.row + p.rows)
-                    affected.push_back(p.image_id);
-            delete_placements_at(cursor_col, cursor_row);
-            if (delete_target == 'C') for (const auto id : affected) delete_image(id);
-        } else if (has_image_id && delete_target == 'a') {
-            // a=d,i=N uses the default d=a but explicitly names an image.
-            delete_image(image_id);
-        } else if (delete_target == 'z' || delete_target == 'Z') {
-            std::vector<uint32_t> affected;
-            for (const auto& p : placements_) if (p.z_index == z_index) affected.push_back(p.image_id);
-            delete_placements_by_z(z_index);
-            if (delete_target == 'Z') for (const auto id : affected) delete_image(id);
-        } else { // a/A: all visible placements.
-            std::vector<uint32_t> affected;
-            for (const auto& p : placements_) affected.push_back(p.image_id);
-            clear_placements();
-            if (delete_target == 'A') for (const auto id : affected) delete_image(id);
+    if (request.delete_target == 'i' || request.delete_target == 'I') {
+        if (request.has_image_id) delete_image(request.image_id);
+    } else if (request.delete_target == 'p' || request.delete_target == 'P') {
+        if (request.has_image_id) {
+            if (request.delete_target == 'P') delete_image(request.image_id);
+            else delete_placements(KittyPlacement{.image_id = request.image_id,
+                                                  .placement_id = request.placement_id});
         }
-        return reply("OK");
+    } else if (request.delete_target == 'c' || request.delete_target == 'C') {
+        std::vector<uint32_t> affected;
+        for (const auto& p : placements_) {
+            if (cursor_col >= p.col && cursor_col < p.col + p.cols &&
+                cursor_row >= p.row && cursor_row < p.row + p.rows)
+                affected.push_back(p.image_id);
+        }
+        delete_placements_at(cursor_col, cursor_row);
+        if (request.delete_target == 'C') for (const auto id : affected) delete_image(id);
+    } else if (request.has_image_id && request.delete_target == 'a') {
+        // a=d,i=N uses the default d=a but explicitly names an image.
+        delete_image(request.image_id);
+    } else if (request.delete_target == 'z' || request.delete_target == 'Z') {
+        std::vector<uint32_t> affected;
+        for (const auto& p : placements_) if (p.z_index == request.z_index) affected.push_back(p.image_id);
+        delete_placements_by_z(request.z_index);
+        if (request.delete_target == 'Z') for (const auto id : affected) delete_image(id);
+    } else { // a/A: all visible placements.
+        std::vector<uint32_t> affected;
+        for (const auto& p : placements_) affected.push_back(p.image_id);
+        clear_placements();
+        if (request.delete_target == 'A') for (const auto id : affected) delete_image(id);
+    }
+    return true;
+}
+
+bool KittyGraphicsEngine::load_source(
+    const KittyRequest& request,
+    std::string_view payload,
+    std::vector<uint8_t>& decoded,
+    util::MappedBuffer& mapping,
+    std::span<const uint8_t>& source
+) const {
+    auto decoded_opt = util::decode_base64(payload, util::Base64Mode::Relaxed, max_memory_);
+    if (!decoded_opt) return false;
+    decoded = std::move(*decoded_opt);
+
+    if (request.medium != KittyMedium::File && request.medium != KittyMedium::TempFile) {
+        source = decoded;
+        return !source.empty();
     }
 
-    if (image_id == 0) image_id = next_auto_id_++;
+    const std::string path(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+    if (path.empty() || path.find('\0') != std::string::npos) return false;
 
-    if (action == KittyAction::Query) {
-        if (medium == KittyMedium::SharedMem) return reply("ENOTSUP:shared memory not supported");
-        if (quiet >= 2) return "";
-        std::string response = "\x1b_Gi=" + std::to_string(image_id);
-        if (feature == 'T') {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+    if (ec || canonical.empty() || !std::filesystem::is_regular_file(canonical, ec) || ec) return false;
+
+    if (request.medium == KittyMedium::TempFile) {
+        bool allowed = false;
+        auto check_root = [&](std::string_view value) {
+            if (allowed || value.empty()) return;
+            std::error_code root_ec;
+            const auto root = std::filesystem::weakly_canonical(
+                std::filesystem::path(value), root_ec);
+            if (!root_ec && path_is_under(canonical, root)) allowed = true;
+        };
+        check_root("/tmp");
+        if (const char* env = std::getenv("TMPDIR")) check_root(env);
+        if (!allowed) return false;
+    }
+
+    const util::UniqueFd fd(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC));
+    struct stat st{};
+    bool loaded = false;
+    if (fd.valid() && ::fstat(fd.get(), &st) == 0 && st.st_size > 0 &&
+        static_cast<size_t>(st.st_size) <= max_memory_) {
+        mapping = util::MappedBuffer(fd.get(), static_cast<size_t>(st.st_size), 0);
+        if (mapping.valid()) {
+            source = {static_cast<const uint8_t*>(mapping.data()), mapping.size()};
+            loaded = true;
+        }
+    }
+    if (request.medium == KittyMedium::TempFile) ::unlink(canonical.c_str());
+    return loaded && !source.empty();
+}
+
+bool KittyGraphicsEngine::store_image(const KittyRequest& request, std::span<const uint8_t> source) {
+    auto img_opt = decode_image(source, request.format, request.width, request.height,
+                                request.compressed);
+    if (!img_opt) return false;
+
+    const size_t bytes = img_opt->height() * img_opt->stride();
+    while (current_memory_ + bytes > max_memory_ && !images_.empty()) {
+        auto first_it = images_.begin();
+        current_memory_ -= first_it->second.byte_size;
+        images_.erase(first_it);
+    }
+    if (auto existing = images_.find(request.image_id); existing != images_.end())
+        current_memory_ -= existing->second.byte_size;
+    images_[request.image_id] = KittyImage{
+        .id = request.image_id,
+        .image = std::move(*img_opt),
+        .byte_size = bytes
+    };
+    current_memory_ += bytes;
+    return true;
+}
+
+std::string KittyGraphicsEngine::process_apc_sequence(
+    std::string_view payload,
+    int cursor_col,
+    int cursor_row
+) {
+    if (!payload.starts_with('G')) return "";
+    payload.remove_prefix(1);
+
+    const size_t semicolon = payload.find(';');
+    const std::string_view control_part = (semicolon != std::string::npos)
+        ? payload.substr(0, semicolon) : payload;
+    const std::string_view data_part = (semicolon != std::string::npos)
+        ? payload.substr(semicolon + 1) : "";
+
+    KittyRequest request = parse_control(control_part, pending_chunk_);
+    auto reply = [&](std::string_view status) {
+        if (request.quiet >= 2) return std::string{};
+        if (request.quiet >= 1 && status == "OK") return std::string{};
+        return "\x1b_Gi=" + std::to_string(request.image_id) + ";" + std::string(status) + "\x1b\\";
+    };
+
+    if (handle_delete(request, cursor_col, cursor_row)) return reply("OK");
+    if (request.image_id == 0) request.image_id = next_auto_id_++;
+
+    if (request.action == KittyAction::Query) {
+        if (request.medium == KittyMedium::SharedMem)
+            return reply("ENOTSUP:shared memory not supported");
+        if (request.quiet >= 2) return "";
+        std::string response = "\x1b_Gi=" + std::to_string(request.image_id);
+        if (request.feature == 'T') {
             response += ",e=T";
-            if (unicode_placeholder == 1) response += ",U=1";
-            if (cursor_policy == 1) response += ",C=1";
+            if (request.unicode_placeholder == 1) response += ",U=1";
+            if (request.cursor_policy == 1) response += ",C=1";
         }
         return response + ";OK\x1b\\";
     }
 
-    if (more_data == 1) {
-        pending_chunk_.in_progress = true;
-        pending_chunk_.image_id = image_id;
-        pending_chunk_.placement_id = placement_id;
-        pending_chunk_.action = action;
-        pending_chunk_.medium = medium;
-        pending_chunk_.format = format;
-        pending_chunk_.compressed = compressed;
-        pending_chunk_.width = width;
-        pending_chunk_.height = height;
-        pending_chunk_.cols = cols;
-        pending_chunk_.rows = rows;
-        pending_chunk_.z_index = z_index;
-        pending_chunk_.unicode_placeholder = unicode_placeholder;
-        pending_chunk_.quiet = quiet;
-        pending_chunk_.cursor_policy = cursor_policy;
-        pending_chunk_.delete_target = delete_target;
-        pending_chunk_.src_x = src_x;
-        pending_chunk_.src_y = src_y;
-        pending_chunk_.src_w = src_w;
-        pending_chunk_.src_h = src_h;
-        pending_chunk_.buffer.append(data_part);
+    if (request.more_data == 1) {
+        pending_chunk_ = PendingChunkTransmission{
+            .image_id = request.image_id,
+            .placement_id = request.placement_id,
+            .action = request.action,
+            .medium = request.medium,
+            .format = request.format,
+            .compressed = request.compressed,
+            .width = request.width,
+            .height = request.height,
+            .cols = request.cols,
+            .rows = request.rows,
+            .z_index = request.z_index,
+            .unicode_placeholder = request.unicode_placeholder,
+            .quiet = request.quiet,
+            .cursor_policy = request.cursor_policy,
+            .delete_target = request.delete_target,
+            .src_x = request.src_x,
+            .src_y = request.src_y,
+            .src_w = request.src_w,
+            .src_h = request.src_h,
+            .buffer = std::string(data_part),
+            .in_progress = true,
+        };
         return "";
     }
 
@@ -412,115 +466,49 @@ std::string KittyGraphicsEngine::process_apc_sequence(
         full_payload = std::string(data_part);
     }
 
-    bool load_failed = false;
-    bool image_ready = images_.find(image_id) != images_.end();
+    bool image_ready = images_.find(request.image_id) != images_.end();
     if (!image_ready) {
-        std::span<const uint8_t> source;
         std::vector<uint8_t> decoded;
         util::MappedBuffer mapping;
-        if (medium == KittyMedium::File || medium == KittyMedium::TempFile) {
-            decoded = decode_base64(full_payload);
-            const std::string path(reinterpret_cast<const char*>(decoded.data()), decoded.size());
-            if (path.empty() || path.find('\0') != std::string::npos) {
-                load_failed = true;
-            } else {
-                std::error_code ec;
-                auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
-                if (ec || canonical.empty() ||
-                    !std::filesystem::is_regular_file(canonical, ec) || ec) {
-                    load_failed = true;
-                } else if (medium == KittyMedium::TempFile) {
-                    bool allowed = false;
-                    auto check_root = [&](std::string_view value) {
-                        if (allowed || value.empty()) return;
-                        std::error_code root_ec;
-                        const auto root = std::filesystem::weakly_canonical(
-                            std::filesystem::path(value), root_ec);
-                        if (!root_ec && path_is_under(canonical, root)) allowed = true;
-                    };
-                    check_root("/tmp");
-                    if (const char* env = std::getenv("TMPDIR")) check_root(env);
-                    if (!allowed) load_failed = true;
-                }
-                if (!load_failed) {
-                    const util::UniqueFd fd(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC));
-                    struct stat st{};
-                    if (!fd.valid() || ::fstat(fd.get(), &st) != 0 || st.st_size <= 0 ||
-                        static_cast<size_t>(st.st_size) > max_memory_) {
-                        load_failed = true;
-                    } else {
-                        mapping = util::MappedBuffer(fd.get(), static_cast<size_t>(st.st_size), 0);
-                        if (!mapping.valid()) load_failed = true;
-                        else source = {static_cast<const uint8_t*>(mapping.data()), mapping.size()};
-                    }
-                }
-                if (medium == KittyMedium::TempFile && !canonical.empty())
-                    ::unlink(canonical.c_str());
-            }
-        } else {
-            decoded = decode_base64(full_payload);
-            source = decoded;
-        }
-
-        if (!load_failed && !source.empty()) {
-            auto img_opt = decode_image(source, format, width, height, compressed);
-            if (img_opt) {
-                const size_t bytes = img_opt->height() * img_opt->stride();
-                while (current_memory_ + bytes > max_memory_ && !images_.empty()) {
-                    auto first_it = images_.begin();
-                    current_memory_ -= first_it->second.byte_size;
-                    images_.erase(first_it);
-                }
-                if (auto existing = images_.find(image_id); existing != images_.end())
-                    current_memory_ -= existing->second.byte_size;
-                images_[image_id] = KittyImage{
-                    .id = image_id,
-                    .image = std::move(*img_opt),
-                    .byte_size = bytes
-                };
-                current_memory_ += bytes;
-                image_ready = true;
-            } else {
-                load_failed = true;
-            }
-        } else if (source.empty()) {
-            load_failed = true;
-        }
+        std::span<const uint8_t> source;
+        image_ready = load_source(request, full_payload, decoded, mapping, source) &&
+                      store_image(request, source);
     }
 
     if (!image_ready) return reply("ENOENT:failed to load image");
 
-    if (unicode_placeholder == 1) {
+    if (request.unicode_placeholder == 1) {
         auto existing = std::find_if(virtual_placements_.begin(), virtual_placements_.end(),
             [&](const KittyVirtualPlacement& vp) {
-                return vp.image_id == image_id && vp.placement_id == placement_id;
+                return vp.image_id == request.image_id && vp.placement_id == request.placement_id;
             });
         if (existing != virtual_placements_.end()) {
-            existing->cols = cols;
-            existing->rows = rows;
-            existing->z_index = z_index;
+            existing->cols = request.cols;
+            existing->rows = request.rows;
+            existing->z_index = request.z_index;
         } else {
-            virtual_placements_.push_back(KittyVirtualPlacement{image_id, placement_id, cols, rows, z_index});
+            virtual_placements_.push_back(KittyVirtualPlacement{
+                request.image_id, request.placement_id, request.cols, request.rows, request.z_index});
         }
         return reply("OK");
     }
 
-    if (action == KittyAction::TransmitAndDisplay || action == KittyAction::Put) {
+    if (request.action == KittyAction::TransmitAndDisplay || request.action == KittyAction::Put) {
         KittyPlacement placement{
-            .image_id = image_id,
-            .placement_id = placement_id,
+            .image_id = request.image_id,
+            .placement_id = request.placement_id,
             .col = cursor_col,
             .row = cursor_row,
-            .cols = cols > 0 ? cols : 0,
-            .rows = rows > 0 ? rows : 0,
-            .z_index = z_index,
-            .src_x = src_x,
-            .src_y = src_y,
-            .src_w = src_w,
-            .src_h = src_h,
-            .cursor_policy = cursor_policy,
+            .cols = request.cols > 0 ? request.cols : 0,
+            .rows = request.rows > 0 ? request.rows : 0,
+            .z_index = request.z_index,
+            .src_x = request.src_x,
+            .src_y = request.src_y,
+            .src_w = request.src_w,
+            .src_h = request.src_h,
+            .cursor_policy = request.cursor_policy,
         };
-        if (placement_handler_) placement_handler_(placement, images_.at(image_id).image.get());
+        if (placement_handler_) placement_handler_(placement, images_.at(request.image_id).image.get());
         placements_.push_back(placement);
     }
     return reply("OK");

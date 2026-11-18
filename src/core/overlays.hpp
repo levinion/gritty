@@ -6,6 +6,10 @@
 #include "input/input_events.hpp"
 #include "render/font_engine.hpp"
 
+// Search/URL overlays are deliberately standalone: tmux owns these UI flows
+// in the supported configuration. They remain composable for optional local
+// use but are not wired into TerminalSession by default.
+
 namespace gritty::core {
 
 class IOverlay {

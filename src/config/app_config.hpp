@@ -33,6 +33,8 @@ struct ColorsConfig {
     uint32_t foreground{0xffdddddd};
     uint32_t background{0xff111111};
     uint32_t cursor{0xffffffff};
+    // Reserved for an optional standalone selection renderer; tmux owns
+    // selection/copy UI in the supported configuration.
     std::optional<uint32_t> selection_fg;
     std::optional<uint32_t> selection_bg;
     std::array<uint32_t, 256> palette{core::kDefaultPalette};

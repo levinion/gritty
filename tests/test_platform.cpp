@@ -18,7 +18,7 @@ TEST_CASE("InputMapper legacy key translation") {
     gritty::core::TerminalEngine engine(80, 24);
 
     // Up arrow normal
-    KeyEvent ev_up{.key = KeyCode::Up};
+    KeyEvent ev_up{.key = KeyCode::Up, .text = {}};
     CHECK(InputMapper::map_key(ev_up, engine) == "\x1b[A");
 
     // Up arrow in application cursor mode (DECCKM)
@@ -27,15 +27,15 @@ TEST_CASE("InputMapper legacy key translation") {
     engine.set_cursor_key_mode(false);
 
     // Ctrl+Up arrow
-    KeyEvent ev_ctrl_up{.key = KeyCode::Up, .mods = {.ctrl = true}};
+    KeyEvent ev_ctrl_up{.key = KeyCode::Up, .mods = {.ctrl = true}, .text = {}};
     CHECK(InputMapper::map_key(ev_ctrl_up, engine) == "\x1b[1;5A");
 
     // Home / End
-    KeyEvent ev_home{.key = KeyCode::Home};
+    KeyEvent ev_home{.key = KeyCode::Home, .text = {}};
     CHECK(InputMapper::map_key(ev_home, engine) == "\x1b[H");
 
     // Ctrl+C
-    KeyEvent ev_ctrl_c{.codepoint = 'c', .mods = {.ctrl = true}};
+    KeyEvent ev_ctrl_c{.codepoint = 'c', .mods = {.ctrl = true}, .text = {}};
     CHECK(InputMapper::map_key(ev_ctrl_c, engine) == "\x03");
 }
 
@@ -44,14 +44,14 @@ TEST_CASE("InputMapper Kitty Keyboard Protocol (CSI u)") {
     // Push flag 1 (disambiguate)
     engine.push_kitty_keyboard_flags(1);
 
-    KeyEvent ev_esc{.key = KeyCode::Escape};
+    KeyEvent ev_esc{.key = KeyCode::Escape, .text = {}};
     CHECK(InputMapper::map_key(ev_esc, engine) == "\x1b[27u");
 
-    KeyEvent ev_enter{.key = KeyCode::Return};
+    KeyEvent ev_enter{.key = KeyCode::Return, .text = {}};
     // foot/Kitty: disambiguation alone preserves unmodified Enter as CR.
     CHECK(InputMapper::map_key(ev_enter, engine) == "\r");
 
-    KeyEvent ev_tab{.key = KeyCode::Tab, .mods = {.shift = true}};
+    KeyEvent ev_tab{.key = KeyCode::Tab, .mods = {.shift = true}, .text = {}};
     // Shift is modifier 1 (param = 2)
     CHECK(InputMapper::map_key(ev_tab, engine) == "\x1b[9;2u");
 }
@@ -80,8 +80,12 @@ TEST_CASE("PosixPty child process spawn and I/O") {
     PtySpawnOptions opts{
         .command = "/bin/sh",
         .args = {"-c", "echo 'PTY_TEST_SUCCESS'"},
+        .cwd = {},
+        .env = {},
         .cols = 80,
-        .rows = 24
+        .rows = 24,
+        .pixel_width = 640,
+        .pixel_height = 480,
     };
 
     bool ok = pty.spawn(opts);

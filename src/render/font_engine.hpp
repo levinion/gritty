@@ -205,6 +205,9 @@ private:
         }
     };
     std::unordered_map<ShapedClusterKey, ShapedCluster, ShapedClusterKeyHash> shaped_cache_;
+    // Reused across shaping misses; hb_buffer_clear_contents() keeps the
+    // allocation while resetting per-cluster state.
+    util::HbBuffer shape_buffer_;
     CachedGlyph transient_glyph_;
     std::list<GlyphKey> glyph_lru_;
     std::unordered_map<GlyphKey, GlyphCacheEntry, GlyphKeyHash> glyph_cache_;

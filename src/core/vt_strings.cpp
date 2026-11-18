@@ -1,4 +1,5 @@
 #include "core/vt_parser.hpp"
+#include "util/base64.hpp"
 #include <array>
 #include <charconv>
 #include <cstdio>
@@ -11,31 +12,9 @@ namespace {
 // Strict standard base64 (OSC 52 payloads are unpadded or '='-padded, no
 // whitespace), bounded so a malicious stream cannot allocate without limit.
 std::optional<std::string> decode_osc52_base64(std::string_view input, size_t max_bytes) {
-    auto value_of = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
-        return -1;
-    };
-    std::string out;
-    out.reserve(std::min(input.size() * 3 / 4, max_bytes));
-    uint32_t accumulator = 0;
-    int bits = 0;
-    for (const char c : input) {
-        if (c == '=') break; // Padding: the remainder carries no data.
-        const int value = value_of(c);
-        if (value < 0) return std::nullopt;
-        accumulator = (accumulator << 6) | static_cast<uint32_t>(value);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<char>((accumulator >> bits) & 0xFF));
-            if (out.size() > max_bytes) return std::nullopt;
-        }
-    }
-    return out;
+    auto decoded = util::decode_base64(input, util::Base64Mode::Strict, max_bytes);
+    if (!decoded) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(decoded->data()), decoded->size());
 }
 
 std::string hex_decode_ascii(std::string_view hex) {

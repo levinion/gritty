@@ -9,6 +9,7 @@
 #include <vector>
 #include <optional>
 #include "util/raii.hpp"
+#include "util/mapped_buffer.hpp"
 
 namespace gritty::core {
 
@@ -98,7 +99,6 @@ public:
     void clear();
 
 private:
-    std::vector<uint8_t> decode_base64(std::string_view input);
     std::optional<util::PixmanImage> decode_image(
         std::span<const uint8_t> data,
         KittyFormat format,
@@ -131,6 +131,30 @@ private:
         std::string buffer;
         bool in_progress{false};
     } pending_chunk_;
+
+    struct KittyRequest {
+        KittyAction action{KittyAction::TransmitAndDisplay};
+        KittyMedium medium{KittyMedium::Direct};
+        KittyFormat format{KittyFormat::Rgba};
+        bool compressed{false};
+        uint32_t image_id{0};
+        bool has_image_id{false};
+        uint32_t placement_id{0};
+        int width{0}, height{0}, cols{0}, rows{0};
+        int z_index{0}, unicode_placeholder{0}, quiet{0}, cursor_policy{1};
+        char delete_target{'a'};
+        int src_x{0}, src_y{0}, src_w{0}, src_h{0};
+        char feature{0};
+        int more_data{0};
+    };
+
+    static KittyRequest parse_control(std::string_view control_part,
+                                      const PendingChunkTransmission& pending);
+    bool handle_delete(const KittyRequest& request, int cursor_col, int cursor_row);
+    bool load_source(const KittyRequest& request, std::string_view payload,
+                     std::vector<uint8_t>& decoded, util::MappedBuffer& mapping,
+                     std::span<const uint8_t>& source) const;
+    bool store_image(const KittyRequest& request, std::span<const uint8_t> source);
 
     PlacementHandler placement_handler_;
     DeleteHandler delete_handler_;

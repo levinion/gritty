@@ -1,4 +1,5 @@
 #include "core/overlays.hpp"
+#include "util/raii.hpp"
 
 namespace gritty::core {
 
@@ -50,7 +51,8 @@ void SearchOverlay::render(
 
     std::string prompt = "Search: " + query_ + "_";
     pixman_color_t fg_col = {0xffff, 0xffff, 0x8888, 0xffff};
-    pixman_image_t* solid_fg = pixman_image_create_solid_fill(&fg_col);
+    util::PixmanImage solid_fg(pixman_image_create_solid_fill(&fg_col));
+    if (!solid_fg.valid()) return;
 
     for (size_t i = 0; i < prompt.size() && static_cast<int>(i) < screen_cols; ++i) {
         const auto* glyph = font_engine.get_glyph(prompt[i], true, false);
@@ -58,11 +60,10 @@ void SearchOverlay::render(
             int gx = static_cast<int>(i) * cell_w + glyph->bearing_x;
             int gy = bar_y + m.ascent - glyph->bearing_y;
             pixman_image_composite32(
-                PIXMAN_OP_OVER, solid_fg, glyph->mask.get(), dst,
+                PIXMAN_OP_OVER, solid_fg.get(), glyph->mask.get(), dst,
                 0, 0, 0, 0, gx, gy, glyph->width, glyph->height);
         }
     }
-    pixman_image_unref(solid_fg);
 }
 
 void UrlOverlay::add_hint(int col, int row, std::string hint, std::string url) {
@@ -113,7 +114,8 @@ void UrlOverlay::render(
 
     pixman_color_t tag_bg = {0xeeff, 0x2222, 0x2222, 0xffff}; // Red tag
     pixman_color_t tag_fg = {0xffff, 0xffff, 0xffff, 0xffff};
-    pixman_image_t* solid_fg = pixman_image_create_solid_fill(&tag_fg);
+    util::PixmanImage solid_fg(pixman_image_create_solid_fill(&tag_fg));
+    if (!solid_fg.valid()) return;
 
     for (const auto& h : hints_) {
         int px = h.col * cell_w;
@@ -129,12 +131,11 @@ void UrlOverlay::render(
                 int gx = px + static_cast<int>(i) * cell_w + glyph->bearing_x;
                 int gy = py + m.ascent - glyph->bearing_y;
                 pixman_image_composite32(
-                    PIXMAN_OP_OVER, solid_fg, glyph->mask.get(), dst,
+                    PIXMAN_OP_OVER, solid_fg.get(), glyph->mask.get(), dst,
                     0, 0, 0, 0, gx, gy, glyph->width, glyph->height);
             }
         }
     }
-    pixman_image_unref(solid_fg);
 }
 
 } // namespace gritty::core

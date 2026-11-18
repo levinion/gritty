@@ -69,11 +69,13 @@ TEST_CASE("SearchOverlay key interaction") {
     CHECK(search.query() == "foo");
 
     // Backspace
-    search.handle_key(gritty::input::KeyEvent{.key = gritty::input::KeyCode::Backspace});
+    search.handle_key(gritty::input::KeyEvent{
+        .key = gritty::input::KeyCode::Backspace, .text = {}});
     CHECK(search.query() == "fo");
 
     // Escape closes overlay
-    search.handle_key(gritty::input::KeyEvent{.key = gritty::input::KeyCode::Escape});
+    search.handle_key(gritty::input::KeyEvent{
+        .key = gritty::input::KeyCode::Escape, .text = {}});
     CHECK(!search.is_active());
 }
 

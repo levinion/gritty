@@ -7,6 +7,9 @@
 
 namespace gritty::core {
 
+// Selection extraction is isolated on purpose: tmux owns selection/copy UI in
+// the supported configuration. No renderer or event-loop path consumes it.
+
 enum class SelectionMode : uint8_t {
     Normal,   // Character stream
     Block,    // Rectangular block

@@ -222,8 +222,9 @@ const ShapedCluster* FontEngine::shape_cluster(std::span<const char32_t> cluster
     if (!face.hb_font.valid() || !face.hb_font.get()) return nullptr;
 
     static_assert(sizeof(char32_t) == sizeof(uint32_t));
-    hb_buffer_t* buffer = hb_buffer_create();
-    if (!buffer) return nullptr;
+    shape_buffer_.clear();
+    if (!shape_buffer_.valid()) return nullptr;
+    hb_buffer_t* buffer = shape_buffer_.get();
     hb_buffer_add_utf32(buffer, reinterpret_cast<const uint32_t*>(cluster.data()),
         static_cast<int>(cluster.size()), 0, static_cast<int>(cluster.size()));
     hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
@@ -246,7 +247,6 @@ const ShapedCluster* FontEngine::shape_cluster(std::span<const char32_t> cluster
             });
         }
     }
-    hb_buffer_destroy(buffer);
     if (shaped.glyphs.empty()) return nullptr;
 
     if (shaped_cache_.size() >= 512) shaped_cache_.clear();

@@ -54,6 +54,15 @@ TEST_CASE("KittyGraphicsEngine RGBA image transmission and placement") {
     uint32_t* pixel = img->image.data();
     CHECK(*pixel == 0xFFFF0000); // Host ARGB Little Endian
 
+    // Relaxed Kitty base64 ignores whitespace in transmitted payloads.
+    KittyGraphicsEngine spaced_engine;
+    resp = spaced_engine.process_apc_sequence(
+        "Ga=T,f=32,s=1,v=1,i=11;/w AA/w==", 0, 0);
+    CHECK(resp == "\x1b_Gi=11;OK\x1b\\");
+    const KittyImage* spaced = spaced_engine.get_image(11);
+    REQUIRE(spaced != nullptr);
+    CHECK(*spaced->image.data() == 0xFFFF0000);
+
     // Verify placement
     const auto& placements = engine.placements();
     REQUIRE(placements.size() == 1);

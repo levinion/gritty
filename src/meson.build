@@ -38,6 +38,7 @@ core_sources = files(
   'render/cpu_renderer.cpp',
   'input/input_mapper.cpp',
   'input/mouse_tracker.cpp',
+  'util/base64.cpp',
 ) + platform_sources
 
 gritty_core_lib = static_library('gritty_core',
