@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
+#include "font_fixture.hpp"
 #include <algorithm>
-#include <filesystem>
 #include "core/vt_parser.hpp"
 #include "render/cpu_renderer.hpp"
 
@@ -8,14 +8,7 @@ using namespace gritty::core;
 using namespace gritty::render;
 
 namespace {
-std::string alpha_test_font() {
-    for (const auto* path : {"/System/Library/Fonts/Monaco.ttf", "/System/Library/Fonts/Menlo.ttc",
-                            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"}) {
-        if (std::filesystem::exists(path)) return path;
-    }
-    return {};
-}
-}
+std::string alpha_test_font() { return test_font_path(); }}
 
 TEST_CASE("Transparent background pixels are premultiplied, including window margins") {
     FontEngine fonts;

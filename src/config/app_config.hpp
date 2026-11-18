@@ -35,7 +35,7 @@ struct ColorsConfig {
     uint32_t cursor{0xffffffff};
     std::optional<uint32_t> selection_fg;
     std::optional<uint32_t> selection_bg;
-    std::array<uint32_t, 256> palette{};
+    std::array<uint32_t, 256> palette{core::kDefaultPalette};
     bool palette_customized{false};
     double alpha{1.0}; // Default background only; text/explicit SGR backgrounds stay opaque.
     [[nodiscard]] uint32_t background_argb() const noexcept;

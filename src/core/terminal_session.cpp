@@ -1,7 +1,10 @@
 #include "core/terminal_session.hpp"
+#include "core/sixel_decoder.hpp"
 #include "input/input_mapper.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 
 namespace gritty::core {
@@ -16,32 +19,148 @@ TerminalSession::TerminalSession(
       surface_(std::move(surface)),
       loop_(std::move(loop)),
       clipboard_(std::move(clipboard)),
-      engine_(config.cols, config.rows),
+      engine_(config.cols, config.rows, config.scrollback_lines),
       parser_(engine_),
       font_engine_(config.antialias),
       renderer_(font_engine_, config.render_config) {
+    engine_.configure_palette(config.palette);
     parser_.set_sync_handler([this](bool enabled) {
         if (!loop_) return;
         // foot terminal.c arms a one-second watchdog for DECSET 2026.
-        if (enabled) loop_->set_timer(1000, [this] {
+        if (enabled) loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 1000, [this] {
             engine_.set_synchronized_updates(false);
             render_frame();
         });
-        else loop_->set_timer(0, {});
+        else loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 0, {});
     });
     parser_.set_default_colors(config.render_config.default_fg, config.render_config.default_bg);
+    parser_.set_default_color_handler([this](uint32_t foreground, uint32_t background) {
+        auto colors = renderer_.config();
+        colors.default_fg = foreground;
+        colors.default_bg = background;
+        renderer_.set_config(colors); // Invalidate text and window margins together.
+    });
     parser_.set_response_callback([this](std::string_view resp) {
         write_pty(resp);
+    });
+    // tmux's set-clipboard writes reach the system pasteboard through OSC 52.
+    parser_.set_clipboard_handler([this](std::string_view text) {
+        if (clipboard_) clipboard_->copy_text(text);
+    });
+    // Kitty graphics: parse APC through the engine, and mirror every placement
+    // into the terminal's render list (the image bitmap is shared by refcount).
+    parser_.set_apc_handler([this](std::string_view payload) {
+        const auto response = engine_.kitty_graphics().process_apc_sequence(
+            payload, engine_.cursor_col(), engine_.cursor_row());
+        if (!response.empty()) write_pty(response);
+    });
+    engine_.kitty_graphics().set_placement_handler(
+        [this](const KittyPlacement& placement, pixman_image_t* image) {
+            if (!image) return;
+            PlacedImage placed;
+            placed.image.reset(pixman_image_ref(image));
+            placed.image_id = placement.image_id;
+            placed.placement_id = placement.placement_id;
+            placed.col = placement.col;
+            placed.row = placement.row;
+            const auto& metrics = font_engine_.metrics();
+            const int image_w = pixman_image_get_width(image);
+            const int image_h = pixman_image_get_height(image);
+            placed.cols = placement.cols > 0 ? placement.cols
+                : std::max(1, (image_w + metrics.cell_width - 1) / metrics.cell_width);
+            placed.rows = placement.rows > 0 ? placement.rows
+                : std::max(1, (image_h + metrics.cell_height - 1) / metrics.cell_height);
+            placed.z_index = placement.z_index;
+            placed.src_x = placement.src_x;
+            placed.src_y = placement.src_y;
+            placed.src_w = placement.src_w;
+            placed.src_h = placement.src_h;
+            placed.cursor_policy = placement.cursor_policy;
+            const int advance_cols = placed.cols, advance_rows = placed.rows;
+            engine_.place_image(std::move(placed));
+            if (placement.cursor_policy == 0) { // Kitty C=0: advance over the placement.
+                for (int i = 0; i < advance_cols; ++i) {
+                    if (engine_.cursor_col() + 1 >= engine_.cols()) {
+                        engine_.set_cursor_col(0);
+                        engine_.line_feed();
+                    } else {
+                        engine_.move_cursor_forward(1);
+                    }
+                }
+                // The cursor ends on the placement's last row, not one below it.
+                for (int i = 0; i < std::max(0, advance_rows - 1); ++i)
+                    engine_.line_feed(); // Scrolls when already at margin_bottom.
+            }
+        });
+    engine_.kitty_graphics().set_delete_handler([this](uint32_t image_id) {
+        engine_.remove_images_by_id(image_id);
+    });
+    engine_.kitty_graphics().set_placement_delete_handler([this](const KittyPlacement& placement) {
+        engine_.remove_images_by_placement(placement.image_id, placement.placement_id);
+    });
+    // Sixel: DCS q... payload; place at the cursor cell, below the text.
+    parser_.set_dcs_handler([this](std::string_view payload) {
+        const auto q = payload.find('q');
+        if (q == std::string_view::npos || q > 16) return;
+        // Sixel header is "P1;P2;P3;P4 q"; anything else (e.g. tmux passthrough)
+        // is not a sixel image.
+        for (size_t i = 0; i < q; ++i)
+            if (!std::isdigit(static_cast<unsigned char>(payload[i])) && payload[i] != ';') return;
+        // DCS header is P1;P2;P3;P4 q. P2=1 selects a transparent background;
+        // otherwise Sixel palette[0] fills pixels the image never touches.
+        int p2 = 0;
+        {
+            const auto header = payload.substr(0, q);
+            size_t begin = 0;
+            size_t end = header.find(';');
+            if (end != std::string_view::npos) begin = end + 1;
+            if (begin < header.size()) {
+                end = header.find(';', begin);
+                const auto value = header.substr(begin, end == std::string_view::npos
+                    ? std::string_view::npos : end - begin);
+                std::from_chars(value.data(), value.data() + value.size(), p2);
+            }
+        }
+        auto decoded = SixelDecoder::decode(payload.substr(q), p2 == 1);
+        if (!decoded) return;
+        const auto& metrics = font_engine_.metrics();
+        if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
+        const int cols = std::max(1, (decoded->width() + metrics.cell_width - 1) / metrics.cell_width);
+        const int rows = std::max(1, (decoded->height() + metrics.cell_height - 1) / metrics.cell_height);
+        engine_.place_image(PlacedImage{
+            .image = std::move(*decoded),
+            .col = engine_.cursor_col(),
+            .row = engine_.cursor_row(),
+            .cols = cols,
+            .rows = rows,
+            .z_index = -1, // Sixel images sit behind the text.
+        });
+        // Keep the shell prompt from overwriting the image: move below it and
+        // return to column zero. Feed one line at a time so a placement that
+        // crosses margin_bottom scrolls the image into the visible region.
+        const int placement_row = engine_.cursor_row();
+        if (placement_row >= engine_.margin_top() && placement_row <= engine_.margin_bottom() &&
+            placement_row + rows > engine_.margin_bottom()) {
+            for (int i = 0; i < rows; ++i) engine_.line_feed();
+        } else {
+            engine_.move_cursor_down(rows);
+        }
+        engine_.set_cursor_col(0);
     });
 }
 
 TerminalSession::~TerminalSession() {
-    if (loop_) loop_->set_timer(0, {});
+    if (loop_) {
+        loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 0, {});
+        loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 0, {});
+    }
     if (surface_) {
         surface_->set_key_callback({});
+        surface_->set_text_commit_callback({});
         surface_->set_mouse_callback({});
         surface_->set_resize_callback({});
         surface_->set_close_callback({});
+        surface_->set_frame_ready_callback({});
     }
     if (loop_ && pty_.master_fd() >= 0) {
         loop_->remove_fd(pty_.master_fd());
@@ -81,6 +200,11 @@ bool TerminalSession::start() {
         surface_->set_key_callback([this](const input::KeyEvent& ev) {
             handle_key_event(ev);
         });
+        // Committed IME text is already final UTF-8; never run it through the
+        // KeyEvent/Kitty keyboard encoder, which would truncate CJK phrases.
+        surface_->set_text_commit_callback([this](std::string_view text) {
+            write_pty(text);
+        });
         surface_->set_mouse_callback([this](const input::MouseEvent& ev) {
             handle_mouse_event(ev);
         });
@@ -90,6 +214,20 @@ bool TerminalSession::start() {
         surface_->set_close_callback([this]() {
             if (loop_) loop_->stop();
         });
+        surface_->set_frame_ready_callback([this] { render_pending_frame(); });
+        surface_->set_focus_callback([this](bool focused) { on_window_focus(focused); });
+        surface_->set_cursor_rect_provider([this]() -> platform::IWindowSurface::CursorRect {
+            const auto& metrics = font_engine_.metrics();
+            const double scale = surface_ ? surface_->scale() : 1.0;
+            const double s = scale > 0 ? scale : 1.0;
+            return {
+                engine_.cursor_col() * metrics.cell_width / s,
+                engine_.cursor_row() * metrics.cell_height / s,
+                metrics.cell_width / s,
+                metrics.cell_height / s,
+            };
+        });
+        surface_->set_bracketed_paste_provider([this] { return engine_.bracketed_paste(); });
 
         if (cell_w > 0 && cell_h > 0) {
             surface_->resize(config_.cols * cell_w, config_.rows * cell_h, surface_->scale());
@@ -165,7 +303,22 @@ void TerminalSession::handle_pty_read() {
     }
 
     if (got_data) {
-        render_frame(false);
+        if (coalesce_frames_ && loop_ && surface_ && surface_->supports_frame_pacing()) {
+            if (surface_->frame_in_flight()) {
+                // Keep parsing; the frame clock will render the accumulated state.
+                render_frame(false);
+            } else if (!coalesce_pending_) {
+                // One millisecond absorbs several small reads in the same PTY
+                // burst without adding a full refresh interval to keystrokes.
+                coalesce_pending_ = true;
+                loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 1, [this] {
+                    coalesce_pending_ = false;
+                    render_frame(false);
+                });
+            }
+        } else {
+            render_frame(false);
+        }
     }
 }
 
@@ -184,10 +337,31 @@ void TerminalSession::handle_mouse_event(const input::MouseEvent& ev) {
     normalized.pixel_y = std::clamp(ev.pixel_y, 0, engine_.rows() * metrics.cell_height - 1);
     normalized.col = normalized.pixel_x / metrics.cell_width;
     normalized.row = normalized.pixel_y / metrics.cell_height;
+
+    // Cmd+click on an OSC 8 link opens it. When tmux has mouse reporting on,
+    // the click belongs to tmux (it can forward or handle links itself).
+    if (ev.button == input::MouseButton::Left && ev.action == input::MouseAction::Press &&
+        ev.mods.meta && engine_.mouse_tracking() == core::MouseTrackingMode::None) {
+        const auto& cell = engine_.grid().cell(normalized.col, normalized.row);
+        if (cell.hyperlink_id != 0) {
+            const auto url = engine_.get_hyperlink_url(cell.hyperlink_id);
+            if (!url.empty()) {
+                if (url_open_handler_) url_open_handler_(url);
+                else if (surface_) surface_->open_url(url);
+                return;
+            }
+        }
+    }
+
     std::string bytes = input::InputMapper::map_mouse(normalized, engine_);
     if (!bytes.empty()) {
         write_pty(bytes);
     }
+}
+
+void TerminalSession::on_window_focus(bool focused) {
+    if (!engine_.focus_events()) return;
+    write_pty(focused ? "\x1b[I" : "\x1b[O");
 }
 
 void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
@@ -212,6 +386,26 @@ void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
 }
 
 void TerminalSession::render_frame(bool full_redraw) {
+    full_redraw_pending_ |= full_redraw;
+    if (!surface_ || engine_.synchronized_updates()) return;
+    if (!coalesce_frames_) {
+        // Legacy pacing: always wait for the native frame clock.
+        if (!surface_->request_frame()) render_pending_frame();
+        return;
+    }
+    if (surface_->frame_in_flight()) {
+        // A commit is already pending compositing: keep parsing PTY data and
+        // accumulate damage, but do not rasterize mid-interval. The frame clock
+        // renders the newest state once per vsync (foot's frame callback).
+        if (!surface_->request_frame()) render_pending_frame();
+        return;
+    }
+    // Idle: commit the first response immediately instead of waiting a whole
+    // refresh interval for the next frame tick.
+    render_pending_frame();
+}
+
+void TerminalSession::render_pending_frame() {
     if (!surface_ || engine_.synchronized_updates()) return;
     if (engine_.window_title() != last_title_) {
         last_title_ = engine_.window_title();
@@ -222,8 +416,10 @@ void TerminalSession::render_frame(bool full_redraw) {
     if (!back_buf) return;
 
     damage_region_.clear();
-    renderer_.render(engine_, back_buf, &damage_region_, full_redraw);
+    renderer_.render(engine_, back_buf, &damage_region_, full_redraw_pending_);
+    full_redraw_pending_ = false;
     surface_->present(damage_region_);
+    if (present_observer_) present_observer_();
 }
 
 void TerminalSession::run() {

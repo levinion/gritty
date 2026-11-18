@@ -1,12 +1,16 @@
 #pragma once
 
 #include <array>
+#include <deque>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <string_view>
 #include <cstdint>
-#include <memory>
 #include "core/screen_grid.hpp"
+#include "core/kitty_graphics.hpp"
+#include "util/raii.hpp"
+#include "core/palette.hpp"
 
 namespace gritty::core {
 
@@ -49,6 +53,24 @@ struct CursorState {
     bool pending_wrap{false};
     std::array<bool, 4> graphic_charsets{};
     uint8_t selected_charset{0};
+};
+
+// A raster image anchored to cell coordinates on one screen. Both Kitty
+// graphics placements and Sixel images land here; the renderer draws them in
+// z-order (negative below text, non-negative above) and scroll/erase hooks keep
+// them attached to the cells they were placed over.
+struct PlacedImage {
+    util::PixmanImage image;
+    uint32_t image_id{0};      // Kitty image id (0 for Sixel).
+    uint32_t placement_id{0};  // Kitty placement id (0 for Sixel).
+    int col{0};
+    int row{0};
+    int cols{1};
+    int rows{1};
+    int z_index{0};
+    int src_x{0}, src_y{0}, src_w{0}, src_h{0}; // 0 size means the whole bitmap.
+    int cursor_policy{1};
+    bool alt_screen{false};
 };
 
 class TerminalEngine final {
@@ -94,6 +116,20 @@ public:
 
     // Cursor movement
     void set_cursor_pos(int col, int row);
+
+    // Placed raster images (Kitty graphics and Sixel).
+    [[nodiscard]] const std::vector<PlacedImage>& images() const noexcept { return images_; }
+    [[nodiscard]] KittyGraphicsEngine& kitty_graphics() noexcept { return kitty_graphics_; }
+    [[nodiscard]] const KittyGraphicsEngine& kitty_graphics() const noexcept { return kitty_graphics_; }
+    void place_image(PlacedImage placement);
+    void clear_images() noexcept;
+    void scroll_images(int top, int bottom, int rows) noexcept;
+    void erase_images(int col1, int row1, int col2, int row2) noexcept;
+    void remove_images_by_id(uint32_t image_id) noexcept;
+    void remove_images_by_placement(uint32_t placement_id) noexcept;
+    void remove_images_by_placement(uint32_t image_id, uint32_t placement_id) noexcept;
+    void remove_images_at(int col, int row) noexcept;
+    void remove_images_by_z(int z_index) noexcept;
     void move_cursor_up(int count);
     void move_cursor_down(int count);
     void move_cursor_forward(int count);
@@ -158,6 +194,9 @@ public:
     void set_origin_mode(bool enable) noexcept;
     [[nodiscard]] bool bracketed_paste() const noexcept { return bracketed_paste_; }
     void set_bracketed_paste(bool enable) noexcept { bracketed_paste_ = enable; }
+    // DECSET 1004: report window focus as CSI I / CSI O (tmux focus-events).
+    [[nodiscard]] bool focus_events() const noexcept { return focus_events_; }
+    void set_focus_events(bool enable) noexcept { focus_events_ = enable; }
     [[nodiscard]] bool insert_mode() const noexcept { return insert_mode_; }
     void set_insert_mode(bool enable) noexcept { insert_mode_ = enable; }
     [[nodiscard]] bool cursor_key_mode() const noexcept { return cursor_key_mode_; }
@@ -186,7 +225,8 @@ public:
 
     // Palette management (256 colors)
     [[nodiscard]] uint32_t palette_color(uint8_t index) const noexcept { return palette_[index]; }
-    void set_palette_color(uint8_t index, uint32_t rgb24) noexcept { palette_[index] = rgb24; }
+    void set_palette_color(uint8_t index, uint32_t rgb24) noexcept;
+    void configure_palette(const std::array<uint32_t, 256>& colors) noexcept;
     void reset_palette() noexcept;
 
     // Window title & OSC properties
@@ -204,6 +244,7 @@ public:
 private:
     void init_tabs();
     void scroll_if_needed();
+    void clear_hyperlink_references(uint16_t id) noexcept;
 
     int cols_;
     int rows_;
@@ -232,6 +273,8 @@ private:
     bool auto_wrap_{true};
     bool origin_mode_{false};
     bool bracketed_paste_{false};
+    bool focus_events_{false};
+    void damage_image_rows(int row, int rows) noexcept;
     bool insert_mode_{false};
     bool cursor_key_mode_{false};
     bool synchronized_updates_{false};
@@ -241,12 +284,19 @@ private:
     MouseFormat mouse_format_{MouseFormat::Normal};
 
     std::array<std::vector<uint32_t>, 2> kitty_keyboard_stacks_;
+    std::vector<PlacedImage> images_;
+    KittyGraphicsEngine kitty_graphics_{(size_t{32} << 20)}; // Bound image memory with a tmux-sized budget.
     std::vector<bool> tabs_;
     std::array<uint32_t, 256> palette_;
+    std::array<uint32_t, 256> configured_palette_{kDefaultPalette};
 
     std::string window_title_;
     std::string cwd_;
+    // Slot 0 is unused; IDs are stable until the bounded table evicts an entry.
     std::vector<std::string> hyperlinks_;
+    std::unordered_map<std::string, uint16_t> hyperlink_index_;
+    std::deque<uint16_t> hyperlink_lru_;
+    std::vector<uint16_t> hyperlink_free_;
 };
 
 } // namespace gritty::core

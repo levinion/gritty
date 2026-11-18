@@ -136,3 +136,92 @@ TEST_CASE("ScreenGrid cell insertion and deletion") {
     CHECK(grid.cell(3, 0).codepoint == U'C');
     CHECK(grid.cell(4, 0).codepoint == ' ');
 }
+
+TEST_CASE("Whole-region scrolls record pending pixel shifts") {
+    ScreenGrid grid(10, 5, 0);
+    std::vector<gritty::core::ScrollOp> ops;
+    CHECK_FALSE(grid.has_pending_scroll());
+
+    grid.scroll_up(0, 4, 1);
+    grid.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].top == 0);
+    CHECK(ops[0].bottom == 4);
+    CHECK(ops[0].rows == 1);
+    CHECK_FALSE(grid.has_pending_scroll());
+
+    // Same region and direction coalesce into one shift.
+    grid.scroll_up(0, 4, 1);
+    grid.scroll_up(0, 4, 2);
+    grid.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].rows == 3);
+
+    // Downward motion is the opposite sign.
+    grid.scroll_down(1, 3, 1);
+    grid.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].rows == -1);
+    CHECK(ops[0].top == 1);
+    CHECK(ops[0].bottom == 3);
+
+    // Replacing the whole region cannot be reproduced by a pixel shift.
+    grid.scroll_up(0, 4, 5);
+    CHECK_FALSE(grid.has_pending_scroll());
+    for (int y = 0; y < 5; ++y) CHECK(grid.row(y).dirty);
+}
+
+TEST_CASE("Distinct scroll regions queue independently with bounded fallback") {
+    ScreenGrid grid(10, 6, 0);
+    std::vector<gritty::core::ScrollOp> ops;
+
+    // Split panes: two regions scroll in the same frame.
+    grid.scroll_up(0, 2, 1);
+    grid.scroll_up(3, 5, 1);
+    grid.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].top == 0);
+    CHECK(ops[0].bottom == 2);
+    CHECK(ops[1].top == 3);
+    CHECK(ops[1].bottom == 5);
+    CHECK(ops[1].rows == 1);
+
+    // Opposite directions in the same region are separate shifts too.
+    grid.scroll_up(0, 2, 1);
+    grid.scroll_down(0, 2, 1);
+    grid.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].rows == 1);
+    CHECK(ops[1].rows == -1);
+
+    // Exceeding the configured queue repaints every affected region instead.
+    grid.set_max_pending_scrolls(1);
+    grid.scroll_up(0, 2, 1);
+    grid.scroll_up(3, 5, 1);
+    CHECK_FALSE(grid.has_pending_scroll());
+    for (int y = 0; y < 6; ++y) CHECK(grid.row(y).dirty);
+
+    // A merged shift that replaces its region drops every queued shift.
+    grid.set_max_pending_scrolls(8);
+    grid.scroll_up(0, 5, 3);
+    grid.scroll_up(0, 5, 3); // Merges to 6 == region size.
+    CHECK_FALSE(grid.has_pending_scroll());
+    for (int y = 0; y < 6; ++y) CHECK(grid.row(y).dirty);
+
+    // A full repaint supersedes whatever shifts were pending.
+    grid.scroll_up(0, 2, 1);
+    REQUIRE(grid.has_pending_scroll());
+    grid.mark_all_dirty();
+    CHECK_FALSE(grid.has_pending_scroll());
+
+    // Insert/delete lines are scrolls too.
+    ScreenGrid lines(10, 5, 0);
+    lines.delete_lines(1, 4, 1);
+    lines.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].rows == 1);
+    lines.insert_lines(1, 4, 1);
+    lines.take_pending_scrolls(ops);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].rows == -1);
+}

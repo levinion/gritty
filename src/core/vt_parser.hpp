@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 #include <functional>
 #include "core/terminal_engine.hpp"
 
@@ -50,17 +49,22 @@ public:
     using DcsHandler = std::function<void(std::string_view)>;
     using OscHandler = std::function<void(int, std::string_view)>;
     using ResponseCallback = std::function<void(std::string_view)>;
+    // OSC 52 clipboard writes. The parser never answers clipboard queries, so
+    // a remote program cannot read the clipboard back.
+    using ClipboardHandler = std::function<void(std::string_view)>;
 
     void set_apc_handler(ApcHandler handler) { apc_handler_ = std::move(handler); }
     void set_dcs_handler(DcsHandler handler) { dcs_handler_ = std::move(handler); }
     void set_osc_handler(OscHandler handler) { osc_handler_ = std::move(handler); }
     void set_response_callback(ResponseCallback cb) { response_cb_ = std::move(cb); }
+    void set_clipboard_handler(ClipboardHandler handler) { clipboard_handler_ = std::move(handler); }
     void set_sync_handler(std::function<void(bool)> handler) { sync_handler_ = std::move(handler); }
+    void set_default_color_handler(std::function<void(uint32_t, uint32_t)> handler) { default_color_handler_ = std::move(handler); }
 
     void reset() noexcept;
     void set_default_colors(uint32_t foreground, uint32_t background) noexcept {
-        default_fg_ = foreground;
-        default_bg_ = background;
+        configured_fg_ = default_fg_ = foreground;
+        configured_bg_ = default_bg_ = background;
     }
 
 private:
@@ -78,6 +82,7 @@ private:
     void handle_csi(uint8_t final_char);
     void handle_sgr();
     void handle_osc();
+    void update_default_color(int command, uint32_t rgb);
     void handle_decset(bool set);
 
     void parse_csi_param_byte(uint8_t byte);
@@ -107,15 +112,23 @@ private:
     DcsHandler dcs_handler_;
     OscHandler osc_handler_;
     ResponseCallback response_cb_;
+    ClipboardHandler clipboard_handler_;
     std::function<void(bool)> sync_handler_;
+    std::function<void(uint32_t, uint32_t)> default_color_handler_;
 
     // UTF-8 state for multibyte characters in Ground state
     uint32_t utf8_state_{0};
     uint32_t utf8_codepoint_{0};
     uint32_t utf8_minimum_{0};
     bool string_overflow_{false};
+    // tmux doubles ESC inside a DCS passthrough payload. This records the
+    // first ESC until the next byte disambiguates ESC ESC from ESC ST.
+    bool dcs_tmux_escape_pending_{false};
+    int passthrough_depth_{0};
     uint32_t default_fg_{0xffdddddd};
     uint32_t default_bg_{0xff111111};
+    uint32_t configured_fg_{0xffdddddd};
+    uint32_t configured_bg_{0xff111111};
 };
 
 } // namespace gritty::core

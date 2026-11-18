@@ -6,7 +6,8 @@
 
 namespace gritty::render {
 
-FontEngine::FontEngine(AntialiasMode antialias) : antialias_mode_(antialias) {
+FontEngine::FontEngine(AntialiasMode antialias, GlyphCacheLimits limits)
+    : antialias_mode_(antialias), cache_limits_(limits) {
     if (ft_lib_.valid()) {
         FT_Library_SetLcdFilter(ft_lib_.get(), FT_LCD_FILTER_DEFAULT);
     }
@@ -32,8 +33,10 @@ bool FontEngine::load_font(std::string_view font_path, double pt_size, unsigned 
     faces_.push_back(LoadedFace{
         .face = std::move(ft_face),
         .hb_font = util::HbFont(hb_font),
-        .path = std::string(font_path)
+        .path = std::string(font_path),
+        .attempted = true
     });
+    face_load_attempts_ = 1;
 
     compute_metrics();
     clear_cache();
@@ -41,24 +44,33 @@ bool FontEngine::load_font(std::string_view font_path, double pt_size, unsigned 
 }
 
 bool FontEngine::add_fallback_font(std::string_view font_path) {
-    if (!ft_lib_.valid()) return false;
+    if (!ft_lib_.valid() || faces_.empty() || font_path.empty()) return false;
+    // uint8_t GlyphKey::face_idx must never wrap to a different face.
+    for (size_t i = 1; i < faces_.size(); ++i)
+        if (faces_[i].path == font_path) return true;
+    if (faces_.size() >= 256) return false;
+    faces_.push_back(LoadedFace{.face = {}, .hb_font = {}, .path = std::string(font_path)});
+    char_index_cache_.clear();
+    return true;
+}
 
-    FT_Face raw_face = nullptr;
-    FT_Error err = FT_New_Face(ft_lib_.get(), std::string(font_path).c_str(), 0, &raw_face);
-    if (err || !raw_face) return false;
+size_t FontEngine::loaded_face_count() const noexcept {
+    return std::count_if(faces_.begin(), faces_.end(), [](const auto& face) { return face.face.valid(); });
+}
 
-    util::FtFace ft_face(raw_face);
-    FT_F26Dot6 char_size = static_cast<FT_F26Dot6>(pt_size_ * 64.0);
-    FT_Set_Char_Size(ft_face.get(), 0, char_size, dpi_, dpi_);
-
-    hb_font_t* hb_font = hb_ft_font_create_referenced(ft_face.get());
-
-    faces_.push_back(LoadedFace{
-        .face = std::move(ft_face),
-        .hb_font = util::HbFont(hb_font),
-        .path = std::string(font_path)
-    });
-
+bool FontEngine::open_fallback(LoadedFace& pending) {
+    if (pending.attempted) return pending.face.valid();
+    pending.attempted = true; // Failed files are not reopened for every missing character.
+    ++face_load_attempts_;
+    FT_Face raw = nullptr;
+    if (FT_New_Face(ft_lib_.get(), pending.path.c_str(), 0, &raw) != 0 || !raw) return false;
+    util::FtFace face(raw);
+    if (FT_Set_Char_Size(raw, 0, static_cast<FT_F26Dot6>(pt_size_ * 64.0), dpi_, dpi_) != 0)
+        return false;
+    pending.hb_font.reset(hb_ft_font_create_referenced(raw));
+    pending.face = std::move(face);
+    // A new face can cover codepoints that were previously resolved as missing.
+    char_index_cache_.clear();
     return true;
 }
 
@@ -96,44 +108,111 @@ void FontEngine::compute_metrics() {
     metrics_.underline_thickness = underline_thick;
 }
 
-void FontEngine::clear_cache() noexcept {
-    glyph_cache_.clear();
+FontEngine::CharIndex FontEngine::resolve_char(char32_t cp) {
+    CharIndex result{};
+    auto cached = char_index_cache_.find(cp);
+    if (cached != char_index_cache_.end()) return cached->second;
+
+    for (size_t i = 0; i < faces_.size(); ++i) {
+        if (!faces_[i].face.valid() && !open_fallback(faces_[i])) continue;
+        const uint32_t glyph = FT_Get_Char_Index(faces_[i].face.get(), cp);
+        if (glyph != 0) {
+            result.face_idx = static_cast<uint8_t>(i);
+            result.glyph_index = glyph;
+            break;
+        }
+    }
+    result.resolved = true;
+    if (char_index_cache_.size() >= 8192) char_index_cache_.clear();
+    char_index_cache_.emplace(cp, result);
+    return result;
+}
+
+const CachedGlyph* FontEngine::cached_or_rasterize(const GlyphKey& key) {
+    auto it = glyph_cache_.find(key);
+    if (it != glyph_cache_.end()) {
+        ++cache_hits_;
+        glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, it->second.recency);
+        return &it->second.glyph;
+    }
+    ++cache_misses_;
+    return rasterize_glyph(key.face_idx, key.glyph_index, key.bold, key.italic);
 }
 
 const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
     if (faces_.empty()) return nullptr;
+    transient_glyph_ = CachedGlyph{};
+    transient_bitmap_bytes_ = 0;
 
-    uint8_t face_idx = 0;
-    uint32_t glyph_index = 0;
+    const CharIndex resolved = resolve_char(cp);
+    return cached_or_rasterize(GlyphKey{
+        .glyph_index = resolved.glyph_index,
+        .face_idx = resolved.face_idx,
+        .bold = bold,
+        .italic = italic
+    });
+}
 
-    for (size_t i = 0; i < faces_.size(); ++i) {
-        uint32_t g = FT_Get_Char_Index(faces_[i].face.get(), cp);
-        if (g != 0) {
-            face_idx = static_cast<uint8_t>(i);
-            glyph_index = g;
-            break;
-        }
-    }
-
-    if (glyph_index == 0) {
-        // Not found, use .notdef of primary face
-        face_idx = 0;
-        glyph_index = 0;
-    }
-
-    GlyphKey key{
+const CachedGlyph* FontEngine::glyph_for_index(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic) {
+    if (face_idx >= faces_.size()) return nullptr;
+    transient_glyph_ = CachedGlyph{};
+    transient_bitmap_bytes_ = 0;
+    return cached_or_rasterize(GlyphKey{
         .glyph_index = glyph_index,
         .face_idx = face_idx,
         .bold = bold,
         .italic = italic
-    };
+    });
+}
 
-    auto it = glyph_cache_.find(key);
-    if (it != glyph_cache_.end()) {
-        return &it->second;
+const ShapedCluster* FontEngine::shape_cluster(std::span<const char32_t> cluster, bool bold, bool italic) {
+    if (cluster.empty() || faces_.empty()) return nullptr;
+
+    ShapedClusterKey key{};
+    key.length = static_cast<uint8_t>(std::min<size_t>(cluster.size(), key.text.size()));
+    std::copy_n(cluster.begin(), key.length, key.text.begin());
+    key.bold = bold;
+    key.italic = italic;
+    if (auto it = shaped_cache_.find(key); it != shaped_cache_.end()) return &it->second;
+
+    // Shape with the face that covers the base codepoint (combining marks are
+    // positioned by HarfBuzz anchors, which is what makes them land correctly).
+    const CharIndex base = resolve_char(cluster.front());
+    const uint8_t face_idx = base.face_idx < faces_.size() ? base.face_idx : 0;
+    const auto& face = faces_[face_idx];
+    if (!face.hb_font.valid() || !face.hb_font.get()) return nullptr;
+
+    static_assert(sizeof(char32_t) == sizeof(uint32_t));
+    hb_buffer_t* buffer = hb_buffer_create();
+    if (!buffer) return nullptr;
+    hb_buffer_add_utf32(buffer, reinterpret_cast<const uint32_t*>(cluster.data()),
+        static_cast<int>(cluster.size()), 0, static_cast<int>(cluster.size()));
+    hb_buffer_set_direction(buffer, HB_DIRECTION_LTR);
+    hb_buffer_guess_segment_properties(buffer);
+    hb_shape(face.hb_font.get(), buffer, nullptr, 0);
+
+    unsigned count = 0;
+    const hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buffer, &count);
+    const hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buffer, &count);
+    ShapedCluster shaped{.face_idx = face_idx, .glyphs = {}};
+    if (info && positions) {
+        shaped.glyphs.reserve(count);
+        for (unsigned i = 0; i < count; ++i) {
+            shaped.glyphs.push_back(ShapedGlyph{
+                .glyph_index = info[i].codepoint,
+                .x_offset = positions[i].x_offset / 64,
+                .y_offset = positions[i].y_offset / 64,
+                .x_advance = positions[i].x_advance / 64,
+                .y_advance = positions[i].y_advance / 64
+            });
+        }
     }
+    hb_buffer_destroy(buffer);
+    if (shaped.glyphs.empty()) return nullptr;
 
-    return rasterize_glyph(face_idx, glyph_index, bold, italic);
+    if (shaped_cache_.size() >= 512) shaped_cache_.clear();
+    auto [it, inserted] = shaped_cache_.emplace(std::move(key), std::move(shaped));
+    return &it->second;
 }
 
 const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic) {
@@ -189,8 +268,7 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
             .bold = bold,
             .italic = italic
         };
-        auto [it, _] = glyph_cache_.emplace(key, std::move(cached));
-        return &it->second;
+        return cache_glyph(key, std::move(cached));
     }
 
     if (bitmap.pixel_mode == FT_PIXEL_MODE_LCD) {
@@ -276,8 +354,7 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
         .bold = bold,
         .italic = italic
     };
-    auto [it, _] = glyph_cache_.emplace(key, std::move(cached));
-    return &it->second;
+    return cache_glyph(key, std::move(cached));
 }
 
 } // namespace gritty::render

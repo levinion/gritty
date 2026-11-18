@@ -153,7 +153,9 @@ int main(int argc, char* argv[]) {
             .default_fg = cfg->colors.foreground,
             .default_bg = cfg->colors.background_argb(),
             .cursor_color = cfg->cursor.color
-        }
+        },
+        .scrollback_lines = cfg->scrollback.lines,
+        .palette = cfg->colors.palette
     };
 
     auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(640, 384);
@@ -170,11 +172,6 @@ int main(int argc, char* argv[]) {
     );
 
     session->engine().set_cursor_shape(cfg->cursor.style, cfg->cursor.blink);
-    session->engine().primary_grid().set_scrollback_capacity(cfg->scrollback.lines);
-    if (cfg->colors.palette_customized) {
-        for (size_t i = 0; i < cfg->colors.palette.size(); ++i)
-            session->engine().set_palette_color(i, cfg->colors.palette[i] & 0xffffff);
-    }
 
     if (!session->start()) {
         std::cerr << "Failed to start terminal session.\n";

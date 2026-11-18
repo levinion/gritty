@@ -4,28 +4,6 @@
 
 namespace gritty::core {
 
-namespace {
-
-constexpr std::array<uint32_t, 16> kDefaultAnsiColors = {
-    0x000000, // 0: Black
-    0xcc0403, // 1: Red
-    0x19cb00, // 2: Green
-    0xcecb00, // 3: Yellow
-    0x0d73cc, // 4: Blue
-    0xcb1ed1, // 5: Magenta
-    0x0dcdcd, // 6: Cyan
-    0xdddddd, // 7: White
-    0x767676, // 8: Bright Black
-    0xf2201f, // 9: Bright Red
-    0x23fd00, // 10: Bright Green
-    0xfffd00, // 11: Bright Yellow
-    0x1a8fff, // 12: Bright Blue
-    0xfd28ff, // 13: Bright Magenta
-    0x14ffff, // 14: Bright Cyan
-    0xffffff  // 15: Bright White
-};
-
-} // namespace
 
 TerminalEngine::TerminalEngine(int cols, int rows, size_t scrollback_capacity)
     : cols_(cols),
@@ -40,30 +18,24 @@ TerminalEngine::TerminalEngine(int cols, int rows, size_t scrollback_capacity)
     for (auto& stack : kitty_keyboard_stacks_) stack.reserve(64);
 }
 
+void TerminalEngine::configure_palette(const std::array<uint32_t, 256>& colors) noexcept {
+    configured_palette_ = colors;
+    for (auto& color : configured_palette_) color &= 0xffffff;
+    reset_palette();
+}
+
+void TerminalEngine::set_palette_color(uint8_t index, uint32_t rgb24) noexcept {
+    rgb24 &= 0xffffff;
+    if (palette_[index] == rgb24) return;
+    palette_[index] = rgb24;
+    primary_grid_.mark_all_dirty();
+    alt_grid_.mark_all_dirty();
+}
+
 void TerminalEngine::reset_palette() noexcept {
-    // 0..15 ANSI colors
-    for (size_t i = 0; i < 16; ++i) {
-        palette_[i] = kDefaultAnsiColors[i];
-    }
-
-    // 16..231: 6x6x6 color cube
-    constexpr uint8_t steps[6] = {0, 95, 135, 175, 215, 255};
-    size_t idx = 16;
-    for (uint8_t r : steps) {
-        for (uint8_t g : steps) {
-            for (uint8_t b : steps) {
-                palette_[idx++] = (static_cast<uint32_t>(r) << 16) |
-                                  (static_cast<uint32_t>(g) << 8) | b;
-            }
-        }
-    }
-
-    // 232..255: 24 grayscale levels
-    for (size_t i = 0; i < 24; ++i) {
-        uint8_t level = static_cast<uint8_t>(8 + i * 10);
-        palette_[idx++] = (static_cast<uint32_t>(level) << 16) |
-                          (static_cast<uint32_t>(level) << 8) | level;
-    }
+    palette_ = configured_palette_;
+    primary_grid_.mark_all_dirty();
+    alt_grid_.mark_all_dirty();
 }
 
 void TerminalEngine::resize(int cols, int rows) {
@@ -215,14 +187,11 @@ void TerminalEngine::print_char(char32_t cp) {
         // Combining character: append to previous cell
         if (width == 0 && cursor_.col > 0) {
             int target_col = cursor_.col - 1;
-            auto& prev_cell = active_grid_->cell(target_col, cursor_.row);
-            if (prev_cell.attrs.width == 0 && target_col > 0) {
+            if (active_grid_->cell(target_col, cursor_.row).attrs.width == 0 && target_col > 0) {
                 target_col--; // If this was continuation cell, find leading cell
             }
-            std::span<const char32_t> existing = active_grid_->get_combining_codepoints(prev_cell.combining_idx);
-            std::vector<char32_t> combined(existing.begin(), existing.end());
-            combined.push_back(cp);
-            prev_cell.combining_idx = active_grid_->store_combining_codepoints(combined);
+            auto& prev_cell = active_grid_->cell(target_col, cursor_.row);
+            prev_cell.combining_idx = active_grid_->append_combining_codepoint(prev_cell.combining_idx, cp);
             active_grid_->row(cursor_.row).mark_dirty(target_col);
         }
         return;
@@ -308,6 +277,17 @@ void TerminalEngine::erase_in_display(int mode) {
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->erase_in_display(cursor_.col, cursor_.row, mode, empty_cell);
+    switch (mode) {
+        case 2:
+            images_.erase(std::remove_if(images_.begin(), images_.end(),
+                [this](const PlacedImage& image) { return image.alt_screen == is_alt_screen_; }),
+                images_.end());
+            break;
+        case 0: erase_images(cursor_.col, cursor_.row, cols_ - 1, rows_ - 1); break;
+        case 1: erase_images(0, 0, cursor_.col, cursor_.row); break;
+        case 3: break; // Scrollback has no images; keep the visible ones.
+        default: break;
+    }
 }
 
 void TerminalEngine::erase_in_line(int mode) {
@@ -315,6 +295,12 @@ void TerminalEngine::erase_in_line(int mode) {
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->erase_in_line(cursor_.col, cursor_.row, mode, empty_cell);
+    switch (mode) {
+        case 0: erase_images(cursor_.col, cursor_.row, cols_ - 1, cursor_.row); break;
+        case 1: erase_images(0, cursor_.row, cursor_.col, cursor_.row); break;
+        case 2: erase_images(0, cursor_.row, cols_ - 1, cursor_.row); break;
+        default: break;
+    }
 }
 
 void TerminalEngine::insert_lines(int count) {
@@ -322,6 +308,7 @@ void TerminalEngine::insert_lines(int count) {
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->insert_lines(cursor_.row, margin_bottom_, count, empty_cell);
+    scroll_images(cursor_.row, margin_bottom_, -count);
 }
 
 void TerminalEngine::delete_lines(int count) {
@@ -329,6 +316,7 @@ void TerminalEngine::delete_lines(int count) {
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->delete_lines(cursor_.row, margin_bottom_, count, empty_cell);
+    scroll_images(cursor_.row, margin_bottom_, count);
 }
 
 void TerminalEngine::insert_chars(int count) {
@@ -365,6 +353,131 @@ void TerminalEngine::set_margins(int top, int bottom) {
 void TerminalEngine::set_origin_mode(bool enable) noexcept {
     origin_mode_ = enable;
     set_cursor_pos(0, 0);
+}
+
+void TerminalEngine::damage_image_rows(int row, int rows) noexcept {
+    const int last = std::min(rows_, row + rows);
+    for (int y = std::max(0, row); y < last; ++y)
+        active_grid_->row(y).mark_all_dirty(cols_);
+}
+
+void TerminalEngine::place_image(PlacedImage placement) {
+    if (!placement.image.valid()) return;
+    placement.alt_screen = is_alt_screen_;
+    placement.cols = std::max(1, placement.cols);
+    placement.rows = std::max(1, placement.rows);
+
+    // Sixel images are not capped by the Kitty image store; bound the total
+    // render-side bitmap memory the same way (oldest image is evicted first).
+    if (placement.image_id == 0) {
+        constexpr size_t max_sixel_bytes = size_t{32} << 20;
+        const size_t incoming = static_cast<size_t>(placement.image.stride()) * placement.image.height();
+        auto bytes_of = [](const PlacedImage& image) {
+            return static_cast<size_t>(image.image.stride()) * image.image.height();
+        };
+        while (true) {
+            size_t total = 0;
+            for (const auto& image : images_)
+                if (image.image_id == 0) total += bytes_of(image);
+            if (total + incoming <= max_sixel_bytes) break;
+            auto oldest = std::find_if(images_.begin(), images_.end(),
+                [](const PlacedImage& image) { return image.image_id == 0; });
+            if (oldest == images_.end()) break;
+            damage_image_rows(oldest->row, oldest->rows);
+            images_.erase(oldest);
+        }
+    }
+
+    damage_image_rows(placement.row, placement.rows);
+    images_.push_back(std::move(placement));
+}
+
+void TerminalEngine::clear_images() noexcept {
+    if (!images_.empty()) active_grid_->mark_all_dirty();
+    images_.clear();
+}
+
+void TerminalEngine::remove_images_by_id(uint32_t image_id) noexcept {
+    const bool found = std::any_of(images_.begin(), images_.end(),
+        [image_id](const PlacedImage& image) { return image.image_id == image_id; });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [image_id](const PlacedImage& image) { return image.image_id == image_id; });
+}
+
+void TerminalEngine::remove_images_by_placement(uint32_t placement_id) noexcept {
+    if (placement_id == 0) return;
+    const bool found = std::any_of(images_.begin(), images_.end(),
+        [placement_id](const PlacedImage& image) { return image.placement_id == placement_id; });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [placement_id](const PlacedImage& image) { return image.placement_id == placement_id; });
+}
+
+void TerminalEngine::remove_images_by_placement(uint32_t image_id, uint32_t placement_id) noexcept {
+    const bool found = std::any_of(images_.begin(), images_.end(), [&](const PlacedImage& image) {
+        return image.image_id == image_id && image.placement_id == placement_id;
+    });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [&](const PlacedImage& image) {
+        return image.image_id == image_id && image.placement_id == placement_id;
+    });
+}
+
+void TerminalEngine::remove_images_at(int col, int row) noexcept {
+    const bool found = std::any_of(images_.begin(), images_.end(), [&](const PlacedImage& image) {
+        return image.alt_screen == is_alt_screen_ && col >= image.col &&
+            col < image.col + image.cols && row >= image.row && row < image.row + image.rows;
+    });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [&](const PlacedImage& image) {
+        return image.alt_screen == is_alt_screen_ && col >= image.col &&
+            col < image.col + image.cols && row >= image.row && row < image.row + image.rows;
+    });
+}
+
+void TerminalEngine::remove_images_by_z(int z_index) noexcept {
+    const bool found = std::any_of(images_.begin(), images_.end(),
+        [z_index](const PlacedImage& image) { return image.z_index == z_index; });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [z_index](const PlacedImage& image) { return image.z_index == z_index; });
+}
+
+void TerminalEngine::erase_images(int col1, int row1, int col2, int row2) noexcept {
+    if (col1 > col2) std::swap(col1, col2);
+    if (row1 > row2) std::swap(row1, row2);
+    const bool found = std::any_of(images_.begin(), images_.end(), [&](const PlacedImage& image) {
+        if (image.alt_screen != is_alt_screen_) return false;
+        const int c1 = image.col, c2 = image.col + image.cols - 1;
+        const int r1 = image.row, r2 = image.row + image.rows - 1;
+        return c1 <= col2 && c2 >= col1 && r1 <= row2 && r2 >= row1;
+    });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [&](const PlacedImage& image) {
+        if (image.alt_screen != is_alt_screen_) return false;
+        const int c1 = image.col, c2 = image.col + image.cols - 1;
+        const int r1 = image.row, r2 = image.row + image.rows - 1;
+        return c1 <= col2 && c2 >= col1 && r1 <= row2 && r2 >= row1;
+    });
+}
+
+void TerminalEngine::scroll_images(int top, int bottom, int rows) noexcept {
+    if (rows == 0) return;
+    // Images overlapping the scrolled region move with it and disappear once
+    // fully outside; images in other panes stay put.
+    std::vector<PlacedImage> kept;
+    kept.reserve(images_.size());
+    for (auto& image : images_) {
+        if (image.alt_screen != is_alt_screen_ || image.row + image.rows <= top || image.row > bottom) {
+            kept.push_back(std::move(image));
+            continue;
+        }
+        damage_image_rows(image.row, image.rows); // Old position needs a repaint.
+        image.row -= rows;
+        if (image.row + image.rows > top && image.row <= bottom) {
+            damage_image_rows(image.row, image.rows); // New position too.
+            kept.push_back(std::move(image));
+        }
+    }
+    images_ = std::move(kept);
 }
 
 } // namespace gritty::core

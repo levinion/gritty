@@ -1,137 +1,11 @@
 #include "platform/macos/cocoa_surface.hpp"
-#include "platform/macos/mac_input.hpp"
+#include "platform/macos/cocoa_view.hpp"
+#include "platform/macos/application_icon.hpp"
+#include <utf8proc.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 
-@interface GrittyView : NSView <NSTextInputClient> {
-    gritty::platform::macos::CocoaLayerSurface* _surface;
-}
-- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface;
-@end
-
-@implementation GrittyView
-
-- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface {
-    self = [super initWithFrame:NSZeroRect];
-    if (self) {
-        _surface = surface;
-        [self setWantsLayer:YES];
-        self.layer.drawsAsynchronously = NO;
-        self.layer.opaque = !surface->is_transparent();
-        self.layer.backgroundColor = (surface->is_transparent() ? NSColor.clearColor : NSColor.blackColor).CGColor;
-        self.layer.contentsScale = [NSScreen mainScreen].backingScaleFactor;
-    }
-    return self;
-}
-
-- (BOOL)isOpaque { return _surface && !_surface->is_transparent(); }
-- (BOOL)acceptsFirstResponder { return YES; }
-- (BOOL)canBecomeKeyView { return YES; }
-
-- (void)viewDidChangeBackingProperties {
-    [super viewDidChangeBackingProperties];
-    CGFloat s = self.window ? self.window.backingScaleFactor : [NSScreen mainScreen].backingScaleFactor;
-    self.layer.contentsScale = s;
-    NSSize pts = self.bounds.size;
-    if (_surface) {
-        _surface->on_view_resize(static_cast<int>(pts.width * s), static_cast<int>(pts.height * s), s);
-    }
-}
-
-- (void)setFrameSize:(NSSize)newSize {
-    [super setFrameSize:newSize];
-    CGFloat s = self.window ? self.window.backingScaleFactor : [NSScreen mainScreen].backingScaleFactor;
-    if (_surface) {
-        _surface->on_view_resize(static_cast<int>(newSize.width * s), static_cast<int>(newSize.height * s), s);
-    }
-}
-
-- (void)keyDown:(NSEvent *)event {
-    if (_surface) {
-        auto ev = gritty::platform::macos::MacInput::translate_key_event(event);
-        _surface->on_key_event(ev);
-    }
-}
-
-- (void)keyUp:(NSEvent *)event {
-    if (_surface) {
-        auto ev = gritty::platform::macos::MacInput::translate_key_event(event);
-        ev.action = gritty::input::KeyAction::Release;
-        _surface->on_key_event(ev);
-    }
-}
-
-- (void)flagsChanged:(NSEvent *)event {
-    // Modifier only events
-    (void)event;
-}
-
-- (void)mouseDown:(NSEvent *)event { [self handleMouse:event]; }
-- (void)mouseUp:(NSEvent *)event { [self handleMouse:event]; }
-- (void)rightMouseDown:(NSEvent *)event { [self handleMouse:event]; }
-- (void)rightMouseUp:(NSEvent *)event { [self handleMouse:event]; }
-- (void)otherMouseDown:(NSEvent *)event { [self handleMouse:event]; }
-- (void)otherMouseUp:(NSEvent *)event { [self handleMouse:event]; }
-- (void)mouseMoved:(NSEvent *)event { [self handleMouse:event]; }
-- (void)mouseDragged:(NSEvent *)event { [self handleMouse:event]; }
-- (void)rightMouseDragged:(NSEvent *)event { [self handleMouse:event]; }
-- (void)otherMouseDragged:(NSEvent *)event { [self handleMouse:event]; }
-- (void)scrollWheel:(NSEvent *)event { [self handleMouse:event]; }
-
-- (void)handleMouse:(NSEvent *)event {
-    if (_surface) {
-        auto ev = gritty::platform::macos::MacInput::translate_mouse_event(
-            event, 0, 0, self.bounds.size.height);
-        _surface->on_mouse_event(ev);
-    }
-}
-
-// NSTextInputClient stubs
-- (void)insertText:(id)string replacementRange:(NSRange)replacementRange { (void)string; (void)replacementRange; }
-- (void)doCommandBySelector:(SEL)selector { (void)selector; }
-- (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange { (void)string; (void)selectedRange; (void)replacementRange; }
-- (void)unmarkText {}
-- (NSRange)selectedRange { return NSMakeRange(NSNotFound, 0); }
-- (NSRange)markedRange { return NSMakeRange(NSNotFound, 0); }
-- (BOOL)hasMarkedText { return NO; }
-- (nullable NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange { (void)range; (void)actualRange; return nil; }
-- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText { return @[]; }
-- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange { (void)range; (void)actualRange; return NSZeroRect; }
-- (NSUInteger)characterIndexForPoint:(NSPoint)point { (void)point; return 0; }
-
-@end
-
-@interface GrittyWindowDelegate : NSObject <NSWindowDelegate> {
-    gritty::platform::macos::CocoaLayerSurface* _surface;
-}
-- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface;
-@end
-
-@implementation GrittyWindowDelegate
-- (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface {
-    self = [super init];
-    if (self) {
-        _surface = surface;
-    }
-    return self;
-}
-- (void)windowWillClose:(NSNotification *)notification {
-    (void)notification;
-    if (_surface) {
-        _surface->on_window_close();
-    }
-}
-@end
-
 namespace gritty::platform::macos {
-
-namespace {
-
-void data_provider_release(void* image, const void*, size_t) {
-    pixman_image_unref(static_cast<pixman_image_t*>(image));
-}
-
-} // namespace
 
 CocoaLayerSurface::CocoaLayerSurface(int width, int height, double scale)
     : pixel_width_(width), pixel_height_(height), scale_(scale) {
@@ -143,7 +17,21 @@ CocoaLayerSurface::CocoaLayerSurface(int width, int height, double scale)
 }
 
 CocoaLayerSurface::~CocoaLayerSurface() {
+    set_frame_ready_callback({});
+    cancel_resize_timer();
+    cancel_buffer_trim_timer();
+    cancel_frame_retry_timer();
     @autoreleasepool {
+        if (native_view_) {
+            GrittyView* view = (GrittyView*)native_view_;
+            [view detachSurface];
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            view.layer.contents = nil;
+            [CATransaction commit];
+            [CATransaction flush];
+        }
+        buffers_.detach_displayed();
         if (native_window_) {
             NSWindow* win = (NSWindow*)native_window_;
             [win setDelegate:nil];
@@ -161,11 +49,7 @@ CocoaLayerSurface::~CocoaLayerSurface() {
 
 void CocoaLayerSurface::reallocate_buffer() {
     if (pixel_width_ <= 0 || pixel_height_ <= 0) return;
-    int stride = pixel_width_ * 4;
-    pixman_image_t* raw = pixman_image_create_bits(
-        PIXMAN_a8r8g8b8, pixel_width_, pixel_height_, nullptr, stride);
-    surface_.reset(raw);
-    buffer_shared_ = false;
+    buffers_.resize(pixel_width_, pixel_height_);
 }
 
 void CocoaLayerSurface::resize(int pixel_width, int pixel_height, double scale) {
@@ -178,57 +62,37 @@ void CocoaLayerSurface::resize(int pixel_width, int pixel_height, double scale) 
 }
 
 pixman_image_t* CocoaLayerSurface::get_back_buffer() {
-    if (buffer_shared_) {
-        // CALayer may consume the previous frame asynchronously. Keep it
-        // immutable and copy its contents so incremental damage stays valid.
-        util::PixmanImage next(pixman_image_create_bits(
-            PIXMAN_a8r8g8b8, pixel_width_, pixel_height_, nullptr, 0));
-        if (!next.valid()) return nullptr;
-        pixman_image_composite32(PIXMAN_OP_SRC, surface_.get(), nullptr, next.get(),
-            0, 0, 0, 0, 0, 0, pixel_width_, pixel_height_);
-        surface_ = std::move(next);
-        buffer_shared_ = false;
-    }
-    return surface_.get();
+    auto* buffer = buffers_.get_back_buffer();
+    if (buffer) cancel_frame_retry_timer();
+    else if (frame_ready_cb_) request_frame();
+    return buffer;
 }
 
 void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
-    (void)damage;
-    if (!surface_.valid() || !native_view_) return;
+    if (!buffers_.valid() || !native_view_) return;
 
     @autoreleasepool {
         GrittyView* view = (GrittyView*)native_view_;
-        int w = surface_.width();
-        int h = surface_.height();
-        int stride = surface_.stride();
-        uint32_t* data = surface_.data();
-
-        auto* retained = pixman_image_ref(surface_.get());
-        CGDataProviderRef provider = CGDataProviderCreateWithData(
-            retained, data, static_cast<size_t>(h) * stride, data_provider_release);
-        if (!provider) {
-            pixman_image_unref(retained);
-            return;
-        }
-
-        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-        // Zero copy matching PIXMAN_a8r8g8b8 on little-endian ARM64/x86_64
-        CGBitmapInfo bitmap_info = kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst;
-
-        CGImageRef cg_image = CGImageCreate(
-            w, h, 8, 32, stride, cs, bitmap_info, provider, nullptr, false, kCGRenderingIntentDefault);
-
-        CGDataProviderRelease(provider);
-        CGColorSpaceRelease(cs);
-
-        if (cg_image) {
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            view.layer.contents = (id)cg_image;
-            [CATransaction commit];
-            buffer_shared_ = true;
-            CGImageRelease(cg_image);
-        }
+        IOSurfaceRef surface = buffers_.prepare_present();
+        if (!surface) return;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        // CPU Pixman pixels and the WindowServer's contents are the same
+        // shared IOSurface: no CGImage/provider or intermediate raster copy.
+        view.layer.contents = (id)surface;
+        view.layer.contentsScale = scale_;
+        [CATransaction commit];
+        if (present_flush_) [CATransaction flush];
+        buffers_.did_present(&damage); // Only now detach the previous surface.
+        ++presented_frames_;
+        // The compositor samples this commit on the next vsync tick. Until the
+        // frame clock fires, the session only updates state and coalesces.
+        frame_in_flight_ = true;
+        // This tick only controls pacing; it does NOT release the committed
+        // surface. The pool separately checks attachment and IOSurfaceIsInUse
+        // before allowing a buffer to be written again.
+        schedule_frame_done_tick();
+        schedule_buffer_trim();
     }
 }
 
@@ -254,10 +118,16 @@ void CocoaLayerSurface::show_window(const std::string& title) {
             }
         }
         if (iconPath) {
-            NSImage* icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
-            if (icon) {
-                [NSApp setApplicationIconImage:icon];
-                [icon release];
+            // Keep a 128-point Retina Dock icon, not every representation of
+            // the 1024px ICNS (including its expensive decoded image cache).
+            CGImageRef pixels = copy_application_icon(iconPath.fileSystemRepresentation);
+            if (pixels) {
+                NSImage* icon = [[NSImage alloc] initWithCGImage:pixels size:NSMakeSize(128, 128)];
+                CGImageRelease(pixels);
+                if (icon) {
+                    [NSApp setApplicationIconImage:icon];
+                    [icon release];
+                }
             }
         }
 
@@ -326,13 +196,199 @@ void CocoaLayerSurface::on_key_event(const input::KeyEvent& ev) {
     if (key_cb_) key_cb_(ev);
 }
 
+void CocoaLayerSurface::commit_text(std::string_view utf8) {
+    if (utf8.empty()) return;
+    size_t characters = 0;
+    std::string_view rest = utf8;
+    while (!rest.empty()) {
+        utf8proc_int32_t cp = 0;
+        const auto n = utf8proc_iterate(reinterpret_cast<const uint8_t*>(rest.data()), rest.size(), &cp);
+        if (n <= 0) break;
+        ++characters;
+        rest.remove_prefix(n);
+    }
+    if (characters > 1 && input_wants_bracketed_paste()) {
+        std::string wrapped = "\x1b[200~";
+        wrapped.append(utf8);
+        wrapped += "\x1b[201~";
+        if (text_commit_cb_) text_commit_cb_(wrapped);
+        return;
+    }
+    if (text_commit_cb_) text_commit_cb_(utf8);
+}
+
 void CocoaLayerSurface::on_mouse_event(const input::MouseEvent& ev) {
     if (mouse_cb_) mouse_cb_(ev);
 }
 
 void CocoaLayerSurface::on_view_resize(int px_w, int px_h, double scale) {
-    resize(px_w, px_h, scale);
-    if (resize_cb_) resize_cb_(px_w, px_h, scale);
+    if (px_w <= 0 || px_h <= 0 || scale <= 0) return;
+    pending_width_ = px_w; pending_height_ = px_h; pending_scale_ = scale;
+    resize_pending_ = true;
+    // Like foot's frame scheduling: keep only the latest configure, not one
+    // full-size bitmap and TIOCSWINSZ for every intermediate drag pixel.
+    if (!native_view_) flush_pending_resize();
+    else schedule_resize(1.0 / 60.0);
+}
+
+void CocoaLayerSurface::cancel_resize_timer() {
+    if (!native_resize_timer_) return;
+    auto timer = static_cast<CFRunLoopTimerRef>(native_resize_timer_);
+    native_resize_timer_ = nullptr;
+    CFRunLoopTimerInvalidate(timer);
+    CFRelease(timer);
+}
+
+void CocoaLayerSurface::cancel_buffer_trim_timer() {
+    if (!native_buffer_trim_timer_) return;
+    auto timer = static_cast<CFRunLoopTimerRef>(native_buffer_trim_timer_);
+    CFRunLoopTimerInvalidate(timer);
+    CFRelease(timer);
+    native_buffer_trim_timer_ = nullptr;
+}
+
+void CocoaLayerSurface::schedule_buffer_trim() {
+    const auto deadline = CFAbsoluteTimeGetCurrent() + 2.0;
+    if (native_buffer_trim_timer_) {
+        CFRunLoopTimerSetNextFireDate(static_cast<CFRunLoopTimerRef>(native_buffer_trim_timer_), deadline);
+        return;
+    }
+    CFRunLoopTimerContext context{0, this, nullptr, nullptr, nullptr};
+    auto timer = CFRunLoopTimerCreate(nullptr, deadline, 0, 0, 0,
+        [](CFRunLoopTimerRef, void* data) {
+            @autoreleasepool {
+                auto* self = static_cast<CocoaLayerSurface*>(data);
+                self->cancel_buffer_trim_timer();
+                self->buffers_.release_spare_buffers();
+                // A detached surface can still be pinned at the first idle
+                // deadline. Keep polling until release, even without new PTY data.
+                if (self->buffers_.has_pending_releases()) self->schedule_buffer_trim();
+            }
+        }, &context);
+    if (!timer) return;
+    native_buffer_trim_timer_ = timer;
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, (CFStringRef)NSEventTrackingRunLoopMode);
+}
+
+void CocoaLayerSurface::set_frame_ready_callback(FrameReadyCallback cb) {
+    frame_ready_cb_ = std::move(cb);
+    if (!frame_ready_cb_) {
+        frame_requested_ = false;
+        cancel_frame_retry_timer();
+        if (native_view_) [(GrittyView*)native_view_ stopFrames];
+    }
+}
+
+bool CocoaLayerSurface::request_frame() {
+    if (!native_view_ || !frame_ready_cb_) return false;
+    if (frame_requested_) return true;
+    frame_requested_ = true;
+    if (occluded_) return true;
+    if (![(GrittyView*)native_view_ requestFrame] && !schedule_frame_retry()) {
+        frame_requested_ = false;
+        return false; // If timer creation fails, let a ready buffer render synchronously.
+    }
+    return true;
+}
+
+void CocoaLayerSurface::on_visibility_changed(bool visible) {
+    occluded_ = !visible;
+    if (!visible) {
+        cancel_frame_retry_timer();
+        if (native_view_) [(GrittyView*)native_view_ stopFrames];
+    } else if (frame_requested_) {
+        frame_requested_ = false;
+        if (!request_frame() && frame_ready_cb_) frame_ready_cb_();
+    } else if (frame_in_flight_) {
+        schedule_frame_done_tick();
+    }
+}
+
+void CocoaLayerSurface::on_frame_tick() {
+    // Permit another commit. Display-link timing is not a buffer-release fence;
+    // acquisition still refuses surfaces held by the layer/window server.
+    frame_in_flight_ = false;
+    if (!frame_requested_) return;
+    if (occluded_) { cancel_frame_retry_timer(); return; }
+    frame_requested_ = false;
+    cancel_frame_retry_timer();
+    if (frame_ready_cb_) frame_ready_cb_();
+}
+
+void CocoaLayerSurface::cancel_frame_retry_timer() {
+    if (!native_frame_retry_timer_) return;
+    auto timer = static_cast<CFRunLoopTimerRef>(native_frame_retry_timer_);
+    native_frame_retry_timer_ = nullptr;
+    CFRunLoopTimerInvalidate(timer);
+    CFRelease(timer);
+}
+
+void CocoaLayerSurface::schedule_frame_done_tick() {
+    if (occluded_) return;
+    if (native_view_ && [(GrittyView*)native_view_ requestFrame]) return;
+    schedule_frame_retry();
+}
+
+bool CocoaLayerSurface::schedule_frame_retry() {
+    if (native_frame_retry_timer_) return true;
+    CFRunLoopTimerContext context{0, this, nullptr, nullptr, nullptr};
+    auto timer = CFRunLoopTimerCreate(nullptr, CFAbsoluteTimeGetCurrent() + 1.0 / 60.0, 0, 0, 0,
+        [](CFRunLoopTimerRef, void* data) {
+            @autoreleasepool {
+                auto* self = static_cast<CocoaLayerSurface*>(data);
+                self->on_frame_tick();
+            }
+        }, &context);
+    if (!timer) return false;
+    native_frame_retry_timer_ = timer;
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, (CFStringRef)NSEventTrackingRunLoopMode);
+    return true;
+}
+
+void CocoaLayerSurface::schedule_resize(double delay) {
+    if (native_resize_timer_) return;
+    CFRunLoopTimerContext context{0, this, nullptr, nullptr, nullptr};
+    auto timer = CFRunLoopTimerCreate(nullptr, CFAbsoluteTimeGetCurrent() + delay, 0, 0, 0,
+        [](CFRunLoopTimerRef, void* data) {
+            auto* self = static_cast<CocoaLayerSurface*>(data);
+            self->flush_pending_resize();
+        }, &context);
+    if (!timer) { flush_pending_resize(); return; }
+    native_resize_timer_ = timer;
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), timer, (CFStringRef)NSEventTrackingRunLoopMode);
+}
+
+void CocoaLayerSurface::flush_pending_resize() {
+    cancel_resize_timer();
+    if (!resize_pending_) return;
+    resize_pending_ = false;
+    if (pending_width_ == pixel_width_ && pending_height_ == pixel_height_ && pending_scale_ == scale_) return;
+    resize(pending_width_, pending_height_, pending_scale_);
+    if (resize_cb_) resize_cb_(pixel_width_, pixel_height_, scale_);
+}
+
+void CocoaLayerSurface::on_live_resize(bool active) {
+    if (!active) {
+        flush_pending_resize(); // Always deliver the exact final geometry.
+    }
+}
+
+void CocoaLayerSurface::on_window_focus(bool focused) {
+    if (focus_cb_) focus_cb_(focused);
+}
+
+void CocoaLayerSurface::open_url(std::string_view url) {
+    @autoreleasepool {
+        if (url.empty()) return;
+        NSString* text = [[NSString alloc] initWithBytes:url.data() length:url.size()
+                                                encoding:NSUTF8StringEncoding];
+        if (!text) return;
+        NSURL* parsed = [NSURL URLWithString:text];
+        if (parsed) [[NSWorkspace sharedWorkspace] openURL:parsed];
+    }
 }
 
 void CocoaLayerSurface::on_window_close() {

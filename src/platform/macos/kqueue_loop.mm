@@ -27,10 +27,45 @@ KqueueRunLoop::KqueueRunLoop() {
         EV_SET(&ev, wake_pipe_read_.get(), EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
         ::kevent(kq_fd_.get(), &ev, 1, nullptr, 0, nullptr);
     }
+
+    // AppKit's event tracking modes do not run our hand-written poll loop.
+    // Publish kqueue readiness as a CFRunLoop source in common modes so PTY,
+    // timers and wakeups keep firing during live resize/scroll gestures.
+    if (kq_fd_.valid()) {
+        CFFileDescriptorContext fd_context{};
+        fd_context.version = 0;
+        fd_context.info = this;
+        cf_fd_ = CFFileDescriptorCreate(kCFAllocatorDefault, kq_fd_.get(), false,
+            &KqueueRunLoop::on_kq_ready, &fd_context);
+        if (cf_fd_) {
+            // This factory connects the CFFileDescriptor callout to a runloop
+            // source. A generic CFRunLoopSourceCreate() has no fd perform
+            // callback and would never signal our on_kq_ready handler.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            cf_source_ = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, cf_fd_, 0);
+#pragma clang diagnostic pop
+            if (cf_source_) {
+                CFRunLoopAddSource(CFRunLoopGetMain(), cf_source_, kCFRunLoopCommonModes);
+                CFFileDescriptorEnableCallBacks(cf_fd_, kCFFileDescriptorReadCallBack);
+            }
+        }
+    }
 }
 
 KqueueRunLoop::~KqueueRunLoop() {
     stop();
+    if (cf_source_) {
+        CFRunLoopSourceInvalidate(cf_source_);
+        CFRelease(cf_source_);
+        cf_source_ = nullptr;
+    }
+    if (cf_fd_) {
+        CFFileDescriptorInvalidate(cf_fd_);
+        CFRelease(cf_fd_);
+        cf_fd_ = nullptr;
+    }
+    // kq_fd_ and the wake pipe are closed by their RAII owners.
 }
 
 void KqueueRunLoop::add_fd(int fd, uint32_t events, FdCallback cb) {
@@ -65,10 +100,19 @@ void KqueueRunLoop::remove_fd(int fd) {
 }
 
 void KqueueRunLoop::set_timer(int delay_ms, std::function<void()> callback) {
-    timer_callback_ = std::move(callback);
+    set_timer(TimerId::Default, delay_ms, std::move(callback));
+}
+
+void KqueueRunLoop::set_timer(TimerId id, int delay_ms, std::function<void()> callback) {
+    const auto key = static_cast<uintptr_t>(id);
     struct kevent event{};
-    EV_SET(&event, 1, EVFILT_TIMER, delay_ms > 0 ? EV_ADD | EV_ENABLE | EV_ONESHOT : EV_DELETE,
-        0, delay_ms > 0 ? delay_ms : 0, nullptr);
+    EV_SET(&event, key, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
+    if (kq_fd_.valid()) ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
+    timers_.erase(key);
+    if (!callback || delay_ms <= 0 || !kq_fd_.valid()) return;
+
+    timers_.emplace(key, std::move(callback));
+    EV_SET(&event, key, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, delay_ms, nullptr);
     ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
 }
 
@@ -94,6 +138,24 @@ void KqueueRunLoop::wake() {
 void KqueueRunLoop::stop() {
     running_ = false;
     wake();
+    if (NSApp) {
+        // CFRunLoopStop() alone only exits one CFRunLoop invocation; NSApp
+        // would immediately re-enter its own event loop. stop: makes [NSApp
+        // run] return, while the posted wake event unblocks a nested modal
+        // tracking loop.
+        [NSApp stop:nil];
+    }
+    CFRunLoopStop(CFRunLoopGetMain());
+}
+
+void KqueueRunLoop::on_kq_ready(CFFileDescriptorRef fd, CFOptionFlags flags, void* context) {
+    (void)flags;
+    auto* self = static_cast<KqueueRunLoop*>(context);
+    if (self) self->poll_once(0);
+    // A callback may run while destruction is invalidating the descriptor.
+    // Re-arm only after draining kqueue and only while the fd is still live.
+    if (CFFileDescriptorIsValid(fd))
+        CFFileDescriptorEnableCallBacks(fd, kCFFileDescriptorReadCallBack);
 }
 
 int KqueueRunLoop::poll_once(int timeout_ms) {
@@ -113,8 +175,12 @@ int KqueueRunLoop::poll_once(int timeout_ms) {
 
     for (int i = 0; i < n; ++i) {
         if (evs[i].filter == EVFILT_TIMER) {
-            auto callback = std::move(timer_callback_);
-            timer_callback_ = {};
+            const auto key = static_cast<uintptr_t>(evs[i].ident);
+            auto it = timers_.find(key);
+            if (it == timers_.end()) continue;
+            // Remove before invoking: a callback may reschedule the same id.
+            auto callback = std::move(it->second);
+            timers_.erase(it);
             if (callback) callback();
             continue;
         }
@@ -142,23 +208,23 @@ int KqueueRunLoop::poll_once(int timeout_ms) {
 }
 
 void KqueueRunLoop::run() {
+    if (NSApp && ![NSApp isRunning]) [NSApp finishLaunching];
     running_ = true;
+    if (NSApp) {
+        // NSApp owns NSEvent delivery: it dequeues events and calls sendEvent:.
+        // A bare CFRunLoop only runs sources; it never dispatches keyDown,
+        // mouseDown or the window close button to NSResponder. Our kqueue
+        // CFFileDescriptor source is installed in common modes, so PTY and
+        // timers are still serviced by NSApp's run loop, including while
+        // AppKit is in NSEventTrackingRunLoopMode during live resize/scroll.
+        [NSApp run];
+        return;
+    }
+
+    // Headless probes have no NSApplication; keep the CFRunLoop fallback.
     while (running_) {
         @autoreleasepool {
-            if (NSApp) {
-                poll_once(0);
-
-                NSEvent* ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                                 untilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]
-                                                    inMode:NSDefaultRunLoopMode
-                                                   dequeue:YES];
-                if (ev) {
-                    [NSApp sendEvent:ev];
-                    [NSApp updateWindows];
-                }
-            } else {
-                poll_once(100);
-            }
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, true);
         }
     }
 }

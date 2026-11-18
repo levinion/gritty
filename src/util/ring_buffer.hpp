@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
+#include <type_traits>
+#include <algorithm>
 
 namespace gritty::util {
 
@@ -41,7 +43,8 @@ public:
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
     [[nodiscard]] bool full() const noexcept { return size_ == max_capacity_; }
 
-    void clear() noexcept {
+    void clear() noexcept(std::is_nothrow_default_constructible_v<T> && std::is_nothrow_move_assignable_v<T>) {
+        for (size_t i = 0; i < size_; ++i) (*this)[i] = T{};
         head_ = 0;
         size_ = 0;
     }
@@ -107,6 +110,17 @@ public:
         }
     }
 
+    // Donate a row and recover the overwritten slot for reuse. Unlike ordinary
+    // push_back, this explicitly returns ownership through the caller's value.
+    void exchange_back(T& value) noexcept(std::is_nothrow_swappable_v<T>) {
+        if (max_capacity_ == 0) return;
+        const auto index = full() ? head_ : (head_ + size_) % max_capacity_;
+        using std::swap;
+        swap(storage_[index], value);
+        if (full()) head_ = (head_ + 1) % max_capacity_;
+        else ++size_;
+    }
+
     template <typename... Args>
     T& emplace_back(Args&&... args) {
         if (max_capacity_ == 0) {
@@ -125,15 +139,17 @@ public:
         }
     }
 
-    void pop_front() noexcept {
+    void pop_front() noexcept(std::is_nothrow_default_constructible_v<T> && std::is_nothrow_move_assignable_v<T>) {
         if (size_ > 0) {
+            storage_[head_] = T{};
             head_ = (head_ + 1) % max_capacity_;
             --size_;
         }
     }
 
-    void pop_back() noexcept {
+    void pop_back() noexcept(std::is_nothrow_default_constructible_v<T> && std::is_nothrow_move_assignable_v<T>) {
         if (size_ > 0) {
+            (*this)[size_ - 1] = T{};
             --size_;
         }
     }

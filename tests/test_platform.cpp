@@ -171,6 +171,41 @@ TEST_CASE("KqueueRunLoop one-shot timer and cancellation") {
     CHECK_FALSE(fired);
 }
 
+TEST_CASE("KqueueRunLoop keeps independent one-shot timers") {
+    macos::KqueueRunLoop loop;
+    int default_count = 0, watchdog_count = 0, coalesce_count = 0;
+    loop.set_timer(IEventLoop::TimerId::Default, 1, [&] { ++default_count; });
+    loop.set_timer(IEventLoop::TimerId::SyncWatchdog, 2, [&] { ++watchdog_count; });
+    loop.set_timer(IEventLoop::TimerId::FrameCoalesce, 3, [&] { ++coalesce_count; });
+    auto pump_timers = [&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        while (std::chrono::steady_clock::now() < deadline) loop.poll_once(5);
+    };
+    pump_timers();
+    CHECK(default_count == 1);
+    CHECK(watchdog_count == 1);
+    CHECK(coalesce_count == 1);
+
+    // Replacing one id must not cancel the others.
+    loop.set_timer(IEventLoop::TimerId::SyncWatchdog, 0, {});
+    loop.set_timer(IEventLoop::TimerId::SyncWatchdog, 1, [&] { ++watchdog_count; });
+    pump_timers();
+    CHECK(watchdog_count == 2);
+    CHECK(default_count == 1);
+    CHECK(coalesce_count == 1);
+}
+
+TEST_CASE("KqueueRunLoop run dispatches timers through CFRunLoop") {
+    macos::KqueueRunLoop loop;
+    bool fired = false;
+    loop.set_timer(IEventLoop::TimerId::FrameCoalesce, 5, [&] {
+        fired = true;
+        loop.stop();
+    });
+    loop.run();
+    CHECK(fired);
+}
+
 TEST_CASE("KqueueRunLoop pipe wake") {
     macos::KqueueRunLoop loop;
     loop.wake();

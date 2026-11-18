@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 #import <Cocoa/Cocoa.h>
 #include "platform/macos/mac_input.hpp"
+#include "platform/macos/cocoa_view.hpp"
+#include "platform/macos/cocoa_surface.hpp"
+#include <memory>
 #include "input/input_mapper.hpp"
 
 using namespace gritty;
@@ -44,5 +47,38 @@ TEST_CASE("Cocoa drag events preserve the held mouse button for tmux") {
         CHECK(translated.action == input::MouseAction::Move);
         CHECK(translated.pixel_x == 20);
         CHECK(translated.pixel_y == 70);
+    }
+}
+
+TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
+    @autoreleasepool {
+        auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);
+        std::string received;
+        int key_events = 0;
+        surface->set_key_callback([&](const gritty::input::KeyEvent&) { ++key_events; });
+        surface->set_text_commit_callback([&](std::string_view text) { received.assign(text); });
+        surface->set_bracketed_paste_provider([] { return true; });
+        auto* view = [[GrittyView alloc] initWithSurface:surface.get()];
+        REQUIRE(view != nil);
+
+        [view insertText:@"ab" replacementRange:NSMakeRange(NSNotFound, 0)];
+        CHECK(received == "\x1b[200~ab\x1b[201~");
+        CHECK(key_events == 0); // IME text must not enter InputMapper/CSI-u.
+        CHECK_FALSE([view hasMarkedText]);
+
+        [view setMarkedText:@"にほん" selectedRange:NSMakeRange(2, 1) replacementRange:NSMakeRange(NSNotFound, 0)];
+        CHECK([view hasMarkedText]);
+        CHECK([view markedRange].length == 3);
+        CHECK([view selectedRange].location == 2);
+        [view unmarkText];
+        CHECK_FALSE([view hasMarkedText]);
+
+        [view doCommandBySelector:@selector(deleteBackward:)];
+        CHECK(key_events == 1); // Correct selector spelling must emit Backspace.
+        [view doCommandBySelector:@selector(deleteForward:)];
+        CHECK(key_events == 2);
+
+        [view detachSurface];
+        [view release];
     }
 }

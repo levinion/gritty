@@ -24,6 +24,7 @@ void VtParser::reset() noexcept {
     string_type_ = StringType::None;
     string_buffer_.clear();
     string_overflow_ = false;
+    dcs_tmux_escape_pending_ = false;
     utf8_state_ = utf8_codepoint_ = utf8_minimum_ = 0;
 }
 
@@ -45,7 +46,12 @@ int VtParser::get_param(int idx, int fallback) const noexcept {
 }
 
 void VtParser::append_string(uint8_t byte) {
-    if (string_buffer_.size() < 65536) string_buffer_.push_back(static_cast<char>(byte));
+    // OSC stays bounded: it is used for titles/hyperlinks/clipboard and has no
+    // large-payload use case. DCS/APC carry Sixel and Kitty images, so allow the
+    // same 32 MiB working budget as the renderer's image cache.
+    const size_t limit = string_type_ == StringType::Osc
+        ? 65536 : 32u * 1024u * 1024u;
+    if (string_buffer_.size() < limit) string_buffer_.push_back(static_cast<char>(byte));
     else string_overflow_ = true;
 }
 
@@ -58,6 +64,12 @@ void VtParser::finish_string() {
     string_buffer_.clear();
     string_type_ = StringType::None;
     string_overflow_ = false;
+    dcs_tmux_escape_pending_ = false;
+    // A 32 MiB image must not pin its heap capacity for the rest of the session.
+    if (string_buffer_.capacity() > 256 * 1024) {
+        std::string empty;
+        string_buffer_.swap(empty); // Portable shrink-to-fit across libstdc++/libc++.
+    }
 }
 
 void VtParser::print_codepoint(char32_t cp) {
@@ -70,7 +82,28 @@ void VtParser::process_byte(uint8_t byte) {
         reset();
         return;
     }
+    if (dcs_tmux_escape_pending_ && state_ == ParserState::DcsString) {
+        dcs_tmux_escape_pending_ = false;
+        if (byte == 0x1b) {
+            // ESC ESC inside tmux passthrough represents one literal ESC.
+            append_string(0x1b);
+        } else if (byte == '\\') {
+            // ESC \ is the outer ST; consume it without adding it to payload.
+            finish_string();
+            state_ = ParserState::Ground;
+        } else {
+            finish_string();
+            clear_sequence();
+            state_ = ParserState::Escape;
+            process_byte(byte);
+        }
+        return;
+    }
     if (byte == 0x1b) {
+        if (state_ == ParserState::DcsString && string_buffer_.starts_with("tmux;")) {
+            dcs_tmux_escape_pending_ = true;
+            return;
+        }
         finish_string();
         clear_sequence();
         utf8_state_ = 0;
@@ -190,6 +223,8 @@ void VtParser::handle_escape(uint8_t byte) {
         case 'H': engine_.set_tab_stop(); break;
         case 'c':
             engine_.reset();
+            update_default_color(10, configured_fg_);
+            update_default_color(11, configured_bg_);
             if (sync_handler_) sync_handler_(false);
             break;
         default: break;

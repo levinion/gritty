@@ -103,6 +103,7 @@ void VtParser::handle_decset(bool set) {
             case 1006: format(MouseFormat::Sgr); break;
             case 1015: format(MouseFormat::Urxvt); break;
             case 1016: format(MouseFormat::SgrPixels); break;
+            case 1004: engine_.set_focus_events(set); break;
             case 2004: engine_.set_bracketed_paste(set); break;
             case 2026:
                 engine_.set_synchronized_updates(set);
@@ -129,6 +130,7 @@ int VtParser::dec_mode_status(int mode) const noexcept {
         case 1006: set = engine_.mouse_format() == MouseFormat::Sgr; break;
         case 1015: set = engine_.mouse_format() == MouseFormat::Urxvt; break;
         case 1016: set = engine_.mouse_format() == MouseFormat::SgrPixels; break;
+        case 1004: set = engine_.focus_events(); break;
         case 2004: set = engine_.bracketed_paste(); break;
         case 2026: set = engine_.synchronized_updates(); break;
         default: return 0; // Do not advertise capabilities we have not implemented.
@@ -156,8 +158,8 @@ void VtParser::handle_query(uint8_t final) {
             std::snprintf(reply, sizeof(reply), "\x1b[%s%d;%dR", is_private_ ? "?" : "", row, engine_.cursor_col() + 1);
         }
     } else if (!is_private_ && final == 'c' && get_param(0, 0) == 0) {
-        // VT220 with ANSI color, but no rectangular editing/Sixel/clipboard claims.
-        send_response("\x1b[?62;22c");
+        // VT220 with ANSI color and Sixel (parameter 4); no rectangular editing claims.
+        send_response("\x1b[?62;22;4c"); // 4 = Sixel graphics (xterm primary DA)
     } else if (!is_private_ && final == 't' && get_param(0, 0) == 18) {
         std::snprintf(reply, sizeof(reply), "\x1b[8;%d;%dt", engine_.rows(), engine_.cols());
     }

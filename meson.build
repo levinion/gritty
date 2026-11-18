@@ -13,6 +13,9 @@ host_os = host_machine.system()
 if host_os == 'linux'
   add_project_arguments('-DPLATFORM_LINUX=1', language: 'cpp')
 elif host_os == 'darwin'
+  if host_machine.cpu_family() != 'aarch64'
+    error('macOS requires Apple Silicon (arm64); Intel macOS is not supported')
+  endif
   add_languages('objcpp', native: false)
   add_project_arguments('-DPLATFORM_MACOS=1', language: ['cpp', 'objcpp'])
 else
@@ -53,6 +56,8 @@ if host_os == 'darwin'
     'CoreGraphics',
     'CoreFoundation',
     'QuartzCore',
+    'ImageIO',
+    'IOSurface',
   ])
   platform_deps += [apple_frameworks]
 elif host_os == 'linux'

@@ -1,4 +1,5 @@
 #include "core/screen_grid.hpp"
+#include <algorithm>
 
 namespace gritty::core {
 
@@ -13,6 +14,7 @@ ScreenGrid::ScreenGrid(int cols, int rows, size_t scrollback_capacity)
 
 void ScreenGrid::resize(int new_cols, int new_rows) {
     if (new_cols <= 0 || new_rows <= 0) return;
+    scroll_ops_.clear();
 
     if (new_rows < rows_) {
         // Pushing excess top rows into scrollback
@@ -48,6 +50,7 @@ void ScreenGrid::resize(int new_cols, int new_rows) {
 
     for (auto& row : visible_rows_) {
         row.cells.resize(cols_);
+        if (row.cells.capacity() > 2 * static_cast<size_t>(cols_)) row.cells.shrink_to_fit();
         row.mark_all_dirty(cols_);
     }
 
@@ -57,7 +60,9 @@ void ScreenGrid::resize(int new_cols, int new_rows) {
 }
 
 void ScreenGrid::set_scrollback_capacity(size_t capacity) {
+    const bool shrinking = capacity < scrollback_.capacity();
     scrollback_.set_capacity(capacity);
+    if (shrinking) collect_combining_garbage();
     if (view_offset_ > scrollback_.size()) {
         view_offset_ = scrollback_.size();
     }
@@ -72,53 +77,94 @@ void ScreenGrid::set_cell(int x, int y, const Cell& c) noexcept {
     }
 }
 
+void ScreenGrid::clear_row(Row& row, const Cell& empty_cell) {
+    // Old history can have a much wider geometry. Do not keep a formerly huge
+    // line allocation forever when recycling it into a narrower viewport.
+    if (row.cells.size() != static_cast<size_t>(cols_) && row.cells.capacity() > 2 * static_cast<size_t>(cols_))
+        std::vector<Cell>(cols_, empty_cell).swap(row.cells);
+    else row.cells.assign(cols_, empty_cell);
+    row.wrapped = false;
+    row.mark_all_dirty(cols_);
+}
+
+void ScreenGrid::drop_scrolls() {
+    for (const auto& op : scroll_ops_) {
+        for (int y = std::max(0, op.top); y <= std::min(rows_ - 1, op.bottom); ++y)
+            visible_rows_[y].mark_all_dirty(cols_);
+    }
+    scroll_ops_.clear();
+}
+
+void ScreenGrid::record_scroll(int top, int bottom, int rows) {
+    const int region = bottom - top + 1;
+    if (rows == 0 || region <= 0) return;
+
+    auto repaint_region = [&](int r_top, int r_bottom) {
+        for (int y = std::max(0, r_top); y <= std::min(rows_ - 1, r_bottom); ++y)
+            visible_rows_[y].mark_all_dirty(cols_);
+    };
+
+    if (std::abs(rows) >= region) {
+        // The whole region was replaced; no pixel shift can survive.
+        scroll_ops_.clear();
+        repaint_region(top, bottom);
+        return;
+    }
+
+    if (!scroll_ops_.empty()) {
+        ScrollOp& last = scroll_ops_.back();
+        const bool same_direction = (last.rows > 0) == (rows > 0);
+        if (last.top == top && last.bottom == bottom && same_direction) {
+            const int merged = last.rows + rows;
+            if (std::abs(merged) >= region) {
+                // The merged shift replaces the region: drop every queued shift
+                // and repaint all of their regions (correct, just slower).
+                drop_scrolls();
+                repaint_region(top, bottom);
+            } else {
+                last.rows = merged;
+            }
+            return;
+        }
+    }
+
+    if (scroll_ops_.size() >= max_scroll_ops_) {
+        drop_scrolls();
+        repaint_region(top, bottom);
+        return;
+    }
+    scroll_ops_.push_back(ScrollOp{top, bottom, rows});
+}
+
 void ScreenGrid::scroll_up(int top, int bottom, int count, const Cell& empty_cell) {
     if (top < 0 || bottom >= rows_ || top > bottom || count <= 0) return;
     count = std::min(count, bottom - top + 1);
 
-    if (top == 0 && bottom == rows_ - 1) {
-        // Full screen scroll: push top lines to scrollback
-        if (scrollback_.capacity() > 0) {
-            for (int i = 0; i < count; ++i) {
-                scrollback_.push_back(std::move(visible_rows_[i]));
-            }
-        }
-        for (int i = 0; i <= bottom - count; ++i) {
-            visible_rows_[i] = std::move(visible_rows_[i + count]);
-            visible_rows_[i].mark_all_dirty(cols_);
-        }
-        for (int i = bottom - count + 1; i <= bottom; ++i) {
-            visible_rows_[i].cells.assign(cols_, empty_cell);
-            visible_rows_[i].wrapped = false;
-            visible_rows_[i].mark_all_dirty(cols_);
-        }
-    } else {
-        // Margined scroll: lines outside margins do not move, no scrollback push
-        for (int i = top; i <= bottom - count; ++i) {
-            visible_rows_[i] = std::move(visible_rows_[i + count]);
-            visible_rows_[i].mark_all_dirty(cols_);
-        }
-        for (int i = bottom - count + 1; i <= bottom; ++i) {
-            visible_rows_[i].cells.assign(cols_, empty_cell);
-            visible_rows_[i].wrapped = false;
-            visible_rows_[i].mark_all_dirty(cols_);
-        }
+    if (top == 0 && bottom == rows_ - 1 && scrollback_.capacity() > 0) {
+        for (int i = 0; i < count; ++i)
+            scrollback_.exchange_back(visible_rows_[i]);
     }
+    // Rotate ownership, not cell data. Once history is full, its oldest row
+    // becomes the new blank row without a free/allocate pair for every line.
+    auto first = visible_rows_.begin() + top;
+    auto last = visible_rows_.begin() + bottom + 1;
+    std::rotate(first, first + count, last);
+    for (int y = bottom - count + 1; y <= bottom; ++y) {
+        clear_row(visible_rows_[y], empty_cell);
+    }
+    record_scroll(top, bottom, count);
 }
 
 void ScreenGrid::scroll_down(int top, int bottom, int count, const Cell& empty_cell) {
     if (top < 0 || bottom >= rows_ || top > bottom || count <= 0) return;
     count = std::min(count, bottom - top + 1);
-
-    for (int i = bottom; i >= top + count; --i) {
-        visible_rows_[i] = std::move(visible_rows_[i - count]);
-        visible_rows_[i].mark_all_dirty(cols_);
+    auto first = visible_rows_.begin() + top;
+    auto last = visible_rows_.begin() + bottom + 1;
+    std::rotate(first, last - count, last);
+    for (int y = top; y < top + count; ++y) {
+        clear_row(visible_rows_[y], empty_cell);
     }
-    for (int i = top; i < top + count; ++i) {
-        visible_rows_[i].cells.assign(cols_, empty_cell);
-        visible_rows_[i].wrapped = false;
-        visible_rows_[i].mark_all_dirty(cols_);
-    }
+    record_scroll(top, bottom, -count);
 }
 
 void ScreenGrid::erase_in_line(int x, int y, int mode, const Cell& empty_cell) {
@@ -179,6 +225,7 @@ void ScreenGrid::erase_in_display(int x, int y, int mode, const Cell& empty_cell
             break;
         case 3: // Erase scrollback only (foot term_erase_scrollback).
             scrollback_.clear();
+            collect_combining_garbage();
             view_offset_ = 0;
             break;
         default:
@@ -225,12 +272,15 @@ void ScreenGrid::delete_cells(int x, int y, int count, const Cell& empty_cell) {
 }
 
 void ScreenGrid::mark_all_dirty() noexcept {
+    // A full repaint supersedes any pending pixel shift.
+    scroll_ops_.clear();
     for (auto& row : visible_rows_) {
         row.mark_all_dirty(cols_);
     }
 }
 
 void ScreenGrid::reset_damage() noexcept {
+    scroll_ops_.clear();
     for (auto& row : visible_rows_) {
         row.reset_damage();
     }
@@ -248,16 +298,35 @@ void ScreenGrid::scroll_view(int delta) noexcept {
 }
 
 uint32_t ScreenGrid::store_combining_codepoints(std::span<const char32_t> cps) {
-    if (cps.empty()) return 0;
-    combining_table_.emplace_back(cps.begin(), cps.end());
-    return static_cast<uint32_t>(combining_table_.size()); // 1-based index
+    if (combining_store_.needs_collection()) {
+        // A caller may pass a span borrowed from this very store. Preserve its
+        // bytes before sweeping, even if no grid cell currently references it.
+        const std::vector<char32_t> pending(cps.begin(), cps.end());
+        collect_combining_garbage();
+        return combining_store_.intern(pending);
+    }
+    return combining_store_.intern(cps);
+}
+
+uint32_t ScreenGrid::append_combining_codepoint(uint32_t prefix, char32_t cp) {
+    if (combining_store_.needs_collection()) collect_combining_garbage(prefix);
+    return combining_store_.append(prefix, cp);
 }
 
 std::span<const char32_t> ScreenGrid::get_combining_codepoints(uint32_t idx) const noexcept {
-    if (idx == 0 || idx > combining_table_.size()) {
-        return {};
-    }
-    return combining_table_[idx - 1];
+    return combining_store_.get(idx);
+}
+
+void ScreenGrid::collect_combining_garbage(uint32_t preserve) {
+    if (combining_store_.size() == 0) return;
+    combining_store_.begin_collection();
+    combining_store_.mark(preserve);
+    const auto mark_row = [this](const Row& row) {
+        for (const auto& cell : row.cells) combining_store_.mark(cell.combining_idx);
+    };
+    for (const auto& row : visible_rows_) mark_row(row);
+    for (size_t i = 0; i < scrollback_.size(); ++i) mark_row(scrollback_[i]);
+    combining_store_.sweep();
 }
 
 } // namespace gritty::core

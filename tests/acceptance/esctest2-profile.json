@@ -1,0 +1,14 @@
+{
+  "description": "Small foot-scope query baseline, not full xterm/VT hardware emulation. Grid contents and damage are checked directly by doctest; these external cases need no DECRQCRA screen-readback or X11 window helpers.",
+  "tests": [
+    "CHATests.test_CHA_DefaultParam",
+    "CHATests.test_CHA_ExplicitParam",
+    "CHATests.test_CHA_ZeroParam",
+    "CHATests.test_CHA_OutOfBoundsLarge",
+    "DECDSRTests.test_DECDSR_DECXCPR",
+    "DECRQSSTests.test_DECRQSS_DECSTBM",
+    "DECRQSSTests.test_DECRQSS_DECSCUSR",
+    "ChangeDynamicColorTests.test_ChangeDynamicColor_RGB",
+    "ChangeDynamicColorTests.test_ChangeDynamicColor_Hash6"
+  ]
+}

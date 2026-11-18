@@ -8,6 +8,9 @@ if host_os == 'darwin'
     'platform/macos/mac_input.mm',
     'platform/macos/kqueue_loop.mm',
     'platform/macos/cocoa_surface.mm',
+    'platform/macos/cocoa_view.mm',
+    'platform/macos/iosurface_pool.mm',
+    'platform/macos/application_icon.mm',
     'platform/macos/clipboard.mm',
   )
 endif
@@ -16,6 +19,7 @@ core_sources = files(
   'config/app_config.cpp',
   'config/toml_loader.cpp',
   'core/screen_grid.cpp',
+  'core/combining_store.cpp',
   'core/terminal_engine.cpp',
   'core/terminal_modes.cpp',
   'core/vt_parser.cpp',
@@ -28,6 +32,7 @@ core_sources = files(
   'core/selection.cpp',
   'core/overlays.cpp',
   'render/font_engine.cpp',
+  'render/glyph_cache.cpp',
   'render/box_drawing.cpp',
   'render/cpu_renderer.cpp',
   'input/input_mapper.cpp',

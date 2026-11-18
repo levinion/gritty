@@ -62,7 +62,7 @@ TEST_CASE("foot terminal discovery replies use an honest Gritty identity") {
     std::string replies;
     parser.set_response_callback([&](std::string_view value) { replies += value; });
     parser.feed("\x1b[c\x1b[>c\x1b[>q\x1b[5n\x1b[6n\x1b[?2026$p\x1b[?69$p");
-    CHECK(replies == "\x1b[?62;22c\x1b[>1;100;0c\x1bP>|gritty(0.1.0)\x1b\\"
+    CHECK(replies == "\x1b[?62;22;4c\x1b[>1;100;0c\x1bP>|gritty(0.1.0)\x1b\\"
                      "\x1b[0n\x1b[1;1R\x1b[?2026;2$y\x1b[?69;0$y");
     replies.clear();
     parser.feed("\x1b[?2026h\x1b[?2026$p\x1b[?2026l\x1b[3;10r\x1b[?6h\x1b[2;5H\x1b[6n");

@@ -23,19 +23,24 @@ void TerminalEngine::scroll_up(int count) {
     Cell blank;
     blank.bg = current_bg_;
     active_grid_->scroll_up(margin_top_, margin_bottom_, count, blank);
+    scroll_images(margin_top_, margin_bottom_, count);
 }
 
 void TerminalEngine::scroll_down(int count) {
     Cell blank;
     blank.bg = current_bg_;
     active_grid_->scroll_down(margin_top_, margin_bottom_, count, blank);
+    scroll_images(margin_top_, margin_bottom_, -count);
 }
 
 void TerminalEngine::reset() {
+    clear_images();
+    kitty_graphics_.clear();
     set_alt_screen(false, 47);
     primary_grid_.erase_in_display(0, 0, 2);
     primary_grid_.erase_in_display(0, 0, 3);
     alt_grid_.erase_in_display(0, 0, 2);
+    alt_grid_.collect_combining_garbage();
     cursor_ = CursorState{};
     saved_cursor_primary_ = saved_cursor_alt_ = CursorState{};
     graphic_charsets_.fill(false);
@@ -46,11 +51,16 @@ void TerminalEngine::reset() {
     margin_bottom_ = rows_ - 1;
     auto_wrap_ = true;
     origin_mode_ = bracketed_paste_ = insert_mode_ = cursor_key_mode_ = synchronized_updates_ = false;
+    focus_events_ = false;
     modify_other_keys_ = 0;
     mouse_tracking_ = MouseTrackingMode::None;
     mouse_format_ = MouseFormat::Normal;
     for (auto& stack : kitty_keyboard_stacks_) stack.clear();
     current_hyperlink_id_ = 0;
+    hyperlinks_.clear();
+    hyperlink_index_.clear();
+    hyperlink_lru_.clear();
+    hyperlink_free_.clear();
     sgr_reset();
     reset_palette();
     init_tabs();
@@ -83,15 +93,52 @@ void TerminalEngine::set_kitty_keyboard_flags(uint32_t flags, int mode) {
     else stack.back() = new_val & 31;
 }
 
-uint16_t TerminalEngine::get_or_create_hyperlink_id(std::string_view url) {
-    if (url.empty()) return 0;
-    for (size_t i = 0; i < hyperlinks_.size(); ++i) {
-        if (hyperlinks_[i] == url) {
-            return static_cast<uint16_t>(i + 1);
+void TerminalEngine::clear_hyperlink_references(uint16_t id) noexcept {
+    for (auto* grid : {&primary_grid_, &alt_grid_}) {
+        for (int y = 0; y < grid->rows(); ++y) {
+            auto& cells = grid->row(y).cells;
+            for (auto& cell : cells) {
+                if (cell.hyperlink_id == id) {
+                    cell.hyperlink_id = 0;
+                    grid->row(y).mark_dirty(static_cast<int>(&cell - cells.data()));
+                }
+            }
         }
     }
-    hyperlinks_.emplace_back(url);
-    return static_cast<uint16_t>(hyperlinks_.size());
+}
+
+uint16_t TerminalEngine::get_or_create_hyperlink_id(std::string_view url) {
+    if (url.empty()) return 0;
+    constexpr uint16_t kMaxHyperlinks = 4095; // 0 is reserved for "no link".
+    const auto found = hyperlink_index_.find(std::string(url));
+    if (found != hyperlink_index_.end()) {
+        const auto id = found->second;
+        hyperlink_lru_.erase(std::remove(hyperlink_lru_.begin(), hyperlink_lru_.end(), id),
+            hyperlink_lru_.end());
+        hyperlink_lru_.push_back(id);
+        return id;
+    }
+
+    uint16_t id = 0;
+    if (!hyperlink_free_.empty()) {
+        id = hyperlink_free_.back();
+        hyperlink_free_.pop_back();
+    } else if (hyperlinks_.size() < kMaxHyperlinks) {
+        id = static_cast<uint16_t>(hyperlinks_.size() + 1);
+    } else {
+        // Reuse the least recently used slot and detach cells that still point
+        // at it; a uint16_t ID cannot carry a generation counter.
+        id = hyperlink_lru_.front();
+        hyperlink_lru_.pop_front();
+        hyperlink_index_.erase(hyperlinks_[id - 1]);
+        clear_hyperlink_references(id);
+        hyperlinks_[id - 1].clear();
+    }
+    hyperlinks_.resize(std::max(hyperlinks_.size(), static_cast<size_t>(id)), {});
+    hyperlinks_[id - 1].assign(url);
+    hyperlink_index_.emplace(hyperlinks_[id - 1], id);
+    hyperlink_lru_.push_back(id);
+    return id;
 }
 
 std::string_view TerminalEngine::get_hyperlink_url(uint16_t id) const noexcept {

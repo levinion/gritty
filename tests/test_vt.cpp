@@ -207,3 +207,140 @@ TEST_CASE("VtParser OSC 8 Hyperlinks") {
     const auto& c_no_link = engine.grid().cell(4, 0);
     CHECK(c_no_link.hyperlink_id == 0);
 }
+
+TEST_CASE("OSC 52 writes the clipboard and never answers queries") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    std::string got;
+    int calls = 0;
+    parser.set_clipboard_handler([&](std::string_view text) {
+        got.assign(text);
+        ++calls;
+    });
+
+    parser.feed("\x1b]52;c;SGVsbG8sIHRtdXgh\x1b\\");
+    CHECK(calls == 1);
+    CHECK(got == "Hello, tmux!");
+
+    parser.feed("\x1b]52;c;?\x1b\\");      // Query: never read the clipboard back.
+    CHECK(calls == 1);
+    parser.feed("\x1b]52;c;!!!\x1b\\");    // Invalid base64 is ignored.
+    CHECK(calls == 1);
+    parser.feed("\x1b]52;c;\x1b\\");       // Empty payload is ignored.
+    CHECK(calls == 1);
+
+    // Unpadded base64 ("test") and the p/s selections also work.
+    parser.feed("\x1b]52;p;dGVzdA\x1b\\");
+    CHECK(calls == 2);
+    CHECK(got == "test");
+}
+
+TEST_CASE("XTGETTCAP reports the capabilities tmux negotiates") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    std::string responses;
+    parser.set_response_callback([&](std::string_view resp) { responses.append(resp); });
+
+    // RGB, Ms, Sync, Smulx, Setulc and an unknown capability "ZZ".
+    parser.feed("\x1bP+q524742;4d73;53796e63;536d756c78;536574756c63;5a5a\x1b\\");
+    CHECK(responses.find("\x1bP1+r524742\x1b\\") != std::string::npos);              // Boolean.
+    CHECK(responses.find("\x1bP1+r4d73=1b5d35323b") != std::string::npos);              // Ms -> OSC 52.
+    CHECK(responses.find("\x1bP1+r53796e63\x1b\\") != std::string::npos);             // Sync.
+    CHECK(responses.find("\x1bP1+r536d756c78=1b5b343a") != std::string::npos);          // Smulx.
+    CHECK(responses.find("\x1bP1+r536574756c63=1b5b35383a") != std::string::npos);      // Setulc.
+    CHECK(responses.find("\x1bP0+r5a5a\x1b\\") != std::string::npos);                 // Unknown.
+}
+
+TEST_CASE("DSR and DA1 responses are emitted") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    std::string responses;
+    parser.set_response_callback([&](std::string_view resp) { responses.append(resp); });
+    parser.feed("\x1b[6n");
+    CHECK(responses == "\x1b[1;1R");
+    responses.clear();
+    parser.feed("\x1b[c");
+    CHECK(responses == "\x1b[?62;22;4c"); // Sixel bit (DA1 parameter 4).
+}
+
+TEST_CASE("Placed images follow scroll, erase and the active screen") {
+    auto make_image = [](uint32_t color) {
+        gritty::util::PixmanImage image(pixman_image_create_bits(PIXMAN_a8r8g8b8, 1, 1, nullptr, 0));
+        *image.data() = color;
+        return image;
+    };
+    TerminalEngine engine(10, 5);
+    engine.place_image(PlacedImage{.image = make_image(0xffff0000u), .col = 2, .row = 2});
+    REQUIRE(engine.images().size() == 1);
+    CHECK(engine.images()[0].row == 2);
+    CHECK(engine.images()[0].alt_screen == false);
+
+    engine.scroll_up(1); // Region 0..4: the image moves up with the text.
+    REQUIRE(engine.images().size() == 1);
+    CHECK(engine.images()[0].row == 1);
+
+    engine.set_cursor_pos(0, 1);
+    engine.erase_in_line(2); // Erasing the row removes images anchored on it.
+    CHECK(engine.images().empty());
+
+    // Alt-screen images are tagged and survive a switch back untouched.
+    engine.set_alt_screen(true, 47);
+    engine.place_image(PlacedImage{.image = make_image(0xff00ff00u), .col = 0, .row = 0});
+    REQUIRE(engine.images().size() == 1);
+    CHECK(engine.images()[0].alt_screen == true);
+    engine.set_alt_screen(false, 47);
+    engine.scroll_up(1); // Primary scroll must not move the alt-screen image.
+    REQUIRE(engine.images().size() == 1);
+    CHECK(engine.images()[0].row == 0);
+    engine.erase_in_display(2); // Clears only the primary screen's images.
+    CHECK(engine.images().size() == 1);
+    engine.set_alt_screen(true, 47);
+    engine.clear_images();
+    CHECK(engine.images().empty());
+
+    // Deleting by image id mirrors Kitty delete actions.
+    engine.place_image(PlacedImage{.image = make_image(0xff0000ffu), .image_id = 7, .row = 0});
+    engine.remove_images_by_id(7);
+    CHECK(engine.images().empty());
+}
+
+TEST_CASE("Partially scrolled-out images remain visible until fully outside the region") {
+    TerminalEngine engine(20, 8);
+    auto image = [](uint32_t color) {
+        auto* raw = pixman_image_create_bits(PIXMAN_a8r8g8b8, 1, 1, nullptr, 0);
+        auto* data = reinterpret_cast<uint32_t*>(pixman_image_get_data(raw));
+        data[0] = color;
+        return gritty::util::PixmanImage(raw);
+    };
+    engine.place_image(PlacedImage{.image = image(0xff00ff00u), .row = 0, .rows = 4});
+    REQUIRE(engine.images().size() == 1);
+    engine.set_margins(0, 4);
+    engine.scroll_up(2);
+    REQUIRE(engine.images().size() == 1);
+    CHECK(engine.images()[0].row == -2); // Top two rows are off-screen; bottom two remain.
+    engine.scroll_up(2);
+    CHECK(engine.images().empty());     // Fully outside: now it may be removed.
+}
+
+TEST_CASE("Hyperlink table is bounded and clears recycled cell references") {
+    TerminalEngine engine(10, 2);
+    std::string first_url;
+    uint16_t first_id = 0;
+    for (int i = 0; i < 4096; ++i) {
+        const auto url = "https://example.com/" + std::to_string(i);
+        const auto id = engine.get_or_create_hyperlink_id(url);
+        REQUIRE(id != 0);
+        CHECK(engine.get_hyperlink_url(id) == url);
+        if (i == 0) {
+            first_url = url;
+            first_id = id;
+            engine.grid().cell(0, 0).hyperlink_id = id;
+        }
+    }
+    CHECK(first_id == 1);
+    CHECK(engine.get_hyperlink_url(first_id) != first_url);
+    CHECK(engine.grid().cell(0, 0).hyperlink_id == 0); // No stale URL after LRU reuse.
+    const auto reinserted = engine.get_or_create_hyperlink_id(first_url);
+    CHECK(reinserted != 0);
+    CHECK(engine.get_hyperlink_url(reinserted) == first_url);
+}

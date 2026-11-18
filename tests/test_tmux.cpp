@@ -12,6 +12,9 @@
 #include "input/input_mapper.hpp"
 #include "render/cpu_renderer.hpp"
 #include "platform/posix_pty.hpp"
+#include "width_cases.hpp"
+#include "font_fixture.hpp"
+#include "config/toml_loader.hpp"
 
 namespace {
 using namespace gritty;
@@ -169,10 +172,8 @@ public:
     void verify_incremental_render() {
         if (!font_checked) {
             font_checked = true;
-            for (const auto* path : {"/System/Library/Fonts/Monaco.ttf", "/System/Library/Fonts/Menlo.ttc",
-                                    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"}) {
-                if (std::filesystem::exists(path) && fonts.load_font(path, 12.0)) { font_loaded = true; break; }
-            }
+            const auto path = test_font_path();
+            font_loaded = !path.empty() && fonts.load_font(path, 12.0);
             if (!font_loaded) WARN("No test font: skipping incremental/full-frame pixel comparison");
         }
         if (!font_loaded || engine.synchronized_updates()) return;
@@ -300,6 +301,45 @@ TEST_CASE("Real tmux startup, pane splits, scrolling, redraw and client resize")
     CHECK_FALSE(tmux.engine.is_alt_screen());
 }
 
+TEST_CASE("Pinned Unicode width vectors agree with the installed tmux format engine") {
+    TmuxHarness tmux;
+    REQUIRE(tmux.start());
+    REQUIRE(tmux.until([&] { return !tmux.trace.empty(); }));
+    for (const auto& item : width_cases) {
+        INFO(item.name);
+        uint8_t bytes[4];
+        const auto count = utf8proc_encode_char(item.codepoint, bytes);
+        const std::string text(reinterpret_cast<char*>(bytes), count);
+        CHECK(tmux.command({"display-message", "-p", "#{w:#{l:" + text + "}}"}) == std::to_string(item.width) + "\n");
+    }
+}
+
+TEST_CASE("Real tmux indexed prompt colors survive an ANSI theme override") {
+    const auto loaded = config::TomlLoader::load_from_string("[colors]\nregular1 = '#123456'\n");
+    REQUIRE(loaded.has_value());
+    TmuxHarness tmux;
+    tmux.engine.configure_palette((*loaded)->colors.palette);
+    REQUIRE(tmux.start());
+    REQUIRE(tmux.until([&] { return !tmux.trace.empty(); }));
+    tmux.command({"new-window", "-n", "palette",
+        "printf '\033[38;5;33m\342\226\210\033[48;5;196m \033[41m \033[0m'; sleep 60"});
+    REQUIRE(tmux.until([&] { return tmux.engine.grid().cell(0, 0).codepoint == U'█'; }));
+    tmux.expect_screen();
+    REQUIRE(tmux.font_loaded);
+    const auto& metrics = tmux.fonts.metrics();
+    const auto pixel = [&](int col) {
+        return tmux.pixels.data()[(metrics.cell_height / 2) * tmux.pixels.stride() / 4
+                                 + col * metrics.cell_width + metrics.cell_width / 2];
+    };
+    CHECK(pixel(0) == 0xff0087ff);
+    CHECK(pixel(1) == 0xffff0000);
+    CHECK(pixel(2) == 0xff123456);
+    tmux.command({"refresh-client"});
+    tmux.pump();
+    tmux.verify_incremental_render();
+    CHECK(pixel(0) == 0xff0087ff);
+}
+
 TEST_CASE("Real tmux preserves default-background alpha across redraws and pane changes") {
     render::RenderConfig config;
     config.default_bg = 0x80604020;
@@ -346,4 +386,26 @@ TEST_CASE("Real tmux non-UTF8 ACS borders use DEC special graphics without leake
     REQUIRE(width > 0);
     CHECK(tmux.engine.grid().cell(width, 5).codepoint == U'│');
     CHECK((tmux.trace.find("\x1b(0") != std::string::npos || tmux.trace.find("\x0e") != std::string::npos));
+}
+
+TEST_CASE("tmux passthrough Kitty image renders like a direct APC placement") {
+    TmuxHarness harness;
+    REQUIRE(harness.fonts.load_font(test_font_path(), 12.0));
+    harness.parser.set_apc_handler([&](std::string_view payload) {
+        harness.engine.kitty_graphics().process_apc_sequence(payload, 0, 0);
+    });
+    // tmux doubles ESC in its DCS passthrough wrapper.
+    harness.parser.feed(
+        "\x1bPtmux;\x1b\x1b_Ga=T,i=31,f=32,s=1,v=1;/wAA/w==\x1b\x1b\\\x1b\\");
+    REQUIRE(harness.engine.kitty_graphics().get_image(31) != nullptr);
+    CHECK(harness.engine.kitty_graphics().placements().size() == 1);
+
+    const int w = harness.engine.cols() * harness.fonts.metrics().cell_width;
+    const int h = harness.engine.rows() * harness.fonts.metrics().cell_height;
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, 0));
+    gritty::util::PixmanImage reference(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, 0));
+    harness.renderer.render(harness.engine, target.get(), nullptr, true);
+    render::CpuRenderer fresh(harness.fonts, harness.render_config);
+    fresh.render(harness.engine, reference.get(), nullptr, true);
+    CHECK(std::equal(target.data(), target.data() + h * target.stride() / 4, reference.data()));
 }
