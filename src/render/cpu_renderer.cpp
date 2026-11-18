@@ -214,7 +214,7 @@ void CpuRenderer::render(
                         const int gx = x * cell_w + glyph->bearing_x;
                         const int gy = y * cell_h + metrics.ascent - glyph->bearing_y;
                         glyph_batch_.push_back(BatchGlyph{gx, gy, glyph->width, glyph->height,
-                            handle, glyph->mask.get()});
+                            y, handle, glyph->mask.get()});
                         glyph_batch_x0_ = std::min(glyph_batch_x0_, gx);
                         glyph_batch_y0_ = std::min(glyph_batch_y0_, gy);
                         glyph_batch_x1_ = std::max(glyph_batch_x1_, gx + glyph->width);
@@ -227,9 +227,13 @@ void CpuRenderer::render(
             flush_glyph_batch(target);
             render_cell_foreground(cell, extra, x, y, cell_w, cell_h, metrics, engine, target);
         }
-        flush_glyph_batch(target);
         row.reset_damage();
     }
+
+    // Do not flush at every row boundary: same-colour grayscale glyphs from
+    // all dirty rows can share one composite_glyphs call. Colour changes and
+    // non-batchable cells already flushed above.
+    flush_glyph_batch(target);
 
     draw_images(engine, target, cell_w, cell_h, false, -1, damage_out, placeholder_clip.get());
     draw_placeholders(engine, target, false, placeholder_clip.get(), cell_w, cell_h, metrics, damage_out);
@@ -523,17 +527,37 @@ void CpuRenderer::flush_glyph_batch(pixman_image_t* target) {
     pixman_image_t* batch_solid = get_solid_fill(glyph_batch_color_);
     if (glyph_batch_.size() >= min_batch && glyph_atlas_ && batch_solid &&
         glyph_batch_x1_ > glyph_batch_x0_ && glyph_batch_y1_ > glyph_batch_y0_) {
-        glyph_write_.clear();
-        glyph_write_.reserve(glyph_batch_.size());
-        for (const auto& glyph : glyph_batch_)
-            glyph_write_.push_back(pixman_glyph_t{glyph.x - glyph_batch_x0_, glyph.y - glyph_batch_y0_, glyph.handle});
-        const int width = glyph_batch_x1_ - glyph_batch_x0_;
-        const int height = glyph_batch_y1_ - glyph_batch_y0_;
-        const auto format = pixman_glyph_get_mask_format(
-            glyph_atlas_, static_cast<int>(glyph_write_.size()), glyph_write_.data());
-        pixman_composite_glyphs(PIXMAN_OP_OVER, batch_solid, target, format,
-            0, 0, 0, 0, glyph_batch_x0_, glyph_batch_y0_, width, height,
-            glyph_atlas_, static_cast<int>(glyph_write_.size()), glyph_write_.data());
+        // Glyphs arrive in screen-row order. Keep cross-row batching, but cap
+        // each composite's vertical span: Pixman's cost includes the bounding
+        // rectangle, and a full-height batch is slower than small bands.
+        size_t begin = 0;
+        while (begin < glyph_batch_.size()) {
+            const int band_row = glyph_batch_[begin].row;
+            size_t end = begin + 1;
+            while (end < glyph_batch_.size() && glyph_batch_[end].row == band_row) ++end;
+            int x0 = std::numeric_limits<int>::max(), y0 = std::numeric_limits<int>::max();
+            int x1 = std::numeric_limits<int>::min(), y1 = std::numeric_limits<int>::min();
+            for (size_t i = begin; i < end; ++i) {
+                const auto& glyph = glyph_batch_[i];
+                x0 = std::min(x0, glyph.x);
+                y0 = std::min(y0, glyph.y);
+                x1 = std::max(x1, glyph.x + glyph.width);
+                y1 = std::max(y1, glyph.y + glyph.height);
+            }
+            if (x1 > x0 && y1 > y0 && glyph_atlas_) {
+                glyph_write_.clear();
+                glyph_write_.reserve(end - begin);
+                for (size_t i = begin; i < end; ++i)
+                    glyph_write_.push_back(pixman_glyph_t{
+                        glyph_batch_[i].x - x0, glyph_batch_[i].y - y0, glyph_batch_[i].handle});
+                const auto format = pixman_glyph_get_mask_format(
+                    glyph_atlas_, static_cast<int>(glyph_write_.size()), glyph_write_.data());
+                pixman_composite_glyphs(PIXMAN_OP_OVER, batch_solid, target, format,
+                    0, 0, 0, 0, x0, y0, x1 - x0, y1 - y0,
+                    glyph_atlas_, static_cast<int>(glyph_write_.size()), glyph_write_.data());
+            }
+            begin = end;
+        }
     } else if (batch_solid) {
         for (const auto& glyph : glyph_batch_) {
             pixman_image_composite32(PIXMAN_OP_OVER, batch_solid, glyph.mask, target,

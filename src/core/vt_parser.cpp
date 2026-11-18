@@ -136,6 +136,61 @@ void VtParser::feed(const uint8_t* data, size_t length) {
             continue;
         }
 
+        // Complete 7-bit CSI sequences are parsed in this loop instead of
+        // re-entering process_byte() once per parameter byte. Any incomplete
+        // or unusual sequence is left untouched for the normal state machine.
+        if (state_ == ParserState::Ground && utf8_state_ == 0 &&
+            data[i] == 0x1b && i + 2 < length && data[i + 1] == '[') {
+            clear_sequence();
+            size_t j = i + 2;
+            const uint8_t lead = data[j];
+            if (lead >= '<' && lead <= '?') {
+                is_private_ = lead == '?';
+                has_greater_ = lead == '>';
+                has_less_ = lead == '<';
+                has_equal_ = lead == '=';
+                ++j;
+            }
+
+            bool complete = false;
+            while (j < length) {
+                const uint8_t byte = data[j];
+                if (byte >= '0' && byte <= '9') {
+                    if (current_param_idx_ >= 32) break;
+                    ensure_csi_param(current_param_idx_);
+                    int& value = current_subparam_idx_ >= 0
+                        ? params_[current_param_idx_].subparams[current_subparam_idx_]
+                        : params_[current_param_idx_].value;
+                    value = std::min(65535, std::max(0, value) * 10 + byte - '0');
+                    param_count_ = current_param_idx_ + 1;
+                    ++j;
+                } else if (byte == ';') {
+                    if (++current_param_idx_ >= 32) break;
+                    ensure_csi_param(current_param_idx_);
+                    current_subparam_idx_ = -1;
+                    param_count_ = current_param_idx_ + 1;
+                    ++j;
+                } else if (byte == ':') {
+                    ensure_csi_param(current_param_idx_);
+                    if (++current_subparam_idx_ >= 8) break;
+                    params_[current_param_idx_].subparam_count = current_subparam_idx_ + 1;
+                    param_count_ = current_param_idx_ + 1;
+                    ++j;
+                } else if (byte >= 0x40 && byte <= 0x7e) {
+                    handle_csi(byte);
+                    state_ = ParserState::Ground;
+                    i = j + 1;
+                    complete = true;
+                    break;
+                } else {
+                    // C0, DEL, ESC, CAN/SUB, intermediates and high bytes all
+                    // need the exact normal state-machine behaviour.
+                    break;
+                }
+            }
+            if (complete) continue;
+        }
+
         if (state_ == ParserState::Ground && utf8_state_ == 0 && data[i] >= 0x80) {
             const uint8_t lead = data[i];
             int expected = 0;

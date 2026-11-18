@@ -184,6 +184,7 @@ private:
     util::PixmanImage dynamic_solid_src_;
     struct BatchGlyph {
         int x{0}, y{0}, width{0}, height{0};
+        int row{0};
         const void* handle{nullptr};
         pixman_image_t* mask{nullptr};
     };

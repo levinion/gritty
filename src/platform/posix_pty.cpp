@@ -175,7 +175,14 @@ void PosixPty::terminate() {
             res = ::waitpid(child_pid_, &status, WNOHANG);
             if (res == 0) {
                 ::kill(child_pid_, SIGKILL);
-                while (::waitpid(child_pid_, &status, 0) < 0 && errno == EINTR) {}
+                // A blocking wait can stall if the child is already exiting or
+                // the kernel has not completed process-group teardown. Poll for
+                // reap with a short bound instead of blocking application exit.
+                for (int attempt = 0; attempt < 1000; ++attempt) {
+                    res = ::waitpid(child_pid_, &status, WNOHANG);
+                    if (res != 0 || (res < 0 && errno != EINTR)) break;
+                    ::usleep(1000);
+                }
             }
         }
         child_pid_ = -1;

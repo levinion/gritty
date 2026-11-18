@@ -300,7 +300,8 @@ void TerminalSession::handle_pty_read() {
             hit_budget = true;
             break;
         }
-        ssize_t n = pty_.read(std::span<uint8_t>(read_buf_.data(), std::min(read_buf_.size(), budget)));
+        const size_t req = std::min(read_buf_.size(), budget);
+        ssize_t n = pty_.read(std::span<uint8_t>(read_buf_.data(), req));
         if (n > 0) {
             got_data = true;
             const auto bytes = static_cast<size_t>(n);
@@ -314,6 +315,9 @@ void TerminalSession::handle_pty_read() {
             if (budget == 0 ||
                 (timing_active && std::chrono::steady_clock::now() - started >= kTimeBudget))
                 hit_budget = true; // Stopped by budget, not by EAGAIN.
+            // A short read means the kernel PTY buffer is drained. Avoid the
+            // guaranteed EAGAIN syscall on the next iteration.
+            if (bytes < req) break;
         } else if (n == 0) { // EOF
             if (loop_) loop_->stop();
             break;
