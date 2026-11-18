@@ -904,3 +904,110 @@ TEST_CASE("Short plain-glyph runs are pixel-identical with lookahead removed") {
     for (size_t i = 0; i < static_cast<size_t>(height) * batched.stride() / 4; ++i)
         REQUIRE(batched.data()[i] == single.data()[i]);
 }
+
+TEST_CASE("Dynamic solid source preserves consecutive TrueColor glyph pixels") {
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(find_test_font(), 13.0, 96));
+    const CachedGlyph* probe = fonts.get_glyph(U'M', false, false);
+    REQUIRE(probe != nullptr);
+    REQUIRE(probe->mask.valid());
+    REQUIRE(pixman_image_get_format(probe->mask.get()) == PIXMAN_a8);
+
+    int mask_x = -1, mask_y = -1, best_alpha = -1;
+    const int mask_stride = probe->mask.stride();
+    const auto* mask_bits = reinterpret_cast<const uint8_t*>(probe->mask.data());
+    for (int y = 0; y < probe->height; ++y)
+        for (int x = 0; x < probe->width; ++x)
+            if (mask_bits[y * mask_stride + x] > best_alpha) {
+                best_alpha = mask_bits[y * mask_stride + x];
+                mask_x = x; mask_y = y;
+            }
+    REQUIRE(best_alpha > 0);
+    const int glyph_x = probe->bearing_x + mask_x;
+    const int glyph_y = fonts.metrics().ascent - probe->bearing_y + mask_y;
+
+    constexpr int cols = 12;
+    TerminalEngine engine(cols, 1);
+    engine.set_cursor_visible(false);
+    auto& grid = engine.grid();
+    const uint32_t colors[cols] = {
+        0xff000000, 0xffffffff, 0xffff0000, 0xff00ff00, 0xff0000ff,
+        0xff123456, 0xff654321, 0xffabcdef, 0xff102030, 0xfffedcba,
+        0xff00ff7f, 0xff7f00ff,
+    };
+    for (int x = 0; x < cols; ++x) {
+        Cell cell;
+        cell.codepoint = U'M';
+        cell.fg = Color::make_rgb((colors[x] >> 16) & 255,
+            (colors[x] >> 8) & 255, colors[x] & 255);
+        grid.set_cell(x, 0, cell);
+    }
+
+    const int width = cols * fonts.metrics().cell_width;
+    const int height = fonts.metrics().cell_height;
+    gritty::util::PixmanImage batched(pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    gritty::util::PixmanImage single(pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    REQUIRE(batched.valid());
+    REQUIRE(single.valid());
+
+    CpuRenderer with_batching(fonts);
+    CpuRenderer without_batching(fonts);
+    without_batching.set_glyph_batching(false);
+    with_batching.render(engine, batched.get(), nullptr, true);
+    without_batching.render(engine, single.get(), nullptr, true);
+
+    const int stride = batched.stride() / 4;
+    for (int x = 0; x < cols; ++x) {
+        const int px = x * fonts.metrics().cell_width + glyph_x;
+        const uint32_t expected = colors[x]; // Fully opaque foreground at max coverage.
+        REQUIRE(px >= 0);
+        REQUIRE(px < width);
+        REQUIRE(glyph_y >= 0);
+        REQUIRE(glyph_y < height);
+        CHECK(batched.data()[glyph_y * stride + px] == expected);
+        CHECK(single.data()[glyph_y * stride + px] == expected);
+    }
+    for (size_t i = 0; i < static_cast<size_t>(height) * stride; ++i)
+        REQUIRE(batched.data()[i] == single.data()[i]);
+}
+
+TEST_CASE("Dynamic solid source keeps premultiplied alpha exact") {
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(find_test_font(), 13.0, 96));
+    const CachedGlyph* probe = fonts.get_glyph(U'M', false, false);
+    REQUIRE(probe != nullptr);
+    REQUIRE(probe->mask.valid());
+    int mask_x = -1, mask_y = -1, best_alpha = -1;
+    const int mask_stride = probe->mask.stride();
+    const auto* mask_bits = reinterpret_cast<const uint8_t*>(probe->mask.data());
+    for (int y = 0; y < probe->height; ++y)
+        for (int x = 0; x < probe->width; ++x)
+            if (mask_bits[y * mask_stride + x] > best_alpha) {
+                best_alpha = mask_bits[y * mask_stride + x];
+                mask_x = x; mask_y = y;
+            }
+    REQUIRE(best_alpha == 255);
+
+    RenderConfig cfg;
+    // 1/255 alpha exposes the difference between truncating Pixman's 16-bit
+    // premultiplication and the project's 8-bit (c*a+127)/255 rounding.
+    cfg.default_fg = 0x01808080;
+    cfg.default_bg = 0xff000000;
+    cfg.render_cursor = false;
+    TerminalEngine engine(1, 1);
+    engine.grid().row(0).cells[0].codepoint = U'M';
+
+    const int width = fonts.metrics().cell_width;
+    const int height = fonts.metrics().cell_height;
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    REQUIRE(target.valid());
+    CpuRenderer renderer(fonts, cfg);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    const int x = probe->bearing_x + mask_x;
+    const int y = fonts.metrics().ascent - probe->bearing_y + mask_y;
+    REQUIRE(x >= 0); REQUIRE(x < width);
+    REQUIRE(y >= 0); REQUIRE(y < height);
+    // Opaque target: alpha is 255 after OVER, RGB stays premultiplied (1,1,1).
+    CHECK(target.data()[y * target.stride() / 4 + x] == 0xff010101u);
+}

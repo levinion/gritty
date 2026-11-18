@@ -285,13 +285,21 @@ void TerminalSession::handle_pty_read() {
     bool hit_budget = false;
     size_t total_read = 0;
     constexpr size_t kByteBudget = 1024 * 1024;
+    constexpr size_t kTimingThreshold = 64 * 1024;
     constexpr auto kTimeBudget = std::chrono::milliseconds(2);
-    const auto started = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point started{};
+    bool timing_active = false;
     size_t budget = kByteBudget;
 
-    // Bound each dispatch so a continuously writing process cannot starve UI
-    // events, while still draining a whole interactive burst in one callback.
-    while (budget > 0 && std::chrono::steady_clock::now() - started < kTimeBudget) {
+    // Small interactive reads avoid all clock queries. Large flows start the
+    // 2 ms budget only after 64 KiB so a continuously writing process cannot
+    // starve UI events.
+    while (budget > 0) {
+        if (timing_active &&
+            std::chrono::steady_clock::now() - started >= kTimeBudget) {
+            hit_budget = true;
+            break;
+        }
         ssize_t n = pty_.read(std::span<uint8_t>(read_buf_.data(), std::min(read_buf_.size(), budget)));
         if (n > 0) {
             got_data = true;
@@ -299,7 +307,12 @@ void TerminalSession::handle_pty_read() {
             budget -= bytes;
             total_read += bytes;
             parser_.feed(read_buf_.data(), bytes);
-            if (budget == 0 || std::chrono::steady_clock::now() - started >= kTimeBudget)
+            if (!timing_active && total_read >= kTimingThreshold) {
+                started = std::chrono::steady_clock::now();
+                timing_active = true;
+            }
+            if (budget == 0 ||
+                (timing_active && std::chrono::steady_clock::now() - started >= kTimeBudget))
                 hit_budget = true; // Stopped by budget, not by EAGAIN.
         } else if (n == 0) { // EOF
             if (loop_) loop_->stop();
@@ -318,13 +331,24 @@ void TerminalSession::handle_pty_read() {
                 // Keep parsing; the frame clock will render the accumulated state.
                 render_frame(false);
             } else if (!hit_budget && total_read <= 512) {
-                // Kernel buffer is drained and this was a small interactive
-                // reply: bypass the coalescing timer entirely.
-                if (coalesce_pending_) {
-                    loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 0, {});
-                    coalesce_pending_ = false;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_immediate_commit_ >= std::chrono::milliseconds(2)) {
+                    // Idle keystroke/cursor reply: bypass the coalescing timer.
+                    if (coalesce_pending_) {
+                        loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 0, {});
+                        coalesce_pending_ = false;
+                    }
+                    render_pending_frame();
+                    last_immediate_commit_ = now;
+                } else if (!coalesce_pending_) {
+                    // A burst of tiny writes must not submit one surface per
+                    // packet; use the existing 1 ms coalescing window.
+                    coalesce_pending_ = true;
+                    loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 1, [this] {
+                        coalesce_pending_ = false;
+                        render_frame(false);
+                    });
                 }
-                render_pending_frame();
             } else if (!coalesce_pending_) {
                 coalesce_pending_ = true;
                 loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 1, [this] {

@@ -23,13 +23,17 @@ pixman_color_t CpuRenderer::to_pixman_color(uint32_t argb) noexcept {
     uint8_t g = (argb >> 8) & 0xFF;
     uint8_t b = argb & 0xFF;
 
+    // Expand the 8-bit premultiplied components back to Pixman's 16-bit color
+    // space. This makes both solid fills and 1x1 pixel sources round-trip to
+    // the same premultiplied ARGB bytes on an a8r8g8b8 target.
+    const auto premultiply = [a](uint8_t c) noexcept -> uint16_t {
+        return static_cast<uint16_t>((static_cast<uint32_t>((c * a + 127u) / 255u) * 257u));
+    };
     return pixman_color_t{
-        // Pixman and CGImage premultiplied-first both require RGB <= alpha.
-        // Match foot's color_hex_to_pixman_with_alpha(), not straight RGBA.
-        .red = static_cast<uint16_t>((static_cast<uint32_t>(r) * 257 * a) / 255),
-        .green = static_cast<uint16_t>((static_cast<uint32_t>(g) * 257 * a) / 255),
-        .blue = static_cast<uint16_t>((static_cast<uint32_t>(b) * 257 * a) / 255),
-        .alpha = static_cast<uint16_t>((a * 65535) / 255)
+        .red = premultiply(r),
+        .green = premultiply(g),
+        .blue = premultiply(b),
+        .alpha = static_cast<uint16_t>(a * 257u)
     };
 }
 
@@ -395,14 +399,33 @@ void CpuRenderer::draw_row_backgrounds(
     uint32_t run_color = 0;
     bool run_open = false;
 
+    uint32_t* dst_data = static_cast<uint32_t*>(pixman_image_get_data(target));
+    const int dst_stride = pixman_image_get_stride(target) / 4;
+    const int dst_w = pixman_image_get_width(target);
+    const int dst_h = pixman_image_get_height(target);
+    const bool direct_fill = dst_data != nullptr &&
+        pixman_image_get_format(target) == PIXMAN_a8r8g8b8;
+
     auto flush = [&] {
         if (!run_open) return;
-        pixman_color_t pcol = to_pixman_color(run_color);
-        pixman_rectangle16_t rect = {
-            static_cast<int16_t>(run_px), static_cast<int16_t>(row * cell_h),
-            static_cast<uint16_t>(run_width), static_cast<uint16_t>(cell_h)
-        };
-        pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &pcol, 1, &rect);
+        if (direct_fill && (run_color >> 24) == 0xff) {
+            // Premultiplied ARGB is already exactly the target pixel format;
+            // opaque spans can bypass Pixman's rectangle setup and clipping.
+            const int x0 = std::max(0, run_px);
+            const int x1 = std::min(dst_w, run_px + run_width);
+            const int y0 = std::max(0, row * cell_h);
+            const int y1 = std::min(dst_h, (row + 1) * cell_h);
+            for (int y = y0; y < y1; ++y)
+                std::fill_n(dst_data + static_cast<size_t>(y) * dst_stride + x0,
+                    static_cast<size_t>(std::max(0, x1 - x0)), run_color);
+        } else {
+            const pixman_color_t pcol = to_pixman_color(run_color);
+            const pixman_rectangle16_t rect = {
+                static_cast<int16_t>(run_px), static_cast<int16_t>(row * cell_h),
+                static_cast<uint16_t>(run_width), static_cast<uint16_t>(cell_h)
+            };
+            pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &pcol, 1, &rect);
+        }
         run_open = false;
     };
 
@@ -446,15 +469,19 @@ uint32_t CpuRenderer::resolve_foreground(
     return fg_argb;
 }
 
-pixman_image_t* CpuRenderer::solid_fill(uint32_t argb) {
-    for (auto& entry : solid_cache_)
-        if (entry.image.valid() && entry.argb == argb) return entry.image.get();
-    auto& entry = solid_cache_[solid_next_];
-    solid_next_ = (solid_next_ + 1) % solid_cache_.size();
+pixman_image_t* CpuRenderer::get_solid_fill(uint32_t argb) {
+    if (!dynamic_solid_src_.valid()) {
+        dynamic_solid_src_.reset(pixman_image_create_bits_no_clear(
+            PIXMAN_a8r8g8b8, 1, 1, &dynamic_solid_pixel_, 4));
+        if (!dynamic_solid_src_.valid()) return nullptr;
+        pixman_image_set_repeat(dynamic_solid_src_.get(), PIXMAN_REPEAT_NORMAL);
+    }
     const pixman_color_t color = to_pixman_color(argb);
-    entry.argb = argb;
-    entry.image.reset(pixman_image_create_solid_fill(&color));
-    return entry.image.get();
+    dynamic_solid_pixel_ = (static_cast<uint32_t>(color.alpha >> 8) << 24) |
+        (static_cast<uint32_t>(color.red >> 8) << 16) |
+        (static_cast<uint32_t>(color.green >> 8) << 8) |
+        static_cast<uint32_t>(color.blue >> 8);
+    return dynamic_solid_src_.get();
 }
 
 const void* CpuRenderer::glyph_atlas_handle(const CachedGlyph& glyph) {
@@ -469,7 +496,7 @@ const void* CpuRenderer::glyph_atlas_handle(const CachedGlyph& glyph) {
     }
     if (glyph.atlas_generation == atlas_generation_ && glyph.atlas_handle)
         return glyph.atlas_handle;
-    if (atlas_entries_ >= 1024) {
+    if (atlas_entries_ >= 8192) {
         // Bounded: rebuild and invalidate all embedded handles by generation.
         pixman_glyph_cache_destroy(glyph_atlas_);
         glyph_atlas_ = pixman_glyph_cache_create();
@@ -493,7 +520,7 @@ void CpuRenderer::flush_glyph_batch(pixman_image_t* target) {
     // Short runs (interleaved with box glyphs or decorations) are cheaper as
     // plain per-glyph composites; the atlas only pays off for longer runs.
     constexpr size_t min_batch = 4;
-    pixman_image_t* batch_solid = solid_fill(glyph_batch_color_);
+    pixman_image_t* batch_solid = get_solid_fill(glyph_batch_color_);
     if (glyph_batch_.size() >= min_batch && glyph_atlas_ && batch_solid &&
         glyph_batch_x1_ > glyph_batch_x0_ && glyph_batch_y1_ > glyph_batch_y0_) {
         glyph_write_.clear();
@@ -901,7 +928,7 @@ void CpuRenderer::render_cell_foreground(
     }
 
     if (!rendered_box && cp != ' ' && cp != 0) {
-        pixman_image_t* glyph_solid = solid_fill(fg_argb);
+        pixman_image_t* glyph_solid = get_solid_fill(fg_argb);
 
         // A cell with combining marks is one grapheme cluster: shape it so the
         // marks land on their HarfBuzz anchors instead of being dropped.

@@ -5,6 +5,11 @@
 #include <cmath>
 
 namespace gritty::render {
+namespace {
+constexpr size_t non_ascii_l1_slot(char32_t cp) noexcept {
+    return static_cast<size_t>((static_cast<uint32_t>(cp) * 2654435761u) >> 22) & 0x3ffu;
+}
+} // namespace
 
 FontEngine::FontEngine(AntialiasMode antialias, GlyphCacheLimits limits)
     : antialias_mode_(antialias), cache_limits_(limits) {
@@ -146,7 +151,7 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
 
     const auto style = static_cast<size_t>(bold) * 2 + (italic ? 1 : 0);
     if (cp > 0x7e) {
-        const auto slot = static_cast<size_t>((cp ^ (cp >> 8)) & 0xff);
+        const auto slot = non_ascii_l1_slot(cp);
         if (non_ascii_l1_[style][slot] && non_ascii_l1_cp_[style][slot] == cp) {
             ++cache_hits_; // Direct L1 hit: no unordered_map hash or LRU splice.
             return non_ascii_l1_[style][slot];
@@ -179,7 +184,7 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
             ascii_glyph_table_[style][cp - 0x20].glyph = glyph;
             ascii_glyph_table_[style][cp - 0x20].key = key;
         } else if (cp > 0x7e) {
-            const auto slot = static_cast<size_t>((cp ^ (cp >> 8)) & 0xff);
+            const auto slot = non_ascii_l1_slot(cp);
             non_ascii_l1_[style][slot] = glyph;
             non_ascii_l1_cp_[style][slot] = cp;
         }

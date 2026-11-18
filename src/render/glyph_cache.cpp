@@ -16,7 +16,7 @@ void FontEngine::clear_cache() noexcept {
     for (auto& row : ascii_glyph_table_)
         for (auto& slot : row) slot = {};
     for (int style = 0; style < 4; ++style)
-        for (size_t slot = 0; slot < 256; ++slot) {
+        for (size_t slot = 0; slot < 1024; ++slot) {
             non_ascii_l1_[style][slot] = nullptr;
             non_ascii_l1_cp_[style][slot] = 0;
         }
@@ -50,7 +50,7 @@ const CachedGlyph* FontEngine::cache_glyph(const GlyphKey& key, CachedGlyph glyp
             for (auto& slot : row)
                 if (slot.glyph == evicted) slot = {};
         for (int style = 0; style < 4; ++style)
-            for (size_t slot = 0; slot < 256; ++slot)
+            for (size_t slot = 0; slot < 1024; ++slot)
                 if (non_ascii_l1_[style][slot] == evicted) non_ascii_l1_[style][slot] = nullptr;
         cache_bitmap_bytes_ -= oldest->second.bitmap_bytes;
         glyph_cache_.erase(oldest);

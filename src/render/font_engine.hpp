@@ -84,8 +84,8 @@ struct GlyphKeyHash {
 };
 
 struct GlyphCacheLimits {
-    size_t max_bitmap_bytes{8 * 1024 * 1024}; // Cached stride * height, excluding one oversized transient.
-    size_t max_entries{4096}; // Zero disables caching (including empty glyphs).
+    size_t max_bitmap_bytes{16 * 1024 * 1024}; // Cached stride * height, excluding one oversized transient.
+    size_t max_entries{8192}; // Zero disables caching (including empty glyphs).
 };
 
 struct GlyphCacheStats {
@@ -214,10 +214,10 @@ private:
         GlyphKey key{};
     };
     mutable AsciiGlyphSlot ascii_glyph_table_[4][95]{};
-    // 256-slot direct-mapped L1 for non-ASCII codepoints. The folded index can
+    // 1024-slot direct-mapped L1 for non-ASCII codepoints. The folded index can
     // collide, so parallel tags validate the cached pointer.
-    mutable const CachedGlyph* non_ascii_l1_[4][256]{};
-    mutable char32_t non_ascii_l1_cp_[4][256]{};
+    mutable const CachedGlyph* non_ascii_l1_[4][1024]{};
+    mutable char32_t non_ascii_l1_cp_[4][1024]{};
 };
 
 } // namespace gritty::render

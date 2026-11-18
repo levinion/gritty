@@ -102,7 +102,9 @@ private:
     [[nodiscard]] uint32_t resolve_foreground(
         const core::Cell& cell, const core::TerminalEngine& engine) const noexcept;
     [[nodiscard]] const void* glyph_atlas_handle(const CachedGlyph& glyph);
-    pixman_image_t* solid_fill(uint32_t argb);
+    // Reuse one in-place 1x1 image for every solid color instead of allocating
+    // pixman solid fills while rendering high-frequency SGR color changes.
+    pixman_image_t* get_solid_fill(uint32_t argb);
     void flush_glyph_batch(pixman_image_t* target);
     void render_cell_foreground(
         const core::Cell& cell,
@@ -178,12 +180,8 @@ private:
     uint32_t atlas_generation_;
     size_t atlas_entries_{0};
 
-    struct SolidCacheEntry {
-        uint32_t argb{0};
-        util::PixmanImage image;
-    };
-    std::array<SolidCacheEntry, 16> solid_cache_{};
-    size_t solid_next_{0};
+    uint32_t dynamic_solid_pixel_{0};
+    util::PixmanImage dynamic_solid_src_;
     struct BatchGlyph {
         int x{0}, y{0}, width{0}, height{0};
         const void* handle{nullptr};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -97,6 +98,7 @@ private:
     bool full_redraw_pending_{false};
     bool coalesce_frames_{true};
     bool coalesce_pending_{false};
+    std::chrono::steady_clock::time_point last_immediate_commit_{};
     std::function<void()> present_observer_;
     std::function<void(std::string_view)> url_open_handler_;
 };
