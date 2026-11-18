@@ -20,6 +20,7 @@ core_sources = files(
   'config/toml_loader.cpp',
   'core/screen_grid.cpp',
   'core/combining_store.cpp',
+  'core/cell_extra_store.cpp',
   'core/terminal_engine.cpp',
   'core/terminal_modes.cpp',
   'core/vt_parser.cpp',

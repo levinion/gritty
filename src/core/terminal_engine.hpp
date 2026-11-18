@@ -71,6 +71,14 @@ struct PlacedImage {
     int src_x{0}, src_y{0}, src_w{0}, src_h{0}; // 0 size means the whole bitmap.
     int cursor_policy{1};
     bool alt_screen{false};
+
+    // Render-side scaling cache. Pixman glyph/image targets are immutable while
+    // attached; these fields are mutated only by CpuRenderer through a const
+    // engine view.
+    mutable util::PixmanImage scaled_cache;
+    mutable const void* cache_source{nullptr};
+    mutable int cache_src_x{0}, cache_src_y{0}, cache_src_w{0}, cache_src_h{0};
+    mutable int cache_dst_w{0}, cache_dst_h{0};
 };
 
 class TerminalEngine final {
@@ -146,6 +154,9 @@ public:
 
     // Text output
     void print_char(char32_t cp);
+    // Fast path for a run of printable single-width ASCII with no active
+    // charset translation or insert mode. Falls back to print_char otherwise.
+    void print_ascii_run(std::string_view ascii);
     void print_utf8(std::string_view utf8_str);
 
     // Editing operations

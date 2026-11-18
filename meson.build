@@ -79,6 +79,10 @@ inc_dir = include_directories('src')
 
 subdir('src')
 
+if get_option('benchmarks')
+  subdir('benchmark')
+endif
+
 if get_option('tests')
   doctest_dep = dependency('doctest', fallback: ['doctest', 'doctest_dep'])
   subdir('tests')

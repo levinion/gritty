@@ -94,17 +94,8 @@ void TerminalEngine::set_kitty_keyboard_flags(uint32_t flags, int mode) {
 }
 
 void TerminalEngine::clear_hyperlink_references(uint16_t id) noexcept {
-    for (auto* grid : {&primary_grid_, &alt_grid_}) {
-        for (int y = 0; y < grid->rows(); ++y) {
-            auto& cells = grid->row(y).cells;
-            for (auto& cell : cells) {
-                if (cell.hyperlink_id == id) {
-                    cell.hyperlink_id = 0;
-                    grid->row(y).mark_dirty(static_cast<int>(&cell - cells.data()));
-                }
-            }
-        }
-    }
+    primary_grid_.clear_hyperlink_from_extras(id);
+    alt_grid_.clear_hyperlink_from_extras(id);
 }
 
 uint16_t TerminalEngine::get_or_create_hyperlink_id(std::string_view url) {

@@ -45,8 +45,8 @@ TEST_CASE("Repeated combining text neither allocates unique entries nor loses wi
     terminal.set_cursor_pos(2, 0);
     terminal.print_char(U'中');
     terminal.print_char(U'\u0301');
-    CHECK(terminal.grid().cell(2, 0).combining_idx != 0);
-    CHECK(terminal.grid().cell(3, 0).combining_idx == 0);
+    CHECK(terminal.grid().get_cell_extra(terminal.grid().cell(2, 0).extra_idx).combining_idx != 0);
+    CHECK(terminal.grid().cell(3, 0).extra_idx == 0);
 }
 
 TEST_CASE("Combining collection retains visible and historical references and grid copies") {
@@ -54,30 +54,30 @@ TEST_CASE("Combining collection retains visible and historical references and gr
     const char32_t acute[] = {U'\u0301'}, cedilla[] = {U'\u0327'};
     core::Cell a;
     a.codepoint = U'a';
-    a.combining_idx = grid.store_combining_codepoints(acute);
-    const auto history_id = a.combining_idx;
-    grid.set_cell(0, 0, a);
+    const uint32_t acute_id = grid.store_combining_codepoints(acute);
+    const auto history_id = acute_id;
+    grid.set_cell_with_extra(0, 0, a, core::CellExtra{.combining_idx = acute_id});
     grid.scroll_up(0, 1, 1);
     core::Cell b = a;
-    b.combining_idx = grid.store_combining_codepoints(cedilla);
-    grid.set_cell(1, 0, b);
+    const uint32_t cedilla_id = grid.store_combining_codepoints(cedilla);
+    grid.set_cell_with_extra(1, 0, b, core::CellExtra{.combining_idx = cedilla_id});
     for (int i = 0; i < 50000; ++i) {
         const char32_t sequence[] = {static_cast<char32_t>(0x10000 + i), U'\u0301'};
         core::Cell next;
-        next.combining_idx = grid.store_combining_codepoints(sequence);
-        grid.set_cell(2, 1, next);
+        grid.set_cell_with_extra(2, 1, next,
+            core::CellExtra{.combining_idx = grid.store_combining_codepoints(sequence)});
     }
     CHECK(grid.combining_storage_bytes() < 1024 * 1024);
     grid.collect_combining_garbage();
     CHECK(grid.combining_entry_count() == 3);
     REQUIRE(grid.scrollback_size() == 1);
-    CHECK(grid.scrollback_row(0).cells[0].combining_idx == history_id);
+    CHECK(grid.get_cell_extra(grid.scrollback_row(0).cells[0].extra_idx).combining_idx == history_id);
     check_text(grid, history_id, acute);
-    check_text(grid, b.combining_idx, cedilla);
+    check_text(grid, cedilla_id, cedilla);
     auto copy = grid;
     copy.resize(4, 3); // Pull historical row back into the viewport.
     copy.collect_combining_garbage();
-    check_text(copy, copy.cell(0, 0).combining_idx, acute);
+    check_text(copy, copy.get_cell_extra(copy.cell(0, 0).extra_idx).combining_idx, acute);
     grid.erase_in_display(0, 0, 3);
     CHECK(grid.combining_entry_count() == 2);
     CHECK(grid.get_combining_codepoints(history_id).empty());
@@ -149,7 +149,8 @@ TEST_CASE("Long combining sequences survive periodic collection without truncati
     terminal.print_char(U'e');
     for (int i = 0; i < 5000; ++i) terminal.print_char(U'\u0301');
     terminal.grid().collect_combining_garbage();
-    const auto text = terminal.grid().get_combining_codepoints(terminal.grid().cell(0, 0).combining_idx);
+    const auto text = terminal.grid().get_combining_codepoints(
+        terminal.grid().get_cell_extra(terminal.grid().cell(0, 0).extra_idx).combining_idx);
     REQUIRE(text.size() == 5000);
     CHECK(std::all_of(text.begin(), text.end(), [](char32_t cp) { return cp == U'\u0301'; }));
     CHECK(terminal.grid().combining_entry_count() == 1);
@@ -232,4 +233,36 @@ TEST_CASE("Oversized glyphs render through one accounted transient slot") {
     CHECK(fonts.cache_stats().entries == 1);
     REQUIRE(fonts.load_font(test_font_path(), 14.0));
     CHECK(fonts.cache_stats().entries == 0);
+}
+
+TEST_CASE("Non-ASCII L1 cache preserves folded-index collisions") {
+    render::FontEngine fonts(render::AntialiasMode::Grayscale, {1024 * 1024, 16});
+    REQUIRE(fonts.load_font(test_font_path(), 13.0, 96));
+
+    // Search two distinct codepoints that collide in the 256-slot folded index
+    // and are covered by the test font.
+    const auto folded = [](char32_t cp) { return static_cast<size_t>((cp ^ (cp >> 8)) & 0xff); };
+    char32_t first = 0, second = 0;
+    for (char32_t a = 0x4e00; a < 0x9fa0 && second == 0; ++a) {
+        const auto* ga = fonts.get_glyph(a, false, false);
+        if (!ga || ga->width == 0) continue;
+        for (char32_t b = a + 1; b < 0x9fa0 && folded(b) == folded(a); ++b) {
+            const auto* gb = fonts.get_glyph(b, false, false);
+            if (gb && gb->width > 0 && ga != gb) { first = a; second = b; break; }
+        }
+    }
+    if (first == 0) { WARN("Font has no colliding covered CJK pair"); return; }
+
+    const auto* a_glyph = fonts.get_glyph(first, false, false);
+    const auto* b_glyph = fonts.get_glyph(second, false, false);
+    REQUIRE(a_glyph != nullptr);
+    REQUIRE(b_glyph != nullptr);
+    CHECK(a_glyph != b_glyph); // The tag must prevent slot aliasing.
+    CHECK(fonts.get_glyph(first, false, false) == a_glyph);
+    CHECK(fonts.get_glyph(second, false, false) == b_glyph);
+
+    fonts.clear_cache();
+    const auto* after_clear = fonts.get_glyph(first, false, false);
+    REQUIRE(after_clear != nullptr);
+    CHECK(fonts.get_glyph(second, false, false) != after_clear);
 }

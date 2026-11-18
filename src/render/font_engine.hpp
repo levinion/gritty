@@ -52,6 +52,11 @@ struct CachedGlyph {
     int width{0};
     int height{0};
     bool is_subpixel{false};
+
+    // Owned by the renderer's glyph atlas, not by the glyph cache. Generation
+    // invalidates handles after an atlas rebuild.
+    mutable const void* atlas_handle{nullptr};
+    mutable uint32_t atlas_generation{0};
 };
 
 struct GlyphKey {
@@ -203,6 +208,16 @@ private:
     CachedGlyph transient_glyph_;
     std::list<GlyphKey> glyph_lru_;
     std::unordered_map<GlyphKey, GlyphCacheEntry, GlyphKeyHash> glyph_cache_;
+    // L1 lookup for printable ASCII: [bold * 2 + italic][cp - 0x20].
+    struct AsciiGlyphSlot {
+        const CachedGlyph* glyph{nullptr};
+        GlyphKey key{};
+    };
+    mutable AsciiGlyphSlot ascii_glyph_table_[4][95]{};
+    // 256-slot direct-mapped L1 for non-ASCII codepoints. The folded index can
+    // collide, so parallel tags validate the cached pointer.
+    mutable const CachedGlyph* non_ascii_l1_[4][256]{};
+    mutable char32_t non_ascii_l1_cp_[4][256]{};
 };
 
 } // namespace gritty::render

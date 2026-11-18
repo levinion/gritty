@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -87,6 +88,7 @@ private:
     platform::PosixPty pty_;
 
     util::PixmanRegion damage_region_;
+    std::array<uint8_t, 65536> read_buf_{};
     std::string last_title_;
     double font_scale_{1.0};
     std::string pending_write_;

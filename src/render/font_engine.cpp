@@ -144,13 +144,47 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
     transient_glyph_ = CachedGlyph{};
     transient_bitmap_bytes_ = 0;
 
+    const auto style = static_cast<size_t>(bold) * 2 + (italic ? 1 : 0);
+    if (cp > 0x7e) {
+        const auto slot = static_cast<size_t>((cp ^ (cp >> 8)) & 0xff);
+        if (non_ascii_l1_[style][slot] && non_ascii_l1_cp_[style][slot] == cp) {
+            ++cache_hits_; // Direct L1 hit: no unordered_map hash or LRU splice.
+            return non_ascii_l1_[style][slot];
+        }
+    }
+    if (cp >= 0x20 && cp <= 0x7e) {
+        const auto slot = static_cast<size_t>(cp - 0x20);
+        auto& l1 = ascii_glyph_table_[style][slot];
+        if (l1.glyph) {
+            // Refresh LRU too: an L1 hit must not incorrectly age the glyph.
+            return cached_or_rasterize(l1.key);
+        }
+    }
+
     const CharIndex resolved = resolve_char(cp);
-    return cached_or_rasterize(GlyphKey{
+    const CachedGlyph* glyph = cached_or_rasterize(GlyphKey{
         .glyph_index = resolved.glyph_index,
         .face_idx = resolved.face_idx,
         .bold = bold,
         .italic = italic
     });
+    if (glyph && glyph != &transient_glyph_) {
+        const GlyphKey key{
+            .glyph_index = resolved.glyph_index,
+            .face_idx = resolved.face_idx,
+            .bold = bold,
+            .italic = italic
+        };
+        if (cp >= 0x20 && cp <= 0x7e) {
+            ascii_glyph_table_[style][cp - 0x20].glyph = glyph;
+            ascii_glyph_table_[style][cp - 0x20].key = key;
+        } else if (cp > 0x7e) {
+            const auto slot = static_cast<size_t>((cp ^ (cp >> 8)) & 0xff);
+            non_ascii_l1_[style][slot] = glyph;
+            non_ascii_l1_cp_[style][slot] = cp;
+        }
+    }
+    return glyph;
 }
 
 const CachedGlyph* FontEngine::glyph_for_index(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic) {

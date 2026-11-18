@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
             terminal.print_char(U'e');
             terminal.print_char(U'\u0301');
         }
-        const auto marks = terminal.grid().get_combining_codepoints(terminal.grid().cell(0, 0).combining_idx);
+        const auto marks = terminal.grid().get_combining_codepoints(terminal.grid().get_cell_extra(terminal.grid().cell(0, 0).extra_idx).combining_idx);
         if (marks.size() != 1 || marks[0] != U'\u0301') return 3;
         std::printf("{\"mode\":\"combining\",\"initial_footprint\":%llu,\"final_footprint\":%llu",
             static_cast<unsigned long long>(initial), static_cast<unsigned long long>(footprint()));

@@ -73,6 +73,7 @@ private:
 
     void render_cell(
         const core::Cell& cell,
+        const core::CellExtra& extra,
         int col,
         int row,
         int cell_w,
@@ -100,10 +101,12 @@ private:
     );
     [[nodiscard]] uint32_t resolve_foreground(
         const core::Cell& cell, const core::TerminalEngine& engine) const noexcept;
-    [[nodiscard]] const void* glyph_atlas_handle(pixman_image_t* mask);
+    [[nodiscard]] const void* glyph_atlas_handle(const CachedGlyph& glyph);
+    pixman_image_t* solid_fill(uint32_t argb);
     void flush_glyph_batch(pixman_image_t* target);
     void render_cell_foreground(
         const core::Cell& cell,
+        const core::CellExtra& extra,
         int col,
         int row,
         int cell_w,
@@ -141,7 +144,8 @@ private:
         int dx, int dy, int dw, int dh,
         const pixman_region32_t* clip,
         util::PixmanRegion* damage_out,
-        int src_x = 0, int src_y = 0, int src_w = 0, int src_h = 0
+        int src_x = 0, int src_y = 0, int src_w = 0, int src_h = 0,
+        const core::PlacedImage* placed = nullptr
     );
 
     void draw_images(
@@ -151,7 +155,8 @@ private:
         int cell_h,
         bool below_text,
         int row, // >= 0: clip to this row band; -1: full target (overlay pass).
-        util::PixmanRegion* damage_out
+        util::PixmanRegion* damage_out,
+        const pixman_region32_t* clip = nullptr
     );
 
     void render_cursor(
@@ -165,15 +170,20 @@ private:
     RenderConfig config_;
     bool config_changed_{true};
 
-    // Cached solid color source for glyph compositing
-    util::PixmanImage solid_src_;
-    uint32_t current_solid_color_{0};
     int previous_cursor_col_{-1};
     int previous_cursor_row_{-1};
     ScrollMode scroll_mode_{ScrollMode::Adaptive};
     bool glyph_batching_{true};
     pixman_glyph_cache_t* glyph_atlas_{nullptr};
-    std::unordered_map<const void*, const void*> glyph_handles_;
+    uint32_t atlas_generation_;
+    size_t atlas_entries_{0};
+
+    struct SolidCacheEntry {
+        uint32_t argb{0};
+        util::PixmanImage image;
+    };
+    std::array<SolidCacheEntry, 16> solid_cache_{};
+    size_t solid_next_{0};
     struct BatchGlyph {
         int x{0}, y{0}, width{0}, height{0};
         const void* handle{nullptr};
@@ -181,10 +191,24 @@ private:
     };
     std::vector<BatchGlyph> glyph_batch_;
     std::vector<pixman_glyph_t> glyph_write_;
-    int skip_batch_lookahead_until_{0};
     uint32_t glyph_batch_color_{0};
     int glyph_batch_x0_{0}, glyph_batch_y0_{0}, glyph_batch_x1_{0}, glyph_batch_y1_{0};
     std::vector<core::ScrollOp> scroll_scratch_;
+
+    struct PlaceholderCell {
+        bool valid{false};
+        uint32_t image_id{0}, placement_id{0};
+        int image_row{0}, image_col{0};
+    };
+    struct PlaceholderGroup {
+        uint32_t image_id{0}, placement_id{0};
+        int min_grid_col{0}, max_grid_col{0}, min_grid_row{0}, max_grid_row{0};
+        int min_img_col{0}, min_img_row{0};
+    };
+    std::vector<PlaceholderCell> placeholder_cells_;
+    std::vector<PlaceholderGroup> placeholder_groups_;
+    std::vector<int> placeholder_parent_;
+    std::vector<int> placeholder_group_of_;
     RenderStats stats_{};
 };
 

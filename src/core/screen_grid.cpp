@@ -1,7 +1,31 @@
 #include "core/screen_grid.hpp"
 #include <algorithm>
+#include <cstring>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 
 namespace gritty::core {
+namespace {
+
+void fill_cells(Cell* dst, size_t count, const Cell& value) noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const uint32x4_t cp = vdupq_n_u32(static_cast<uint32_t>(value.codepoint));
+    const uint32x4_t fg = vdupq_n_u32(value.fg.value);
+    const uint32x4_t bg = vdupq_n_u32(value.bg.value);
+    const uint32x4_t tail = vdupq_n_u32(cell_tail_word(value));
+    const uint32x4x4_t block{cp, fg, bg, tail};
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4)
+        vst4q_u32(reinterpret_cast<uint32_t*>(dst + i), block);
+    for (; i < count; ++i) dst[i] = value;
+#else
+    for (size_t i = 0; i < count; ++i) dst[i] = value;
+#endif
+}
+
+} // namespace
+
 
 ScreenGrid::ScreenGrid(int cols, int rows, size_t scrollback_capacity)
     : cols_(cols), rows_(rows), scrollback_(scrollback_capacity) {
@@ -77,12 +101,45 @@ void ScreenGrid::set_cell(int x, int y, const Cell& c) noexcept {
     }
 }
 
+void ScreenGrid::set_cell_with_extra(int x, int y, const Cell& c, const CellExtra& extra) {
+    Cell cell = c;
+    cell.extra_idx = intern_cell_extra(extra);
+    set_cell(x, y, cell);
+}
+
+uint16_t ScreenGrid::intern_cell_extra(const CellExtra& extra) {
+    if (extra.is_default()) return 0;
+    if (combining_store_.needs_collection() || cell_extras_.needs_collection())
+        collect_combining_garbage(extra.combining_idx);
+    return cell_extras_.intern(extra);
+}
+
+void ScreenGrid::clear_hyperlink_from_extras(uint16_t hyperlink_id) noexcept {
+    if (hyperlink_id == 0) return;
+    const auto affected = [&](const Row& row) {
+        for (const auto& cell : row.cells)
+            if (cell.extra_idx != 0 &&
+                cell_extras_.get(cell.extra_idx).hyperlink_id == hyperlink_id) return true;
+        return false;
+    };
+    bool visible_affected = false;
+    for (const auto& row : visible_rows_) visible_affected |= affected(row);
+    // Entries are interned and shared by visible/history cells; updating the
+    // entry in place updates every reference without allocating or changing IDs.
+    cell_extras_.clear_hyperlink(hyperlink_id);
+    if (visible_affected)
+        for (auto& row : visible_rows_) row.mark_all_dirty(cols_);
+}
+
 void ScreenGrid::clear_row(Row& row, const Cell& empty_cell) {
     // Old history can have a much wider geometry. Do not keep a formerly huge
     // line allocation forever when recycling it into a narrower viewport.
-    if (row.cells.size() != static_cast<size_t>(cols_) && row.cells.capacity() > 2 * static_cast<size_t>(cols_))
-        std::vector<Cell>(cols_, empty_cell).swap(row.cells);
-    else row.cells.assign(cols_, empty_cell);
+    if (row.cells.size() != static_cast<size_t>(cols_)) {
+        if (row.cells.capacity() > 2 * static_cast<size_t>(cols_))
+            std::vector<Cell>(cols_, empty_cell).swap(row.cells);
+        else row.cells.resize(cols_);
+    }
+    fill_cells(row.cells.data(), row.cells.size(), empty_cell);
     row.wrapped = false;
     row.mark_all_dirty(cols_);
 }
@@ -192,10 +249,8 @@ void ScreenGrid::erase_in_line(int x, int y, int mode, const Cell& empty_cell) {
             return;
     }
 
-    for (int col = start; col <= end; ++col) {
-        r.cells[col] = empty_cell;
-        r.mark_dirty(col);
-    }
+    fill_cells(r.cells.data() + start, static_cast<size_t>(end - start + 1), empty_cell);
+    r.mark_dirty_range(start, end);
     if (mode == 2 || (mode == 0 && x == 0)) {
         r.wrapped = false;
     }
@@ -318,14 +373,17 @@ std::span<const char32_t> ScreenGrid::get_combining_codepoints(uint32_t idx) con
 }
 
 void ScreenGrid::collect_combining_garbage(uint32_t preserve) {
-    if (combining_store_.size() == 0) return;
+    cell_extras_.begin_collection();
     combining_store_.begin_collection();
     combining_store_.mark(preserve);
+
     const auto mark_row = [this](const Row& row) {
-        for (const auto& cell : row.cells) combining_store_.mark(cell.combining_idx);
+        for (const auto& cell : row.cells) cell_extras_.mark(cell.extra_idx);
     };
     for (const auto& row : visible_rows_) mark_row(row);
     for (size_t i = 0; i < scrollback_.size(); ++i) mark_row(scrollback_[i]);
+    cell_extras_.mark_combining(combining_store_);
+    cell_extras_.sweep();
     combining_store_.sweep();
 }
 

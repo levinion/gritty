@@ -187,6 +187,19 @@ pixman_image_t* IOSurfaceFramePool::get_back_buffer() {
         const auto* boxes = pixman_region32_rectangles(next->stale.get(), &count);
         for (int i = 0; i < count; ++i) {
             const auto& box = boxes[i];
+            if (box.x1 == 0 && box.x2 == p.width &&
+                next->pixels.stride() == p.displayed->pixels.stride()) {
+                // Full-width rectangles have no inter-row padding to preserve:
+                // copy the whole band in one call.
+                const size_t bytes = static_cast<size_t>(box.x2 - box.x1) * 4;
+                const size_t rows = static_cast<size_t>(box.y2 - box.y1);
+                const size_t offset = static_cast<size_t>(box.y1) * next->pixels.stride();
+                auto* dst = reinterpret_cast<uint8_t*>(next->pixels.data()) + offset;
+                const auto* src = reinterpret_cast<const uint8_t*>(p.displayed->pixels.data()) + offset;
+                std::memcpy(dst, src, bytes * rows);
+                p.copied += bytes * rows;
+                continue;
+            }
             const size_t bytes = static_cast<size_t>(box.x2 - box.x1) * 4;
             for (int y = box.y1; y < box.y2; ++y) {
                 auto* dst = reinterpret_cast<uint8_t*>(next->pixels.data()) +

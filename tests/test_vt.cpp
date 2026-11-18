@@ -95,11 +95,12 @@ TEST_CASE("VtParser Underline styles and Underline color") {
     // Curly underline (4:3m) with 24-bit underline color (58;2;255;128;0m)
     parser.feed("\x1b[4:3;58;2;255;128;0mCurly");
     const auto& c = engine.grid().cell(0, 0);
+    const auto extra = engine.grid().get_cell_extra(c.extra_idx);
     CHECK(c.attrs.underline_style == static_cast<uint16_t>(UnderlineStyle::Curly));
-    CHECK(c.underline_color.is_rgb());
-    CHECK(c.underline_color.r() == 255);
-    CHECK(c.underline_color.g() == 128);
-    CHECK(c.underline_color.b() == 0);
+    CHECK(extra.underline_color.is_rgb());
+    CHECK(extra.underline_color.r() == 255);
+    CHECK(extra.underline_color.g() == 128);
+    CHECK(extra.underline_color.b() == 0);
 }
 
 TEST_CASE("VtParser Alternate Screen Buffer (DECSET 1049)") {
@@ -199,13 +200,14 @@ TEST_CASE("VtParser OSC 8 Hyperlinks") {
     // OSC 8 ; ; https://example.com ST
     parser.feed("\x1b]8;;https://example.com\x1b\\Link\x1b]8;;\x1b\\");
     const auto& c = engine.grid().cell(0, 0);
-    CHECK(c.hyperlink_id > 0);
-    CHECK(engine.get_hyperlink_url(c.hyperlink_id) == "https://example.com");
+    const uint16_t link_id = engine.grid().get_cell_extra(c.extra_idx).hyperlink_id;
+    CHECK(link_id > 0);
+    CHECK(engine.get_hyperlink_url(link_id) == "https://example.com");
 
     // After clearing, cell should have hyperlink_id 0
     parser.feed("NoLink");
     const auto& c_no_link = engine.grid().cell(4, 0);
-    CHECK(c_no_link.hyperlink_id == 0);
+    CHECK(engine.grid().get_cell_extra(c_no_link.extra_idx).hyperlink_id == 0);
 }
 
 TEST_CASE("OSC 52 writes the clipboard and never answers queries") {
@@ -270,7 +272,9 @@ TEST_CASE("Placed images follow scroll, erase and the active screen") {
         return image;
     };
     TerminalEngine engine(10, 5);
-    engine.place_image(PlacedImage{.image = make_image(0xffff0000u), .col = 2, .row = 2});
+    PlacedImage image;
+    image.image = make_image(0xffff0000u); image.col = 2; image.row = 2;
+    engine.place_image(std::move(image));
     REQUIRE(engine.images().size() == 1);
     CHECK(engine.images()[0].row == 2);
     CHECK(engine.images()[0].alt_screen == false);
@@ -285,7 +289,9 @@ TEST_CASE("Placed images follow scroll, erase and the active screen") {
 
     // Alt-screen images are tagged and survive a switch back untouched.
     engine.set_alt_screen(true, 47);
-    engine.place_image(PlacedImage{.image = make_image(0xff00ff00u), .col = 0, .row = 0});
+    PlacedImage green;
+    green.image = make_image(0xff00ff00u); green.col = 0; green.row = 0;
+    engine.place_image(std::move(green));
     REQUIRE(engine.images().size() == 1);
     CHECK(engine.images()[0].alt_screen == true);
     engine.set_alt_screen(false, 47);
@@ -299,7 +305,9 @@ TEST_CASE("Placed images follow scroll, erase and the active screen") {
     CHECK(engine.images().empty());
 
     // Deleting by image id mirrors Kitty delete actions.
-    engine.place_image(PlacedImage{.image = make_image(0xff0000ffu), .image_id = 7, .row = 0});
+    PlacedImage blue;
+    blue.image = make_image(0xff0000ffu); blue.image_id = 7; blue.row = 0;
+    engine.place_image(std::move(blue));
     engine.remove_images_by_id(7);
     CHECK(engine.images().empty());
 }
@@ -312,7 +320,9 @@ TEST_CASE("Partially scrolled-out images remain visible until fully outside the 
         data[0] = color;
         return gritty::util::PixmanImage(raw);
     };
-    engine.place_image(PlacedImage{.image = image(0xff00ff00u), .row = 0, .rows = 4});
+    PlacedImage placed;
+    placed.image = image(0xff00ff00u); placed.row = 0; placed.rows = 4;
+    engine.place_image(std::move(placed));
     REQUIRE(engine.images().size() == 1);
     engine.set_margins(0, 4);
     engine.scroll_up(2);
@@ -334,13 +344,132 @@ TEST_CASE("Hyperlink table is bounded and clears recycled cell references") {
         if (i == 0) {
             first_url = url;
             first_id = id;
-            engine.grid().cell(0, 0).hyperlink_id = id;
+            auto linked = engine.grid().cell(0, 0);
+            engine.grid().set_cell_with_extra(0, 0, linked, CellExtra{.hyperlink_id = id});
         }
     }
     CHECK(first_id == 1);
     CHECK(engine.get_hyperlink_url(first_id) != first_url);
-    CHECK(engine.grid().cell(0, 0).hyperlink_id == 0); // No stale URL after LRU reuse.
+    CHECK(engine.grid().get_cell_extra(engine.grid().cell(0, 0).extra_idx).hyperlink_id == 0); // No stale URL after LRU reuse.
     const auto reinserted = engine.get_or_create_hyperlink_id(first_url);
     CHECK(reinserted != 0);
     CHECK(engine.get_hyperlink_url(reinserted) == first_url);
+}
+
+TEST_CASE("ASCII batch writes match per-character VT semantics") {
+    const std::string text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    TerminalEngine batched(10, 4), reference(10, 4);
+    VtParser a(batched), b(reference);
+    a.feed("\x1b[1;38;2;10;20;30m" + text);
+    for (const char c : std::string("\x1b[1;38;2;10;20;30m")) b.feed(std::string_view(&c, 1));
+    for (const char c : text) {
+        const std::string one(1, c);
+        b.feed(one);
+    }
+    CHECK(batched.cursor_col() == reference.cursor_col());
+    CHECK(batched.cursor_row() == reference.cursor_row());
+    for (int y = 0; y < 4; ++y) {
+        CHECK(batched.grid().row(y).wrapped == reference.grid().row(y).wrapped);
+        for (int x = 0; x < 10; ++x)
+            CHECK(batched.grid().cell(x, y) == reference.grid().cell(x, y));
+    }
+}
+
+TEST_CASE("mark_dirty_range merges a full span in one update") {
+    TerminalEngine engine(20, 1);
+    engine.grid().reset_damage();
+    auto& row = engine.grid().row(0);
+    row.mark_dirty_range(3, 9);
+    CHECK(row.dirty);
+    CHECK(row.damage_start == 3);
+    CHECK(row.damage_end == 9);
+    row.mark_dirty_range(1, 5);
+    CHECK(row.damage_start == 1);
+    CHECK(row.damage_end == 9);
+}
+
+TEST_CASE("CSI parameters are initialized lazily and never leak between sequences") {
+    TerminalEngine engine(10, 3);
+    VtParser parser(engine);
+
+    parser.feed("\x1b[9;8H"); // Initializes two slots; row is clamped by the 3-row grid.
+    CHECK(engine.cursor_row() == 2);
+    CHECK(engine.cursor_col() == 7);
+
+    parser.feed("\x1b[H"); // No digits: both parameters must be defaults.
+    CHECK(engine.cursor_row() == 0);
+    CHECK(engine.cursor_col() == 0);
+
+    parser.feed("\x1b[;4H"); // Omitted first parameter.
+    CHECK(engine.cursor_row() == 0);
+    CHECK(engine.cursor_col() == 3);
+
+    parser.feed("\x1b[4:3m");
+    CHECK(static_cast<int>(engine.current_attrs().underline_style) == 3);
+    parser.feed("\x1b[4m"); // Old colon subparameter must not survive.
+    CHECK(static_cast<int>(engine.current_attrs().underline_style) == 1);
+}
+
+TEST_CASE("Short ASCII runs and inline UTF-8 decode match byte-wise feeding") {
+    const std::string payload = "a\xe4\xb8\xad" "b\xf0\x9f\x98\x80" "c";
+    TerminalEngine whole(20, 2), split(20, 2);
+    VtParser a(whole), b(split);
+    a.feed(payload);
+    for (const char c : payload) b.feed(reinterpret_cast<const uint8_t*>(&c), 1);
+
+    CHECK(whole.cursor_col() == split.cursor_col());
+    CHECK(whole.cursor_row() == split.cursor_row());
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 20; ++x)
+            CHECK(whole.grid().cell(x, y) == split.grid().cell(x, y));
+    CHECK(whole.grid().cell(1, 0).codepoint == U'中');
+    CHECK(whole.grid().cell(4, 0).codepoint == 0x1f600);
+}
+
+TEST_CASE("UTF-8 split at a continuation byte uses the stateful parser") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    const std::string payload = "A\xe4\xb8\xad" "B";
+    parser.feed(std::string_view(payload).substr(0, 3));
+    parser.feed(std::string_view(payload).substr(3));
+    CHECK(engine.grid().cell(0, 0).codepoint == U'A');
+    CHECK(engine.grid().cell(1, 0).codepoint == U'中');
+    CHECK(engine.grid().cell(1, 0).attrs.width == 2);
+    CHECK(engine.grid().cell(2, 0).attrs.width == 0);
+    CHECK(engine.grid().cell(3, 0).codepoint == U'B');
+}
+
+TEST_CASE("Common CJK width fast path preserves zero-width katakana marks") {
+    TerminalEngine engine(16, 2);
+    VtParser parser(engine);
+    parser.feed("\xe3\x81\x82\xe3\x82\x99"); // あ + combining voiced mark
+    CHECK(engine.cursor_col() == 2);
+    CHECK(engine.grid().cell(0, 0).codepoint == U'あ');
+    CHECK(engine.grid().get_cell_extra(engine.grid().cell(0, 0).extra_idx).combining_idx != 0);
+
+    parser.feed("\xe4\xb8\x80\xef\xbc\x81"); // 一 + fullwidth !
+    CHECK(engine.cursor_col() == 6);
+}
+
+TEST_CASE("print_ascii_run honors insert mode and DEC graphics fallback") {
+    TerminalEngine fast(10, 2), slow(10, 2);
+    fast.set_insert_mode(true);
+    slow.set_insert_mode(true);
+    fast.print_ascii_run("ABC");
+    slow.print_char(U'A');
+    slow.print_char(U'B');
+    slow.print_char(U'C');
+    CHECK(fast.cursor_col() == slow.cursor_col());
+    for (int x = 0; x < 10; ++x)
+        CHECK(fast.grid().cell(x, 0) == slow.grid().cell(x, 0));
+
+    fast.set_insert_mode(false);
+    slow.set_insert_mode(false);
+    fast.designate_charset(0, true);
+    slow.designate_charset(0, true);
+    fast.print_ascii_run("ab");
+    slow.print_char(U'a');
+    slow.print_char(U'b');
+    CHECK(fast.grid().cell(0, 0) == slow.grid().cell(0, 0));
+    CHECK(fast.grid().cell(1, 0) == slow.grid().cell(1, 0));
 }

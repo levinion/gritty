@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 
 namespace gritty::core {
@@ -127,14 +128,14 @@ TerminalSession::TerminalSession(
         if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
         const int cols = std::max(1, (decoded->width() + metrics.cell_width - 1) / metrics.cell_width);
         const int rows = std::max(1, (decoded->height() + metrics.cell_height - 1) / metrics.cell_height);
-        engine_.place_image(PlacedImage{
-            .image = std::move(*decoded),
-            .col = engine_.cursor_col(),
-            .row = engine_.cursor_row(),
-            .cols = cols,
-            .rows = rows,
-            .z_index = -1, // Sixel images sit behind the text.
-        });
+        PlacedImage placed;
+        placed.image = std::move(*decoded);
+        placed.col = engine_.cursor_col();
+        placed.row = engine_.cursor_row();
+        placed.cols = cols;
+        placed.rows = rows;
+        placed.z_index = -1; // Sixel images sit behind the text.
+        engine_.place_image(std::move(placed));
         // Keep the shell prompt from overwriting the image: move below it and
         // return to column zero. Feed one line at a time so a placement that
         // crosses margin_bottom scrolls the image into the visible region.
@@ -280,17 +281,26 @@ void TerminalSession::flush_pty_write() {
 }
 
 void TerminalSession::handle_pty_read() {
-    uint8_t buf[16384];
     bool got_data = false;
+    bool hit_budget = false;
+    size_t total_read = 0;
+    constexpr size_t kByteBudget = 1024 * 1024;
+    constexpr auto kTimeBudget = std::chrono::milliseconds(2);
+    const auto started = std::chrono::steady_clock::now();
+    size_t budget = kByteBudget;
 
-    // Bound each dispatch so a continuously writing process cannot starve UI events.
-    size_t budget = 256 * 1024;
-    while (budget > 0) {
-        ssize_t n = pty_.read(std::span<uint8_t>(buf, std::min(sizeof(buf), budget)));
+    // Bound each dispatch so a continuously writing process cannot starve UI
+    // events, while still draining a whole interactive burst in one callback.
+    while (budget > 0 && std::chrono::steady_clock::now() - started < kTimeBudget) {
+        ssize_t n = pty_.read(std::span<uint8_t>(read_buf_.data(), std::min(read_buf_.size(), budget)));
         if (n > 0) {
             got_data = true;
-            budget -= static_cast<size_t>(n);
-            parser_.feed(buf, static_cast<size_t>(n));
+            const auto bytes = static_cast<size_t>(n);
+            budget -= bytes;
+            total_read += bytes;
+            parser_.feed(read_buf_.data(), bytes);
+            if (budget == 0 || std::chrono::steady_clock::now() - started >= kTimeBudget)
+                hit_budget = true; // Stopped by budget, not by EAGAIN.
         } else if (n == 0) { // EOF
             if (loop_) loop_->stop();
             break;
@@ -307,9 +317,15 @@ void TerminalSession::handle_pty_read() {
             if (surface_->frame_in_flight()) {
                 // Keep parsing; the frame clock will render the accumulated state.
                 render_frame(false);
+            } else if (!hit_budget && total_read <= 512) {
+                // Kernel buffer is drained and this was a small interactive
+                // reply: bypass the coalescing timer entirely.
+                if (coalesce_pending_) {
+                    loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 0, {});
+                    coalesce_pending_ = false;
+                }
+                render_pending_frame();
             } else if (!coalesce_pending_) {
-                // One millisecond absorbs several small reads in the same PTY
-                // burst without adding a full refresh interval to keystrokes.
                 coalesce_pending_ = true;
                 loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 1, [this] {
                     coalesce_pending_ = false;
@@ -343,8 +359,9 @@ void TerminalSession::handle_mouse_event(const input::MouseEvent& ev) {
     if (ev.button == input::MouseButton::Left && ev.action == input::MouseAction::Press &&
         ev.mods.meta && engine_.mouse_tracking() == core::MouseTrackingMode::None) {
         const auto& cell = engine_.grid().cell(normalized.col, normalized.row);
-        if (cell.hyperlink_id != 0) {
-            const auto url = engine_.get_hyperlink_url(cell.hyperlink_id);
+        const uint16_t link_id = engine_.grid().get_cell_extra(cell.extra_idx).hyperlink_id;
+        if (link_id != 0) {
+            const auto url = engine_.get_hyperlink_url(link_id);
             if (!url.empty()) {
                 if (url_open_handler_) url_open_handler_(url);
                 else if (surface_) surface_->open_url(url);

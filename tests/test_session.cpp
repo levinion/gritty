@@ -33,9 +33,11 @@ public:
     std::string opened_url;
     void set_transparent(bool value) override { transparent = value; }
     bool transparent{false};
+    bool pacing{false};
     int pixel_width() const noexcept override { return width; }
     int pixel_height() const noexcept override { return height; }
     double scale() const noexcept override { return scaling; }
+    bool supports_frame_pacing() const noexcept override { return pacing; }
     util::PixmanImage pixels;
     int width{0}, height{0}, frames{0};
     double scaling{1.0};
@@ -336,8 +338,7 @@ TEST_CASE("Cmd+click opens an OSC 8 hyperlink only when mouse reporting is off")
     const auto id = session.engine().get_or_create_hyperlink_id("https://example.com");
     core::Cell cell;
     cell.codepoint = U'x';
-    cell.hyperlink_id = id;
-    session.engine().grid().set_cell(0, 0, cell);
+    session.engine().grid().set_cell_with_extra(0, 0, cell, core::CellExtra{.hyperlink_id = id});
 
     input::MouseEvent event;
     event.button = input::MouseButton::Left;
@@ -518,4 +519,26 @@ TEST_CASE("Sixel placement advances cursor below the image") {
     REQUIRE(session.engine().images().size() == 1);
     CHECK(session.engine().cursor_col() == 0);
     CHECK(session.engine().cursor_row() == 1);
+}
+
+TEST_CASE("Small paced PTY output bypasses the coalescing timer") {
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    output->pacing = true;
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    core::SessionConfig config;
+    config.font_path = session_test_font();
+    config.cols = 8;
+    config.rows = 2;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "printf A; sleep 1"};
+    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+
+    const auto frames = output->frames;
+    for (int i = 0; i < 100 && output->frames == frames; ++i)
+        events->pump();
+    CHECK(output->frames > frames);
+    CHECK(events->timer_delay == 0); // No FrameCoalesce timer was armed.
 }

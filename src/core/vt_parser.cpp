@@ -1,7 +1,82 @@
 #include "core/vt_parser.hpp"
 #include <algorithm>
+#include <cstring>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 
 namespace gritty::core {
+namespace {
+
+// SWAR test for eight bytes in [0x20, 0x7e]. A byte is printable ASCII when
+// it has no high bit, is >= 0x20 (no borrow from 0x20) and < 0x7f (borrow from
+// 0x7f). Returns the length of the leading printable run.
+size_t printable_ascii_run(const uint8_t* data, size_t length) {
+    constexpr uint64_t msb = 0x8080808080808080ull;
+    constexpr uint64_t low = 0x2020202020202020ull;
+    constexpr uint64_t high = 0x7f7f7f7f7f7f7full;
+    size_t i = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const uint8x16_t floor = vdupq_n_u8(0x20);
+    const uint8x16_t bad_limit = vdupq_n_u8(0x5f);
+    for (; i + 32 <= length; i += 32) {
+        const uint8x16_t v0 = vld1q_u8(data + i);
+        const uint8x16_t v1 = vld1q_u8(data + i + 16);
+        const uint8x16_t d0 = vsubq_u8(v0, floor);
+        const uint8x16_t d1 = vsubq_u8(v1, floor);
+        if (vmaxvq_u8(vorrq_u8(d0, d1)) < 0x5f) continue;
+
+        const uint8x16_t bad0 = vcgeq_u8(d0, bad_limit);
+        const uint8x16_t bad1 = vcgeq_u8(d1, bad_limit);
+        const uint8x8_t packed0 = vshrn_n_u16(vreinterpretq_u16_u8(bad0), 4);
+        const uint8x8_t packed1 = vshrn_n_u16(vreinterpretq_u16_u8(bad1), 4);
+        uint64_t bits0 = 0, bits1 = 0;
+        std::memcpy(&bits0, &packed0, sizeof(bits0));
+        std::memcpy(&bits1, &packed1, sizeof(bits1));
+        if (bits0 != 0) return i + (static_cast<size_t>(__builtin_ctzll(bits0)) >> 2);
+        return i + 16 + (static_cast<size_t>(__builtin_ctzll(bits1)) >> 2);
+    }
+#endif
+    while (i + 8 <= length) {
+        uint64_t word = 0;
+        std::memcpy(&word, data + i, sizeof(word));
+        const uint64_t below = (word - low) & msb;
+        const uint64_t above_or_equal = msb ^ ((word - high) & msb);
+        if ((below | above_or_equal | (word & msb)) != 0) break;
+        i += 8;
+    }
+    while (i < length && data[i] >= 0x20 && data[i] <= 0x7e) ++i;
+    return i;
+}
+
+// Returns the length of a payload run containing no terminal control byte.
+size_t string_payload_run(const uint8_t* data, size_t length, bool osc) {
+    size_t i = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const uint8x16_t esc = vdupq_n_u8(0x1b);
+    const uint8x16_t can = vdupq_n_u8(0x18);
+    const uint8x16_t sub = vdupq_n_u8(0x1a);
+    const uint8x16_t bel = vdupq_n_u8(0x07);
+    for (; i + 16 <= length; i += 16) {
+        const uint8x16_t v = vld1q_u8(data + i);
+        uint8x16_t bad = vorrq_u8(vceqq_u8(v, esc), vorrq_u8(vceqq_u8(v, can), vceqq_u8(v, sub)));
+        if (osc) bad = vorrq_u8(bad, vceqq_u8(v, bel));
+        if (vmaxvq_u8(bad) == 0) continue;
+        const uint8x8_t packed = vshrn_n_u16(vreinterpretq_u16_u8(bad), 4);
+        uint64_t bits = 0;
+        std::memcpy(&bits, &packed, sizeof(bits));
+        return i + (static_cast<size_t>(__builtin_ctzll(bits)) >> 2);
+    }
+#endif
+    while (i < length) {
+        const uint8_t byte = data[i];
+        if (byte == 0x1b || byte == 0x18 || byte == 0x1a || (osc && byte == 0x07)) break;
+        ++i;
+    }
+    return i;
+}
+
+} // namespace
 
 // State transitions follow foot vt.c (DEC's ANSI parser), with bounded strings
 // for this callback-based implementation. See upstream foot vt.c and tmux source tests.
@@ -15,7 +90,14 @@ void VtParser::clear_sequence() noexcept {
     intermediate_char_ = 0;
     param_count_ = current_param_idx_ = 0;
     current_subparam_idx_ = -1;
-    for (auto& parameter : params_) parameter = Parameter{};
+    initialized_params_ = 0;
+}
+
+void VtParser::ensure_csi_param(int idx) noexcept {
+    // Slots are initialized monotonically, so omitted leading params also
+    // receive their default value instead of retaining the previous CSI.
+    for (int i = initialized_params_; i <= idx; ++i) params_[i] = Parameter{};
+    initialized_params_ = std::max(initialized_params_, idx + 1);
 }
 
 void VtParser::reset() noexcept {
@@ -33,7 +115,75 @@ void VtParser::feed(std::string_view data) {
 }
 
 void VtParser::feed(const uint8_t* data, size_t length) {
-    for (size_t i = 0; i < length; ++i) process_byte(data[i]);
+    size_t i = 0;
+    while (i < length) {
+        const bool in_string = state_ == ParserState::OscString ||
+            state_ == ParserState::DcsString || state_ == ParserState::ApcString ||
+            state_ == ParserState::IgnoredString;
+        if (in_string && !dcs_tmux_escape_pending_ && utf8_state_ == 0) {
+            const size_t start = i;
+            i += string_payload_run(data + i, length - i, state_ == ParserState::OscString);
+            if (i > start && state_ != ParserState::IgnoredString) {
+                const size_t limit = string_type_ == StringType::Osc
+                    ? 65536 : 32u * 1024u * 1024u;
+                const size_t room = string_buffer_.size() < limit ? limit - string_buffer_.size() : 0;
+                const size_t count = std::min(i - start, room);
+                if (count) string_buffer_.append(
+                    reinterpret_cast<const char*>(data + start), count);
+                if (count < i - start) string_overflow_ = true;
+            }
+            if (i < length) process_byte(data[i++]);
+            continue;
+        }
+
+        if (state_ == ParserState::Ground && utf8_state_ == 0 && data[i] >= 0x80) {
+            const uint8_t lead = data[i];
+            int expected = 0;
+            char32_t cp = 0;
+            uint32_t minimum = 0;
+            if (lead >= 0xc2 && lead <= 0xdf) {
+                expected = 1; cp = lead & 0x1f; minimum = 0x80;
+            } else if (lead >= 0xe0 && lead <= 0xef) {
+                expected = 2; cp = lead & 0x0f; minimum = 0x800;
+            } else if (lead >= 0xf0 && lead <= 0xf4) {
+                expected = 3; cp = lead & 0x07; minimum = 0x10000;
+            }
+            if (expected != 0 && length - i >= 4 && static_cast<size_t>(expected + 1) <= length - i) {
+                bool valid = true;
+                for (int k = 1; k <= expected; ++k) {
+                    if ((data[i + k] & 0xc0) != 0x80) { valid = false; break; }
+                    cp = (cp << 6) | (data[i + k] & 0x3f);
+                }
+                if (valid && cp >= minimum && cp <= 0x10ffff &&
+                    !(cp >= 0xd800 && cp <= 0xdfff)) {
+                    engine_.print_char(cp);
+                    i += static_cast<size_t>(expected + 1);
+                    continue;
+                }
+                if (valid) {
+                    engine_.print_char(U'\ufffd');
+                    i += static_cast<size_t>(expected + 1);
+                    continue;
+                }
+            }
+        }
+        if (state_ == ParserState::Ground && utf8_state_ == 0 &&
+            data[i] >= 0x20 && data[i] <= 0x7e) {
+            const size_t run = printable_ascii_run(data + i, length - i);
+            if (run >= 4) {
+                engine_.print_ascii_run(std::string_view(
+                    reinterpret_cast<const char*>(data + i), run));
+            } else {
+                // Short runs avoid a second process_byte() pass through CAN/SUB,
+                // ESC, DEL, C0 and SWAR checks.
+                for (size_t k = 0; k < run; ++k)
+                    engine_.print_char(data[i + k]);
+            }
+            i += run;
+            continue;
+        }
+        process_byte(data[i++]);
+    }
 }
 
 void VtParser::send_response(std::string_view response) {
@@ -254,6 +404,7 @@ void VtParser::parse_csi_param_byte(uint8_t byte) {
     if (state_ == ParserState::CsiIntermediate) { state_ = ParserState::CsiIgnore; return; }
     state_ = ParserState::CsiParam;
     if (byte >= '0' && byte <= '9') {
+        ensure_csi_param(current_param_idx_);
         int& value = current_subparam_idx_ >= 0
             ? params_[current_param_idx_].subparams[current_subparam_idx_]
             : params_[current_param_idx_].value;
@@ -262,9 +413,11 @@ void VtParser::parse_csi_param_byte(uint8_t byte) {
         param_count_ = current_param_idx_ + 1;
     } else if (byte == ';') {
         if (++current_param_idx_ >= 32) { state_ = ParserState::CsiIgnore; return; }
+        ensure_csi_param(current_param_idx_);
         current_subparam_idx_ = -1;
         param_count_ = current_param_idx_ + 1;
     } else if (byte == ':') {
+        ensure_csi_param(current_param_idx_);
         if (++current_subparam_idx_ >= 8) { state_ = ParserState::CsiIgnore; return; }
         params_[current_param_idx_].subparam_count = current_subparam_idx_ + 1;
         param_count_ = current_param_idx_ + 1;

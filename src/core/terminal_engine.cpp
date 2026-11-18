@@ -1,9 +1,25 @@
 #include "core/terminal_engine.hpp"
 #include <utf8proc.h>
 #include <algorithm>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 
 namespace gritty::core {
+namespace {
 
+// Common wide ranges used by CJK/CJK-compat text. Avoiding the utf8proc table
+// lookup here matters for bulk CJK output; everything else keeps the Unicode
+// database result.
+inline bool common_wide_char(char32_t cp) noexcept {
+    if (cp == 0x3099 || cp == 0x309a) return false; // zero-width combining marks
+    return (cp >= 0x4e00 && cp <= 0x9fff) ||
+           (cp >= 0x3040 && cp <= 0x30ff) ||
+           (cp >= 0xac00 && cp <= 0xd7af) ||
+           (cp >= 0xff01 && cp <= 0xff60);
+}
+
+} // namespace
 
 TerminalEngine::TerminalEngine(int cols, int rows, size_t scrollback_capacity)
     : cols_(cols),
@@ -182,7 +198,7 @@ void TerminalEngine::print_char(char32_t cp) {
         constexpr std::u32string_view graphics = U"◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
         cp = graphics[cp - 0x60];
     }
-    int width = utf8proc_charwidth(cp);
+    int width = common_wide_char(cp) ? 2 : utf8proc_charwidth(cp);
     if (width <= 0) {
         // Combining character: append to previous cell
         if (width == 0 && cursor_.col > 0) {
@@ -191,7 +207,9 @@ void TerminalEngine::print_char(char32_t cp) {
                 target_col--; // If this was continuation cell, find leading cell
             }
             auto& prev_cell = active_grid_->cell(target_col, cursor_.row);
-            prev_cell.combining_idx = active_grid_->append_combining_codepoint(prev_cell.combining_idx, cp);
+            CellExtra extra = active_grid_->get_cell_extra(prev_cell.extra_idx);
+            extra.combining_idx = active_grid_->append_combining_codepoint(extra.combining_idx, cp);
+            prev_cell.extra_idx = active_grid_->intern_cell_extra(extra);
             active_grid_->row(cursor_.row).mark_dirty(target_col);
         }
         return;
@@ -227,12 +245,14 @@ void TerminalEngine::print_char(char32_t cp) {
     c.codepoint = cp;
     c.fg = current_fg_;
     c.bg = current_bg_;
-    c.underline_color = current_underline_color_;
     c.attrs = current_attrs_;
     c.attrs.width = static_cast<uint16_t>(width);
-    c.hyperlink_id = current_hyperlink_id_;
-
-    active_grid_->set_cell(cursor_.col, cursor_.row, c);
+    const CellExtra extra{
+        .combining_idx = 0,
+        .underline_color = current_underline_color_,
+        .hyperlink_id = current_hyperlink_id_,
+    };
+    active_grid_->set_cell_with_extra(cursor_.col, cursor_.row, c, extra);
 
     if (width == 2 && cursor_.col + 1 < cols_) {
         Cell cont;
@@ -249,6 +269,98 @@ void TerminalEngine::print_char(char32_t cp) {
         cursor_.col = cols_ - 1;
         if (auto_wrap_) {
             wrap_next_ = true;
+        }
+    }
+}
+
+void TerminalEngine::print_ascii_run(std::string_view ascii) {
+    if (ascii.empty()) return;
+    if (graphic_charsets_[selected_charset_] || insert_mode_) {
+        for (const char c : ascii) print_char(static_cast<char32_t>(static_cast<unsigned char>(c)));
+        return;
+    }
+
+    size_t offset = 0;
+    while (offset < ascii.size()) {
+        if (wrap_next_) {
+            if (auto_wrap_) {
+                active_grid_->row(cursor_.row).wrapped = true;
+                cursor_.col = 0;
+                line_feed();
+            } else {
+                cursor_.col = cols_ - 1;
+            }
+            wrap_next_ = false;
+        }
+
+        const int start = cursor_.col;
+        int avail = cols_ - start;
+        if (avail <= 0) {
+            if (!auto_wrap_) { cursor_.col = cols_ - 1; avail = 1; }
+            else {
+                active_grid_->row(cursor_.row).wrapped = true;
+                cursor_.col = 0;
+                line_feed();
+                continue;
+            }
+        }
+
+        const size_t chunk = std::min(avail, static_cast<int>(ascii.size() - offset));
+        const uint16_t extra_idx = active_grid_->intern_cell_extra(CellExtra{
+            .combining_idx = 0,
+            .underline_color = current_underline_color_,
+            .hyperlink_id = current_hyperlink_id_,
+        });
+        Cell base;
+        base.fg = current_fg_;
+        base.bg = current_bg_;
+        base.attrs = current_attrs_;
+        base.attrs.width = 1;
+        base.extra_idx = extra_idx;
+        auto& row = active_grid_->row(cursor_.row);
+        auto* cells = row.cells.data();
+        int dirty_min = cols_, dirty_max = -1;
+        size_t i = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+        const uint32x4_t v_fg = vdupq_n_u32(base.fg.value);
+        const uint32x4_t v_bg = vdupq_n_u32(base.bg.value);
+        const uint32x4_t v_tail = vdupq_n_u32(cell_tail_word(base));
+        for (; i + 4 <= chunk; i += 4) {
+            const uint32_t cps[4] = {
+                static_cast<unsigned char>(ascii[offset + i]),
+                static_cast<unsigned char>(ascii[offset + i + 1]),
+                static_cast<unsigned char>(ascii[offset + i + 2]),
+                static_cast<unsigned char>(ascii[offset + i + 3]),
+            };
+            const uint32x4_t v_cp = vld1q_u32(cps);
+            auto* raw = reinterpret_cast<uint32_t*>(cells + start + i);
+            const uint32x4x4_t existing = vld4q_u32(raw);
+            uint32x4_t equal = vceqq_u32(v_cp, existing.val[0]);
+            equal = vandq_u32(equal, vceqq_u32(v_fg, existing.val[1]));
+            equal = vandq_u32(equal, vceqq_u32(v_bg, existing.val[2]));
+            equal = vandq_u32(equal, vceqq_u32(v_tail, existing.val[3]));
+            if (vminvq_u32(equal) != 0) continue;
+            const uint32x4x4_t write{v_cp, v_fg, v_bg, v_tail};
+            vst4q_u32(raw, write);
+            dirty_min = std::min(dirty_min, start + static_cast<int>(i));
+            dirty_max = std::max(dirty_max, start + static_cast<int>(i + 3));
+        }
+#endif
+        for (; i < chunk; ++i) {
+            base.codepoint = static_cast<unsigned char>(ascii[offset + i]);
+            const int col = start + static_cast<int>(i);
+            if (cells[col] == base) continue;
+            cells[col] = base;
+            dirty_min = std::min(dirty_min, col);
+            dirty_max = std::max(dirty_max, col);
+        }
+        if (dirty_max >= dirty_min) row.mark_dirty_range(dirty_min, dirty_max);
+        offset += chunk;
+        last_printed_ = static_cast<char32_t>(static_cast<unsigned char>(ascii[offset - 1]));
+        cursor_.col += static_cast<int>(chunk);
+        if (cursor_.col >= cols_) {
+            cursor_.col = cols_ - 1;
+            if (auto_wrap_) wrap_next_ = true;
         }
     }
 }

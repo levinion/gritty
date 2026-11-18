@@ -515,9 +515,10 @@ TEST_CASE("Combining marks are shaped and drawn as a cluster") {
     plain.codepoint = U'x';
     Cell combined = plain;
     const std::array<char32_t, 1> marks{mark};
-    combined.combining_idx = engine.grid().store_combining_codepoints(marks);
-    engine.grid().set_cell(0, 1, plain);
-    engine.grid().set_cell(1, 1, combined);
+    const auto combined_idx = engine.grid().store_combining_codepoints(marks);
+    auto& grid = engine.grid();
+    grid.set_cell(0, 1, plain);
+    grid.set_cell_with_extra(1, 1, combined, CellExtra{.combining_idx = combined_idx});
 
     const int width = 4 * fonts.metrics().cell_width;
     const int height = 3 * fonts.metrics().cell_height;
@@ -550,9 +551,8 @@ TEST_CASE("OSC 8 hyperlink cells draw an underline") {
     Cell plain;
     plain.codepoint = U'x';
     Cell linked = plain;
-    linked.hyperlink_id = link;
     grid.set_cell(0, 0, plain);
-    grid.set_cell(1, 0, linked);
+    grid.set_cell_with_extra(1, 0, linked, gritty::core::CellExtra{.hyperlink_id = link});
 
     const int cell_w = fonts.metrics().cell_width;
     const int cell_h = fonts.metrics().cell_height;
@@ -589,10 +589,10 @@ TEST_CASE("Placed images are scaled into their cell box and follow z-order") {
             cell.bg = Color::make_rgb(0x00, 0x00, 0x00);
             engine.grid().set_cell(0, 0, cell);
         }
-        engine.place_image(PlacedImage{
-            .image = make_image(2, 2, 0xffff0000u),
-            .col = 0, .row = 0, .cols = 1, .rows = 1, .z_index = z
-        });
+        PlacedImage placed;
+        placed.image = make_image(2, 2, 0xffff0000u);
+        placed.col = 0; placed.row = 0; placed.cols = 1; placed.rows = 1; placed.z_index = z;
+        engine.place_image(std::move(placed));
         gritty::util::PixmanImage target(pixman_image_create_bits(
             PIXMAN_a8r8g8b8, 4 * cell_w, 2 * cell_h, nullptr, 0));
         gritty::util::PixmanRegion damage;
@@ -626,8 +626,8 @@ TEST_CASE("Kitty Unicode placeholders draw image tiles without glyphs") {
         cell.codepoint = 0x10EEEE;
         cell.fg = Color::make_indexed(static_cast<uint8_t>(fg_index));
         const std::vector<char32_t> seq(marks);
-        cell.combining_idx = grid.store_combining_codepoints(seq);
-        grid.set_cell(x, y, cell);
+        const auto extra_idx = grid.store_combining_codepoints(seq);
+        grid.set_cell_with_extra(x, y, cell, gritty::core::CellExtra{.combining_idx = extra_idx});
     };
     // Row 0: explicit row/column diacritics (0x305 = 0, 0x30D = 1).
     placeholder(1, 1, {0x305, 0x305});
@@ -743,8 +743,8 @@ TEST_CASE("Unicode placeholder local clipping keeps a scrolled top row visible")
         cell.codepoint = 0x10EEEE;
         cell.fg = Color::make_indexed(9);
         const std::vector<char32_t> marks{row_mark, 0x305};
-        cell.combining_idx = grid.store_combining_codepoints(marks);
-        grid.set_cell(x, y, cell);
+        const auto extra_idx = grid.store_combining_codepoints(marks);
+        grid.set_cell_with_extra(x, y, cell, gritty::core::CellExtra{.combining_idx = extra_idx});
     };
     placeholder(1, 0, 0x30D); // image row 1 (top row scrolled away)
     placeholder(1, 1, 0x30E); // image row 2
@@ -775,11 +775,11 @@ TEST_CASE("Kitty source crop and image layers disable pixel memmove scrolling") 
     data[0] = 0xFFFF0000; data[1] = 0xFF00FF00;
     data[2] = 0xFF0000FF; data[3] = 0xFFFFFFFF;
     gritty::util::PixmanImage source(raw);
-    engine.place_image(PlacedImage{
-        .image = gritty::util::PixmanImage(pixman_image_ref(source.get())),
-        .col = 1, .row = 1, .cols = 1, .rows = 1,
-        .src_x = 1, .src_y = 0, .src_w = 1, .src_h = 1,
-    });
+    PlacedImage placed;
+    placed.image.reset(pixman_image_ref(source.get()));
+    placed.col = 1; placed.row = 1; placed.cols = 1; placed.rows = 1;
+    placed.src_x = 1; placed.src_y = 0; placed.src_w = 1; placed.src_h = 1;
+    engine.place_image(std::move(placed));
 
     CpuRenderer renderer(fonts);
     renderer.set_scroll_mode(CpuRenderer::ScrollMode::AlwaysMove);
@@ -807,8 +807,8 @@ TEST_CASE("Disconnected placeholder blocks with one placement are drawn separate
         cell.codepoint = 0x10EEEE;
         cell.fg = Color::make_indexed(11);
         const std::vector<char32_t> marks{0x305, 0x305};
-        cell.combining_idx = grid.store_combining_codepoints(marks);
-        grid.set_cell(x, y, cell);
+        const auto extra_idx = grid.store_combining_codepoints(marks);
+        grid.set_cell_with_extra(x, y, cell, gritty::core::CellExtra{.combining_idx = extra_idx});
     };
     placeholder(1, 1);
     placeholder(5, 1); // Same image/placement, disconnected by three cells.
@@ -863,8 +863,8 @@ TEST_CASE("Transparent placeholders are not recomposited on clean rows") {
     cell.codepoint = 0x10EEEE;
     cell.fg = Color::make_indexed(12);
     const std::vector<char32_t> marks{0x305, 0x305};
-    cell.combining_idx = grid.store_combining_codepoints(marks);
-    grid.set_cell(2, 1, cell);
+    const auto extra_idx = grid.store_combining_codepoints(marks);
+    grid.set_cell_with_extra(2, 1, cell, gritty::core::CellExtra{.combining_idx = extra_idx});
 
     const int cw = fonts.metrics().cell_width, ch = fonts.metrics().cell_height;
     gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 4 * cw, 3 * ch, nullptr, 0));
@@ -875,4 +875,32 @@ TEST_CASE("Transparent placeholders are not recomposited on clean rows") {
     grid.row(0).mark_dirty(0); // Cursor-blink-like dirty work away from the image.
     renderer.render(engine, target.get(), nullptr, false);
     CHECK(target.data()[index] == before); // No second OVER, no darker alpha.
+}
+
+TEST_CASE("Short plain-glyph runs are pixel-identical with lookahead removed") {
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(find_test_font(), 12.0, 96));
+    TerminalEngine engine(6, 2);
+    engine.set_cursor_visible(false);
+    auto& grid = engine.grid();
+    const char32_t sample[] = U"abcXY";
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 6; ++x) {
+            Cell cell;
+            cell.codepoint = sample[y * 6 + x];
+            cell.fg = Color::make_rgb(0x20 + x * 8, 0x80, 0xc0 - y * 16);
+            grid.set_cell(x, y, cell);
+        }
+
+    const int width = 6 * fonts.metrics().cell_width;
+    const int height = 2 * fonts.metrics().cell_height;
+    gritty::util::PixmanImage batched(pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    gritty::util::PixmanImage single(pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    CpuRenderer with_batching(fonts);
+    CpuRenderer without_batching(fonts);
+    without_batching.set_glyph_batching(false);
+    with_batching.render(engine, batched.get(), nullptr, true);
+    without_batching.render(engine, single.get(), nullptr, true);
+    for (size_t i = 0; i < static_cast<size_t>(height) * batched.stride() / 4; ++i)
+        REQUIRE(batched.data()[i] == single.data()[i]);
 }

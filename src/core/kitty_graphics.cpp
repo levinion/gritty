@@ -4,6 +4,9 @@
 #include <zlib.h>
 #include <algorithm>
 #include <charconv>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
@@ -34,7 +37,23 @@ void png_mem_read_fn(png_structp png_ptr, png_bytep outBytes, png_size_t byteCou
 // Pixman's PIXMAN_a8r8g8b8 destination is premultiplied. Libpng and Kitty's f=32
 // payloads carry straight alpha, so convert once at decode time.
 void premultiply_argb(uint32_t* pixels, int count) {
-    for (int i = 0; i < count; ++i) {
+    int i = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const uint16x8_t round_bias = vdupq_n_u16(128);
+    for (; i + 8 <= count; i += 8) {
+        // PIXMAN_a8r8g8b8 memory is BGRA on little-endian ARM64.
+        uint8x8x4_t bgra = vld4_u8(reinterpret_cast<const uint8_t*>(pixels + i));
+        const uint8x8_t a = bgra.val[3];
+        for (int channel = 0; channel < 3; ++channel) {
+            const uint16x8_t product = vmull_u8(bgra.val[channel], a);
+            const uint16x8_t biased = vaddq_u16(product, round_bias);
+            const uint16x8_t divided = vaddq_u16(biased, vshrq_n_u16(biased, 8));
+            bgra.val[channel] = vshrn_n_u16(divided, 8);
+        }
+        vst4_u8(reinterpret_cast<uint8_t*>(pixels + i), bgra);
+    }
+#endif
+    for (; i < count; ++i) {
         const uint32_t value = pixels[i];
         const uint32_t a = value >> 24;
         const uint32_t r = (value >> 16) & 255;

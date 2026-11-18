@@ -86,6 +86,7 @@ private:
     void handle_decset(bool set);
 
     void parse_csi_param_byte(uint8_t byte);
+    void ensure_csi_param(int idx) noexcept;
     void send_response(std::string_view resp);
 
     TerminalEngine& engine_;
@@ -101,6 +102,9 @@ private:
     int param_count_{0};
     int current_param_idx_{0};
     int current_subparam_idx_{-1};
+    // Number of leading params_ slots initialized for the current CSI. Avoids
+    // clearing all 32 slots (1 KiB) for the common short/no-param sequence.
+    int initialized_params_{0};
 
     // OSC / DCS / APC string buffer
     enum class StringType : uint8_t { None, Osc, Dcs, Apc };

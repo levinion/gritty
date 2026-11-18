@@ -106,13 +106,27 @@ void KqueueRunLoop::set_timer(int delay_ms, std::function<void()> callback) {
 void KqueueRunLoop::set_timer(TimerId id, int delay_ms, std::function<void()> callback) {
     const auto key = static_cast<uintptr_t>(id);
     struct kevent event{};
-    EV_SET(&event, key, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
-    if (kq_fd_.valid()) ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
-    timers_.erase(key);
-    if (!callback || delay_ms <= 0 || !kq_fd_.valid()) return;
+    if (!callback || delay_ms <= 0) {
+        timers_.erase(key);
+        if (kq_fd_.valid()) {
+            EV_SET(&event, key, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
+            ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
+        }
+        return;
+    }
+    if (!kq_fd_.valid()) return;
 
-    timers_.emplace(key, std::move(callback));
-    EV_SET(&event, key, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, delay_ms, nullptr);
+    timers_.insert_or_assign(key, std::move(callback));
+    uint16_t fflags = 0;
+    if (id == TimerId::FrameCoalesce) {
+#ifdef NOTE_CRITICAL
+        // Avoid kernel timer coalescing for sub-frame interactive bursts.
+        fflags |= NOTE_CRITICAL;
+#endif
+    }
+    // EV_ADD updates an existing kevent with the same ident/filter; no separate
+    // EV_DELETE syscall is needed when replacing a pending one-shot timer.
+    EV_SET(&event, key, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, fflags, delay_ms, nullptr);
     ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
 }
 

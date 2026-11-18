@@ -28,6 +28,7 @@ void print_help(const char* prog) {
               << "  -s, --size <pt>        Font size in points\n"
               << "  -t, --title <title>    Window title\n"
               << "  -v, --version          Print version\n"
+              << "  -e, --exec <command>   Execute command instead of the configured shell\n"
               << "  -h, --help             Show this help\n";
 }
 
@@ -58,7 +59,8 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
         if ((arg == "-c" || arg == "--config" || arg == "-f" || arg == "--font" ||
-             arg == "-s" || arg == "--size" || arg == "-t" || arg == "--title") && i + 1 >= argc) {
+             arg == "-s" || arg == "--size" || arg == "-t" || arg == "--title" ||
+             arg == "-e" || arg == "--exec") && i + 1 >= argc) {
             std::cerr << "Missing value for " << arg << "\n";
             return 1;
         }
@@ -86,6 +88,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "-t" || arg == "--title") {
             if (++i < argc) title_override = argv[i];
+        } else if (arg == "-e" || arg == "--exec") {
+            if (++i < argc) {
+                command = argv[i];
+                for (int j = i + 1; j < argc; ++j) command_args.push_back(argv[j]);
+                break;
+            }
         } else if (arg == "--" || !arg.starts_with('-')) {
             if (arg == "--") {
                 if (++i >= argc) break;

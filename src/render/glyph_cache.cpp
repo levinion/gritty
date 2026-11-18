@@ -1,4 +1,6 @@
 #include "render/font_engine.hpp"
+#include <algorithm>
+#include <iterator>
 #include <utility>
 
 namespace gritty::render {
@@ -11,6 +13,13 @@ void FontEngine::clear_cache() noexcept {
     cache_bitmap_bytes_ = 0;
     transient_glyph_ = CachedGlyph{};
     transient_bitmap_bytes_ = 0;
+    for (auto& row : ascii_glyph_table_)
+        for (auto& slot : row) slot = {};
+    for (int style = 0; style < 4; ++style)
+        for (size_t slot = 0; slot < 256; ++slot) {
+            non_ascii_l1_[style][slot] = nullptr;
+            non_ascii_l1_cp_[style][slot] = 0;
+        }
 }
 
 void FontEngine::set_cache_limits(GlyphCacheLimits limits) noexcept {
@@ -36,6 +45,13 @@ const CachedGlyph* FontEngine::cache_glyph(const GlyphKey& key, CachedGlyph glyp
     while (glyph_cache_.size() >= cache_limits_.max_entries ||
            cache_bitmap_bytes_ > cache_limits_.max_bitmap_bytes - bytes) {
         const auto oldest = glyph_cache_.find(glyph_lru_.back());
+        const CachedGlyph* evicted = &oldest->second.glyph;
+        for (auto& row : ascii_glyph_table_)
+            for (auto& slot : row)
+                if (slot.glyph == evicted) slot = {};
+        for (int style = 0; style < 4; ++style)
+            for (size_t slot = 0; slot < 256; ++slot)
+                if (non_ascii_l1_[style][slot] == evicted) non_ascii_l1_[style][slot] = nullptr;
         cache_bitmap_bytes_ -= oldest->second.bitmap_bytes;
         glyph_cache_.erase(oldest);
         glyph_lru_.pop_back();
