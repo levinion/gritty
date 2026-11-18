@@ -315,9 +315,6 @@ void TerminalSession::handle_pty_read() {
             if (budget == 0 ||
                 (timing_active && std::chrono::steady_clock::now() - started >= kTimeBudget))
                 hit_budget = true; // Stopped by budget, not by EAGAIN.
-            // A short read means the kernel PTY buffer is drained. Avoid the
-            // guaranteed EAGAIN syscall on the next iteration.
-            if (bytes < req) break;
         } else if (n == 0) { // EOF
             if (loop_) loop_->stop();
             break;
