@@ -27,6 +27,8 @@ void print_help(const char* prog) {
               << "  -f, --font <family>    Font family name\n"
               << "  -s, --size <pt>        Font size in points\n"
               << "  -t, --title <title>    Window title\n"
+              << "  --cols <n>             Initial terminal columns\n"
+              << "  --rows <n>             Initial terminal rows\n"
               << "  -v, --version          Print version\n"
               << "  -e, --exec <command>   Execute command instead of the configured shell\n"
               << "  -h, --help             Show this help\n";
@@ -53,6 +55,8 @@ int main(int argc, char* argv[]) {
     std::string font_override;
     double font_size_override = 0;
     std::string title_override;
+    size_t cols_override = 0;
+    size_t rows_override = 0;
     std::string command;
     std::vector<std::string> command_args;
 
@@ -60,7 +64,8 @@ int main(int argc, char* argv[]) {
         std::string_view arg = argv[i];
         if ((arg == "-c" || arg == "--config" || arg == "-f" || arg == "--font" ||
              arg == "-s" || arg == "--size" || arg == "-t" || arg == "--title" ||
-             arg == "-e" || arg == "--exec") && i + 1 >= argc) {
+             arg == "--cols" || arg == "--rows" || arg == "-e" || arg == "--exec") &&
+            i + 1 >= argc) {
             std::cerr << "Missing value for " << arg << "\n";
             return 1;
         }
@@ -88,6 +93,19 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "-t" || arg == "--title") {
             if (++i < argc) title_override = argv[i];
+        } else if (arg == "--cols" || arg == "--rows") {
+            try {
+                const std::string value = argv[++i];
+                size_t used = 0;
+                const long parsed = std::stol(value, &used);
+                if (used != value.size() || parsed < 1 || parsed > 1000)
+                    throw std::invalid_argument("geometry out of range");
+                if (arg == "--cols") cols_override = static_cast<size_t>(parsed);
+                else rows_override = static_cast<size_t>(parsed);
+            } catch (const std::exception&) {
+                std::cerr << "Invalid " << arg << " (expected 1..1000)\n";
+                return 1;
+            }
         } else if (arg == "-e" || arg == "--exec") {
             if (++i < argc) {
                 command = argv[i];
@@ -137,6 +155,9 @@ int main(int argc, char* argv[]) {
         .family = cfg->font.family
     });
 
+    const size_t cols = cols_override ? cols_override : 80;
+    const size_t rows = rows_override ? rows_override : 24;
+
     std::string resolved_font_path;
     if (match) {
         resolved_font_path = match->path;
@@ -150,8 +171,8 @@ int main(int argc, char* argv[]) {
     core::SessionConfig sess_cfg{
         .font_path = resolved_font_path,
         .font_size = cfg->font.size,
-        .cols = 80,
-        .rows = 24,
+        .cols = static_cast<int>(cols),
+        .rows = static_cast<int>(rows),
         .shell = command.empty() ? cfg->main.shell : command,
         .cwd = "",
         .args = command_args,
@@ -166,7 +187,10 @@ int main(int argc, char* argv[]) {
         .palette = cfg->colors.palette
     };
 
-    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(640, 384);
+    const double point_size = font_size_override > 0 ? font_size_override : cfg->font.size;
+    const int initial_w = static_cast<int>(std::ceil(static_cast<double>(cols) * point_size * 0.65));
+    const int initial_h = static_cast<int>(std::ceil(static_cast<double>(rows) * point_size * 1.30));
+    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(initial_w, initial_h);
     auto loop = std::make_unique<platform::macos::KqueueRunLoop>();
     auto clipboard = std::make_unique<platform::macos::PasteboardClipboard>();
 
