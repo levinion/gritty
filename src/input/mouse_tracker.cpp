@@ -1,6 +1,6 @@
 #include "input/input_mapper.hpp"
+#include "util/format.hpp"
 #include <algorithm>
-#include <cstdio>
 #include <utf8proc.h>
 
 namespace gritty::input {
@@ -36,12 +36,15 @@ std::string InputMapper::map_mouse(const MouseEvent& event, const core::Terminal
             const bool pixels = engine.mouse_format() == core::MouseFormat::SgrPixels;
             const int x = pixels ? std::max(0, event.pixel_x) : event.col;
             const int y = pixels ? std::max(0, event.pixel_y) : event.row;
-            std::snprintf(sequence, sizeof(sequence), "\x1b[<%d;%d;%d%c", button, x + 1, y + 1, release ? 'm' : 'M');
-            return sequence;
+            const auto text = util::format_to_buffer(
+                sequence, "\x1b[<{};{};{}{}", button, x + 1, y + 1, release ? 'm' : 'M');
+            return std::string(text);
         }
-        case core::MouseFormat::Urxvt:
-            std::snprintf(sequence, sizeof(sequence), "\x1b[%d;%d;%dM", 32 + (release ? 3 : button), event.col + 1, event.row + 1);
-            return sequence;
+        case core::MouseFormat::Urxvt: {
+            const auto text = util::format_to_buffer(sequence, "\x1b[{};{};{}M",
+                32 + (release ? 3 : button), event.col + 1, event.row + 1);
+            return std::string(text);
+        }
         case core::MouseFormat::Normal:
             if (event.col > 222 || event.row > 222) return {};
             return std::string("\x1b[M") + static_cast<char>(32 + (release ? 3 : button)) +

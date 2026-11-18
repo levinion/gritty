@@ -1,8 +1,8 @@
 #include "core/vt_parser.hpp"
 #include "util/base64.hpp"
+#include "util/format.hpp"
 #include <array>
 #include <charconv>
-#include <cstdio>
 #include <optional>
 
 namespace gritty::core {
@@ -123,9 +123,10 @@ void VtParser::handle_osc() {
             if (payload == "?") {
                 const auto color = cmd == 10 ? default_fg_ : default_bg_;
                 char reply[80];
-                std::snprintf(reply, sizeof(reply), "\x1b]%d;rgb:%04x/%04x/%04x\x1b\\",
+                const auto text = util::format_to_buffer(reply,
+                    "\x1b]{};rgb:{:04x}/{:04x}/{:04x}\x1b\\",
                     cmd, ((color >> 16) & 255) * 257, ((color >> 8) & 255) * 257, (color & 255) * 257);
-                send_response(reply);
+                if (!text.empty()) send_response(text);
             } else if (const auto rgb = parse_dynamic_rgb(payload)) {
                 update_default_color(cmd, *rgb);
             }
@@ -192,13 +193,14 @@ void VtParser::handle_dcs() {
         const auto query = data.substr(2);
         char reply[80];
         if (query == "r") {
-            std::snprintf(reply, sizeof(reply), "\x1bP1$r%d;%dr\x1b\\", engine_.margin_top() + 1, engine_.margin_bottom() + 1);
-            send_response(reply);
+            const auto text = util::format_to_buffer(reply, "\x1bP1$r{};{}r\x1b\\",
+                engine_.margin_top() + 1, engine_.margin_bottom() + 1);
+            if (!text.empty()) send_response(text);
         } else if (query == " q") {
             const auto shape = engine_.cursor_shape();
             const int mode = (shape == CursorShape::Block ? 2 : shape == CursorShape::Underline ? 4 : 6) - engine_.cursor_blink();
-            std::snprintf(reply, sizeof(reply), "\x1bP1$r%d q\x1b\\", mode);
-            send_response(reply);
+            const auto text = util::format_to_buffer(reply, "\x1bP1$r{} q\x1b\\", mode);
+            if (!text.empty()) send_response(text);
         } else {
             // A negative reply is preferable to falsely claiming an unsupported status.
             send_response("\x1bP0$r\x1b\\");

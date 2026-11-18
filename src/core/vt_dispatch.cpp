@@ -1,6 +1,6 @@
 #include "core/vt_parser.hpp"
+#include "util/format.hpp"
 #include <algorithm>
-#include <cstdio>
 
 namespace gritty::core {
 
@@ -18,8 +18,9 @@ void VtParser::handle_csi(uint8_t final) {
         else if (has_equal_) engine_.set_kitty_keyboard_flags(get_param(0, 0), get_param(1, 1));
         else if (is_private_) {
             char reply[32];
-            std::snprintf(reply, sizeof(reply), "\x1b[?%uu", engine_.kitty_keyboard_flags());
-            send_response(reply);
+            const auto text = util::format_to_buffer(
+                reply, "\x1b[?{}u", engine_.kitty_keyboard_flags());
+            if (!text.empty()) send_response(text);
         } else engine_.restore_cursor();
         return;
     }
@@ -139,10 +140,11 @@ int VtParser::dec_mode_status(int mode) const noexcept {
 }
 
 void VtParser::handle_query(uint8_t final) {
-    char reply[128];
-    reply[0] = '\0';
+    std::string_view reply;
+    char reply_buffer[128];
     if (final == 'p' && intermediate_char_ == '$' && is_private_) {
-        std::snprintf(reply, sizeof(reply), "\x1b[?%d;%d$y", get_param(0, 0), dec_mode_status(get_param(0, 0)));
+        reply = util::format_to_buffer(reply_buffer, "\x1b[?{};{}$y",
+            get_param(0, 0), dec_mode_status(get_param(0, 0)));
     } else if (intermediate_char_ || has_less_ || has_equal_) return;
     else if (has_greater_) {
         if (get_param(0, 0) != 0) return;
@@ -155,15 +157,18 @@ void VtParser::handle_query(uint8_t final) {
         if (query == 5 && !is_private_) send_response("\x1b[0n");
         else if (query == 6) {
             const int row = engine_.cursor_row() - (engine_.origin_mode() ? engine_.margin_top() : 0) + 1;
-            std::snprintf(reply, sizeof(reply), "\x1b[%s%d;%dR", is_private_ ? "?" : "", row, engine_.cursor_col() + 1);
+            reply = util::format_to_buffer(reply_buffer, "\x1b[{}{};{}R",
+                is_private_ ? std::string_view("?") : std::string_view(),
+                row, engine_.cursor_col() + 1);
         }
     } else if (!is_private_ && final == 'c' && get_param(0, 0) == 0) {
         // VT220 with ANSI color and Sixel (parameter 4); no rectangular editing claims.
         send_response("\x1b[?62;22;4c"); // 4 = Sixel graphics (xterm primary DA)
     } else if (!is_private_ && final == 't' && get_param(0, 0) == 18) {
-        std::snprintf(reply, sizeof(reply), "\x1b[8;%d;%dt", engine_.rows(), engine_.cols());
+        reply = util::format_to_buffer(reply_buffer, "\x1b[8;{};{}t",
+            engine_.rows(), engine_.cols());
     }
-    if (reply[0]) send_response(reply);
+    if (!reply.empty()) send_response(reply);
 }
 
 } // namespace gritty::core

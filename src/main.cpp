@@ -1,10 +1,12 @@
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <filesystem>
 #include <cstdlib>
 #include <cmath>
-#include <stdexcept>
+#include <charconv>
+#include <system_error>
 
 #include "config/toml_loader.hpp"
 #include "core/terminal_session.hpp"
@@ -48,6 +50,76 @@ std::string find_default_config() {
     return "";
 }
 
+// libc++ marks floating-point std::from_chars unavailable with the project's
+// macOS deployment target. Parse the decimal digits with integer from_chars
+// instead: no exceptions, no locale, and no intermediate std::string copy.
+bool parse_font_size(std::string_view text, double& out) noexcept {
+    if (text.empty()) return false;
+
+    size_t pos = 0;
+    if (text[pos] == '+') ++pos;
+    if (pos == text.size()) return false;
+
+    const auto digit = [](char c, int& value) noexcept {
+        if (c < '0' || c > '9') return false;
+        return std::from_chars(&c, &c + 1, value).ec == std::errc{};
+    };
+
+    double value = 0.0;
+    bool any_digit = false;
+    int d = 0;
+    while (pos < text.size() && digit(text[pos], d)) {
+        value = value * 10.0 + static_cast<double>(d);
+        if (value > 1.0e9) return false;
+        any_digit = true;
+        ++pos;
+    }
+    if (pos < text.size() && text[pos] == '.') {
+        ++pos;
+        double scale = 0.1;
+        while (pos < text.size() && digit(text[pos], d)) {
+            value += static_cast<double>(d) * scale;
+            scale *= 0.1;
+            any_digit = true;
+            ++pos;
+        }
+    }
+    if (!any_digit) return false;
+
+    if (pos < text.size() && (text[pos] == 'e' || text[pos] == 'E')) {
+        ++pos;
+        bool negative = false;
+        if (pos < text.size() && (text[pos] == '+' || text[pos] == '-')) {
+            negative = text[pos] == '-';
+            ++pos;
+        }
+        uint32_t exponent = 0;
+        bool any_exponent = false;
+        while (pos < text.size() && digit(text[pos], d)) {
+            exponent = exponent * 10u + static_cast<uint32_t>(d);
+            if (exponent > 1000) return false;
+            any_exponent = true;
+            ++pos;
+        }
+        if (!any_exponent) return false;
+        value *= std::pow(10.0, negative ? -static_cast<double>(exponent)
+                                         : static_cast<double>(exponent));
+    }
+    if (pos != text.size()) return false;
+
+    out = value;
+    return std::isfinite(out) && out >= 1.0 && out <= 200.0;
+}
+
+bool parse_geometry_value(std::string_view text, size_t& out) noexcept {
+    int parsed = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (ec != std::errc{} || ptr != text.data() + text.size() || parsed < 1 || parsed > 1000)
+        return false;
+    out = static_cast<size_t>(parsed);
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -80,32 +152,22 @@ int main(int argc, char* argv[]) {
         } else if (arg == "-f" || arg == "--font") {
             if (++i < argc) font_override = argv[i];
         } else if (arg == "-s" || arg == "--size") {
-            try {
-                const std::string value = argv[++i];
-                size_t used = 0;
-                font_size_override = std::stod(value, &used);
-                if (used != value.size() || !std::isfinite(font_size_override) ||
-                    font_size_override < 1 || font_size_override > 200)
-                    throw std::invalid_argument("font size out of range");
-            } catch (const std::exception&) {
+            const std::string_view value(argv[++i]);
+            if (!parse_font_size(value, font_size_override)) {
                 std::cerr << "Invalid font size (expected 1..200 points)\n";
                 return 1;
             }
         } else if (arg == "-t" || arg == "--title") {
             if (++i < argc) title_override = argv[i];
         } else if (arg == "--cols" || arg == "--rows") {
-            try {
-                const std::string value = argv[++i];
-                size_t used = 0;
-                const long parsed = std::stol(value, &used);
-                if (used != value.size() || parsed < 1 || parsed > 1000)
-                    throw std::invalid_argument("geometry out of range");
-                if (arg == "--cols") cols_override = static_cast<size_t>(parsed);
-                else rows_override = static_cast<size_t>(parsed);
-            } catch (const std::exception&) {
+            const std::string_view value(argv[++i]);
+            size_t parsed = 0;
+            if (!parse_geometry_value(value, parsed)) {
                 std::cerr << "Invalid " << arg << " (expected 1..1000)\n";
                 return 1;
             }
+            if (arg == "--cols") cols_override = parsed;
+            else rows_override = parsed;
         } else if (arg == "-e" || arg == "--exec") {
             if (++i < argc) {
                 command = argv[i];

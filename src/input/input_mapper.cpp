@@ -1,5 +1,5 @@
 #include "input/input_mapper.hpp"
-#include <cstdio>
+#include "util/format.hpp"
 #include <utility>
 #include <utf8proc.h>
 
@@ -114,8 +114,8 @@ std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine&
             (ev.mods.shift && ((cp >= 'A' && cp <= 'Z') || ev.key != KeyCode::Unknown));
         if (cp && encode) {
             char sequence[64];
-            std::snprintf(sequence, sizeof(sequence), "\x1b[27;%d;%u~", mods, cp);
-            return sequence;
+            const auto text = util::format_to_buffer(sequence, "\x1b[27;{};{}~", mods, cp);
+            return std::string(text);
         }
     }
 
@@ -133,33 +133,33 @@ std::string InputMapper::map_key(const KeyEvent& ev, const core::TerminalEngine&
         else if (ev.key == KeyCode::Left) suffix = 'D';
 
         char buf[32];
+        std::string_view text;
         if (has_mod) {
-            std::snprintf(buf, sizeof(buf), "\x1b[1;%d%c", mod_param, suffix);
+            text = util::format_to_buffer(buf, "\x1b[1;{}{}", mod_param, suffix);
         } else if (engine.cursor_key_mode()) { // DECCKM application mode
-            std::snprintf(buf, sizeof(buf), "\x1bO%c", suffix);
+            text = util::format_to_buffer(buf, "\x1bO{}", suffix);
         } else {
-            std::snprintf(buf, sizeof(buf), "\x1b[%c", suffix);
+            text = util::format_to_buffer(buf, "\x1b[{}", suffix);
         }
-        return std::string(buf);
+        return std::string(text);
     }
 
     // Function keys
     if (ev.key >= KeyCode::F1 && ev.key <= KeyCode::F12) {
         int fnum = static_cast<int>(ev.key) - static_cast<int>(KeyCode::F1) + 1;
         char buf[32];
+        std::string_view text;
         if (fnum <= 4) {
-            if (has_mod) std::snprintf(buf, sizeof(buf), "\x1b[1;%d%c", mod_param, 'P' + fnum - 1);
-            else std::snprintf(buf, sizeof(buf), "\x1bO%c", 'P' + fnum - 1);
+            const char suffix = static_cast<char>('P' + fnum - 1);
+            if (has_mod) text = util::format_to_buffer(buf, "\x1b[1;{}{}", mod_param, suffix);
+            else text = util::format_to_buffer(buf, "\x1bO{}", suffix);
         } else {
             static const int vt_codes[] = {11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24};
             int code = vt_codes[fnum - 1];
-            if (has_mod) {
-                std::snprintf(buf, sizeof(buf), "\x1b[%d;%d~", code, mod_param);
-            } else {
-                std::snprintf(buf, sizeof(buf), "\x1b[%d~", code);
-            }
+            if (has_mod) text = util::format_to_buffer(buf, "\x1b[{};{}~", code, mod_param);
+            else text = util::format_to_buffer(buf, "\x1b[{}~", code);
         }
-        return std::string(buf);
+        return std::string(text);
     }
 
     // Navigation keys
