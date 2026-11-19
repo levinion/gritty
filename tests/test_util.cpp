@@ -35,6 +35,11 @@ TEST_CASE("RingBuffer basic operations") {
     CHECK(rb.size() == 2);
     CHECK(rb[0] == 30);
     CHECK(rb[1] == 40);
+
+    REQUIRE(rb.at(0) != nullptr);
+    CHECK(*rb.at(0) == 30);
+    CHECK(rb.at(2) == nullptr);
+    CHECK(rb.at(99) == nullptr);
 }
 
 TEST_CASE("RingBuffer resizing capacity") {
@@ -51,6 +56,10 @@ TEST_CASE("RingBuffer resizing capacity") {
     rb.push_back(4);
     CHECK(rb.size() == 4);
     CHECK(rb[3] == 4);
+
+    RingBuffer<int> empty;
+    CHECK(empty.emplace_back(7) == nullptr);
+    REQUIRE(empty.emplace_back(8) == nullptr);
 }
 
 TEST_CASE("ScratchArena allocation") {

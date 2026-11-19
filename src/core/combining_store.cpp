@@ -75,8 +75,9 @@ uint32_t CombiningStore::insert(uint64_t hash, std::vector<char32_t> text) {
         free_ids_.pop_back();
         entries_[id - 1] = Entry{std::move(text), hash, false};
     } else {
-        if (entries_.size() == std::numeric_limits<uint32_t>::max())
-            throw std::length_error("combining entry ID space exhausted");
+        // ID 0 means "no combining marks"; drop decoration rather than kill
+        // the terminal if an adversarial stream exhausts the ID space.
+        if (entries_.size() >= std::numeric_limits<uint32_t>::max()) return 0;
         entries_.push_back(Entry{std::move(text), hash, false});
         id = static_cast<uint32_t>(entries_.size());
     }

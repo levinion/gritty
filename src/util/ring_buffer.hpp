@@ -2,7 +2,6 @@
 
 #include <vector>
 #include <cstddef>
-#include <stdexcept>
 #include <utility>
 #include <type_traits>
 #include <algorithm>
@@ -57,18 +56,14 @@ public:
         return storage_[(head_ + logical_index) % max_capacity_];
     }
 
-    T& at(size_t logical_index) {
-        if (logical_index >= size_) {
-            throw std::out_of_range("RingBuffer::at index out of range");
-        }
-        return (*this)[logical_index];
+    [[nodiscard]] T* at(size_t logical_index) noexcept {
+        if (logical_index >= size_) return nullptr;
+        return &(*this)[logical_index];
     }
 
-    const T& at(size_t logical_index) const {
-        if (logical_index >= size_) {
-            throw std::out_of_range("RingBuffer::at index out of range");
-        }
-        return (*this)[logical_index];
+    [[nodiscard]] const T* at(size_t logical_index) const noexcept {
+        if (logical_index >= size_) return nullptr;
+        return &(*this)[logical_index];
     }
 
     T& front() noexcept {
@@ -121,22 +116,20 @@ public:
         else ++size_;
     }
 
+    // Returns nullptr for a zero-capacity buffer instead of throwing.
     template <typename... Args>
-    T& emplace_back(Args&&... args) {
-        if (max_capacity_ == 0) {
-            throw std::runtime_error("RingBuffer has zero capacity");
-        }
+    [[nodiscard]] T* emplace_back(Args&&... args) {
+        if (max_capacity_ == 0) return nullptr;
         if (full()) {
-            size_t idx = head_;
+            const size_t idx = head_;
             head_ = (head_ + 1) % max_capacity_;
             storage_[idx] = T(std::forward<Args>(args)...);
-            return storage_[idx];
-        } else {
-            size_t idx = (head_ + size_) % max_capacity_;
-            storage_[idx] = T(std::forward<Args>(args)...);
-            ++size_;
-            return storage_[idx];
+            return &storage_[idx];
         }
+        const size_t idx = (head_ + size_) % max_capacity_;
+        storage_[idx] = T(std::forward<Args>(args)...);
+        ++size_;
+        return &storage_[idx];
     }
 
     void pop_front() noexcept(std::is_nothrow_default_constructible_v<T> && std::is_nothrow_move_assignable_v<T>) {

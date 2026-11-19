@@ -58,19 +58,14 @@ const CachedGlyph* FontEngine::cache_glyph(const GlyphKey& key, CachedGlyph glyp
         ++cache_evictions_;
     }
     glyph_lru_.push_front(key);
-    try {
-        auto [it, inserted] = glyph_cache_.emplace(key,
-            GlyphCacheEntry{std::move(glyph), glyph_lru_.begin(), bytes});
-        if (!inserted) {
-            glyph_lru_.pop_front();
-            return &it->second.glyph;
-        }
-        cache_bitmap_bytes_ += bytes;
-        return &it->second.glyph;
-    } catch (...) {
+    auto [it, inserted] = glyph_cache_.emplace(key,
+        GlyphCacheEntry{std::move(glyph), glyph_lru_.begin(), bytes});
+    if (!inserted) {
         glyph_lru_.pop_front();
-        throw;
+        return &it->second.glyph;
     }
+    cache_bitmap_bytes_ += bytes;
+    return &it->second.glyph;
 }
 
 } // namespace gritty::render

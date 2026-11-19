@@ -41,16 +41,49 @@ core_sources = files(
   'util/base64.cpp',
 ) + platform_sources
 
+# Exceptions are treated as programming errors, not control flow. Tests keep
+# exceptions enabled for doctest; TOML++ uses its error-result ABI everywhere.
+no_exception_args = [
+  '-fno-exceptions',
+  '-DTOML_EXCEPTIONS=0',
+]
+
+# nixpkgs builds libtomlplusplus with exceptions; compile one noex
+# implementation into a static library instead of linking its ex ABI or
+# header-only-inlining the parser into every target.
+no_toml_dylib_args = [
+  '-UTOML_HEADER_ONLY',
+  '-DTOML_HEADER_ONLY=0',
+  '-UTOML_SHARED_LIB',
+  '-DTOML_SHARED_LIB=0',
+  '-DTOML_ENABLE_FORMATTERS=0',
+]
+
+toml_noex_lib = static_library('gritty_toml_noex',
+  files('config/toml_noexcept.cpp'),
+  include_directories: inc_dir,
+  dependencies: [tomlplusplus_dep],
+  cpp_args: no_exception_args + no_toml_dylib_args,
+)
+
+toml_noex_dep = declare_dependency(
+  link_with: toml_noex_lib,
+  include_directories: inc_dir,
+  dependencies: [tomlplusplus_dep],
+)
+
 gritty_core_lib = static_library('gritty_core',
   core_sources,
   include_directories: inc_dir,
-  dependencies: [common_deps, platform_deps],
+  dependencies: [common_deps, platform_deps, toml_noex_dep],
+  cpp_args: no_exception_args + no_toml_dylib_args,
+  objcpp_args: no_exception_args,
 )
 
 gritty_core_dep = declare_dependency(
   link_with: gritty_core_lib,
   include_directories: inc_dir,
-  dependencies: [common_deps, platform_deps],
+  dependencies: [common_deps, platform_deps, toml_noex_dep],
 )
 
 gritty_sources = files(
@@ -60,5 +93,6 @@ gritty_sources = files(
 gritty_exe = executable('gritty',
   gritty_sources,
   dependencies: [gritty_core_dep],
+  cpp_args: no_exception_args,
   install: true,
 )

@@ -71,8 +71,9 @@ uint16_t CellExtraStore::insert(const CellExtra& extra, uint64_t hash) {
         free_ids_.pop_back();
         entries_[id - 1] = Entry{extra, hash, false};
     } else {
-        if (entries_.size() >= std::numeric_limits<uint16_t>::max())
-            throw std::length_error("CellExtraStore ID space exhausted");
+        // ID 0 means "no extra attributes"; degradation beats terminating
+        // the terminal when an extreme output stream exhausts the side table.
+        if (entries_.size() >= std::numeric_limits<uint16_t>::max()) return 0;
         entries_.push_back(Entry{extra, hash, false});
         id = static_cast<uint16_t>(entries_.size());
     }

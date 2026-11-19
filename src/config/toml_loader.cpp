@@ -51,16 +51,16 @@ std::expected<std::shared_ptr<AppConfig>, ConfigError> TomlLoader::load_from_str
     std::string_view toml_str,
     std::string_view platform_override
 ) {
-    toml::table tbl;
-    try {
-        tbl = toml::parse(toml_str);
-    } catch (const toml::parse_error& err) {
+    auto parsed = toml::parse(toml_str);
+    if (!parsed) {
+        const auto& err = parsed.error();
         return std::unexpected(ConfigError{
             .message = std::string(err.description()),
             .line = static_cast<int>(err.source().begin.line),
             .column = static_cast<int>(err.source().begin.column)
         });
     }
+    toml::table tbl = std::move(parsed.table());
 
     std::string os_name = std::string(platform_override);
     if (os_name.empty()) {

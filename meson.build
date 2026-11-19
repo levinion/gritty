@@ -32,6 +32,12 @@ if not utf8proc_dep.found()
   utf8proc_dep = dependency('utf8proc')
 endif
 tomlplusplus_dep = dependency('tomlplusplus', fallback: ['tomlplusplus', 'tomlplusplus_dep'])
+# The project compiles its own no-exception TOML++ implementation; only take
+# headers/compile args from pkg-config, never the exception-enabled dylib.
+tomlplusplus_headers_dep = tomlplusplus_dep.partial_dependency(
+  compile_args: true,
+  includes: true,
+)
 png_dep = dependency('libpng')
 zlib_dep = dependency('zlib')
 threads_dep = dependency('threads')
@@ -41,7 +47,7 @@ common_deps = [
   freetype_dep,
   harfbuzz_dep,
   utf8proc_dep,
-  tomlplusplus_dep,
+  tomlplusplus_headers_dep,
   png_dep,
   zlib_dep,
   threads_dep,
