@@ -1,0 +1,26 @@
+pkgbase = gritty
+	pkgdesc = CPU-rendered terminal emulator for tmux on Linux and macOS
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/levinion/gritty
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = pixman
+	depends = freetype2
+	depends = harfbuzz
+	depends = libutf8proc
+	depends = libpng
+	depends = zlib
+	depends = wayland
+	depends = libxkbcommon
+	depends = fontconfig
+	makedepends = meson
+	makedepends = ninja
+	makedepends = pkgconf
+	makedepends = wayland-protocols
+	checkdepends = doctest
+	source = gritty-0.1.0.tar.gz::https://github.com/levinion/gritty/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = gritty

@@ -1,0 +1,64 @@
+# Maintainer: levinion <https://github.com/levinion>
+pkgname=gritty-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc="CPU-rendered terminal emulator for tmux on Linux and macOS (development version)"
+arch=('x86_64' 'aarch64')
+url='https://github.com/levinion/gritty'
+license=('MIT')
+provides=('gritty')
+conflicts=('gritty')
+depends=(
+  'pixman'
+  'freetype2'
+  'harfbuzz'
+  'libutf8proc'
+  'libpng'
+  'zlib'
+  'wayland'
+  'libxkbcommon'
+  'fontconfig'
+)
+makedepends=(
+  'meson'
+  'ninja'
+  'pkgconf'
+  'wayland-protocols'
+  'git'
+)
+checkdepends=('doctest')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  local dir="${srcdir:-.}/${pkgname%-git}"
+  if [[ ! -d "$dir/.git" ]]; then
+    printf 'r0.0000000'
+    return
+  fi
+  cd "$dir"
+  if git describe --long --tags >/dev/null 2>&1; then
+    git describe --long --tags | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  else
+    printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  fi
+}
+
+build() {
+  arch-meson "${pkgname%-git}" build -Dtests=true -Dbenchmarks=false
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package() {
+  DESTDIR="${pkgdir}" meson install -C build
+  install -Dm644 "${pkgname%-git}/packaging/linux/gritty.desktop" \
+    "${pkgdir}/usr/share/applications/gritty.desktop"
+  if [[ -f "${pkgname%-git}/LICENSE" ]]; then
+    install -Dm644 "${pkgname%-git}/LICENSE" \
+      "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  fi
+}

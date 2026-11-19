@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Gritty
+GenericName=Terminal Emulator
+Comment=CPU-rendered terminal emulator
+Exec=gritty
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;console;shell;tmux;
