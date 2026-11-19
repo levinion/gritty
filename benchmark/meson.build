@@ -9,5 +9,7 @@ gritty_bench = executable('gritty-bench',
   bench_sources,
   include_directories: [inc_dir],
   dependencies: [gritty_core_dep],
-  cpp_args: ['-DGRITTY_BENCH_SOURCE_DIR="' + meson.project_source_root() + '"'],
+  cpp_args: [
+    '-DGRITTY_BENCH_SOURCE_DIR="' + meson.project_source_root() + '"',
+  ] + no_exception_args,
 )
