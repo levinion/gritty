@@ -220,3 +220,21 @@ TEST_CASE("Kitty RGBA image is premultiplied for Pixman") {
     REQUIRE(engine.get_image(73) != nullptr);
     CHECK(engine.get_image(73)->image.data()[0] == 0x80800000);
 }
+
+TEST_CASE("Kitty graphics accumulates chunked transmissions") {
+    KittyGraphicsEngine graphics;
+    graphics.set_placement_handler([](const KittyPlacement&, pixman_image_t*) {});
+    CHECK(graphics.process_apc_sequence(
+        "Ga=T,q=2,i=90,f=32,s=1,v=1,c=4,r=2,U=1,m=1;/w", 0, 0).empty());
+    CHECK(graphics.process_apc_sequence("Ga=T,q=2,m=1;AA/", 0, 0).empty());
+    CHECK(graphics.process_apc_sequence("Ga=T,q=2;w==", 0, 0).empty());
+
+    const KittyImage* image = graphics.get_image(90);
+    REQUIRE(image != nullptr);
+    REQUIRE(image->image.width() == 1);
+    CHECK(image->image.data()[0] == 0xFFFF0000u);
+    REQUIRE(graphics.virtual_placements().size() == 1);
+    CHECK(graphics.virtual_placements()[0].image_id == 90);
+    CHECK(graphics.virtual_placements()[0].cols == 4);
+    CHECK(graphics.virtual_placements()[0].rows == 2);
+}

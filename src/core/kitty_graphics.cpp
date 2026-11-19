@@ -431,6 +431,11 @@ std::string KittyGraphicsEngine::process_apc_sequence(
     }
 
     if (request.more_data == 1) {
+        // Later chunks usually omit metadata. Keep the first chunk's parsed
+        // values and append payload bytes instead of replacing the buffer.
+        std::string accumulated;
+        if (pending_chunk_.in_progress) accumulated = std::move(pending_chunk_.buffer);
+        accumulated.append(data_part);
         pending_chunk_ = PendingChunkTransmission{
             .image_id = request.image_id,
             .placement_id = request.placement_id,
@@ -451,7 +456,7 @@ std::string KittyGraphicsEngine::process_apc_sequence(
             .src_y = request.src_y,
             .src_w = request.src_w,
             .src_h = request.src_h,
-            .buffer = std::string(data_part),
+            .buffer = std::move(accumulated),
             .in_progress = true,
         };
         return "";

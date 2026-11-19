@@ -68,3 +68,13 @@ TEST_CASE("Sixel HLS palette and P2 background mode") {
     REQUIRE(transparent.has_value());
     CHECK(transparent->data()[transparent->stride() / 4 + 1] == 0x00000000);
 }
+
+TEST_CASE("SixelDecoder tolerates trailing empty bands") {
+    std::string stream = "q";
+    stream.append(43, '-'); // Move past the initial 256-row grid.
+    stream.push_back('?');  // Draw one sixel and grow the grid to 264 rows.
+    stream.push_back('-');  // Final empty band: total height becomes 270.
+    auto image = SixelDecoder::decode(stream);
+    REQUIRE(image.has_value());
+    CHECK(image->height() >= 270);
+}

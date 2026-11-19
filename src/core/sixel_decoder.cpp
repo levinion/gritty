@@ -173,6 +173,9 @@ std::optional<util::PixmanImage> SixelDecoder::decode(
     const int total_height = current_band_y + 6;
     if (max_width <= 0 || total_height <= 0 || max_width > kMaxDimension ||
         total_height > kMaxDimension) return std::nullopt;
+    // The final '-' band can advance current_band_y without emitting pixels.
+    // Grow the grid to cover every row we are about to copy.
+    if (!ensure_size(max_width, total_height)) return std::nullopt;
 
     util::PixmanImage result(pixman_image_create_bits(
         PIXMAN_a8r8g8b8, max_width, total_height, nullptr, max_width * 4));
