@@ -84,7 +84,7 @@ struct PlacedImage {
 
 class TerminalEngine final {
 public:
-    TerminalEngine(int cols, int rows, size_t scrollback_capacity = 2000);
+    TerminalEngine(int cols, int rows);
     ~TerminalEngine() = default;
 
     TerminalEngine(const TerminalEngine&) = delete;

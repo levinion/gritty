@@ -43,10 +43,6 @@ bright5 = "#fd28ff"
 bright6 = "#14ffff"
 bright7 = "#ffffff"
 
-[scrollback]
-lines = 2000
-multiplier = 3
-
 [window]
 # full | none | transparent | buttonless
 decorations = "full"

@@ -20,7 +20,7 @@ TerminalSession::TerminalSession(
       surface_(std::move(surface)),
       loop_(std::move(loop)),
       clipboard_(std::move(clipboard)),
-      engine_(config.cols, config.rows, config.scrollback_lines),
+      engine_(config.cols, config.rows),
       parser_(engine_),
       font_engine_(config.antialias),
       renderer_(font_engine_, config.render_config) {

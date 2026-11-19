@@ -171,7 +171,7 @@ TEST_CASE("Damage repair precedes scroll moves and matches a fresh full redraw")
     if (font_path.empty()) { WARN("No test font available"); return; }
     gritty::render::FontEngine font;
     REQUIRE(font.load_font(font_path, 13.0, 96));
-    gritty::core::TerminalEngine engine(32, 12, 16);
+    gritty::core::TerminalEngine engine(32, 12);
     gritty::core::VtParser parser(engine);
     gritty::render::CpuRenderer renderer(font), reference(font);
     renderer.set_scroll_mode(gritty::render::CpuRenderer::ScrollMode::AlwaysMove);

@@ -1,11 +1,10 @@
 #include <doctest/doctest.h>
 #include <memory>
 #include "core/screen_grid.hpp"
-#include "util/ring_buffer.hpp"
 #include "platform/cpu_frame_pool.hpp"
 
 TEST_CASE("Equal combining sequences share a side-table entry") {
-    gritty::core::ScreenGrid grid(8, 3, 2);
+    gritty::core::ScreenGrid grid(8, 3);
     const char32_t marks[] = {U'\u0301', U'\u0327'};
     const auto first = grid.store_combining_codepoints(marks);
     REQUIRE(first != 0);
@@ -13,19 +12,8 @@ TEST_CASE("Equal combining sequences share a side-table entry") {
         REQUIRE(grid.store_combining_codepoints(marks) == first);
 }
 
-TEST_CASE("Removing ring entries releases owned storage immediately") {
-    gritty::util::RingBuffer<std::shared_ptr<int>> ring(4);
-    auto value = std::make_shared<int>(42);
-    std::weak_ptr<int> observer = value;
-    ring.push_back(std::move(value));
-    SUBCASE("clear") { ring.clear(); }
-    SUBCASE("pop front") { ring.pop_front(); }
-    SUBCASE("pop back") { ring.pop_back(); }
-    CHECK(observer.expired());
-}
-
 TEST_CASE("Scrolling reuses discarded row storage rather than allocating each line") {
-    gritty::core::ScreenGrid grid(8, 3, 0);
+    gritty::core::ScreenGrid grid(8, 3);
     grid.row(0).cells.reserve(128);
     grid.row(1).cells.reserve(256);
     grid.row(2).cells.reserve(512);
@@ -39,28 +27,12 @@ TEST_CASE("Scrolling reuses discarded row storage rather than allocating each li
     CHECK(grid.row(0).cells.capacity() == capacity);
 }
 
-TEST_CASE("A full scrollback ring returns its oldest row buffer for the next blank line") {
-    gritty::core::ScreenGrid grid(8, 3, 2);
-    grid.row(0).cells.reserve(128);
-    const auto capacity = grid.row(0).cells.capacity();
-    const auto* first = grid.row(0).cells.data();
-    grid.scroll_up(0, 2, 1);
-    grid.scroll_up(0, 2, 1);
-    REQUIRE(grid.scrollback_size() == 2);
-    grid.scroll_up(0, 2, 1);
-    CHECK(grid.row(2).cells.data() == first);
-    CHECK(grid.row(2).cells.capacity() == capacity);
-    CHECK(grid.scrollback_size() == 2);
-}
-
-TEST_CASE("Recycled history does not retain obsolete wide row allocations") {
-    gritty::core::ScreenGrid grid(128, 3, 2);
+TEST_CASE("Shrinking the viewport drops obsolete wide row allocations") {
+    gritty::core::ScreenGrid grid(128, 3);
     grid.scroll_up(0, 2, 2);
     grid.resize(8, 3);
-    CHECK(grid.row(0).cells.capacity() <= 16);
-    REQUIRE(grid.scrollback_row(0).cells.size() == 128);
-    grid.scroll_up(0, 2, 1);
-    CHECK(grid.row(2).cells.capacity() <= 16);
+    for (int y = 0; y < grid.rows(); ++y)
+        CHECK(grid.row(y).cells.capacity() <= 16);
 }
 
 TEST_CASE("Mapped pixel storage follows the last Pixman reference, not just the pool") {

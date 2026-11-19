@@ -110,13 +110,6 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool& invalid_alpha) {
     if (const auto value = as_string(find_key(table, "cursor"))) {
         if (auto color = TomlLoader::parse_color(*value)) cfg.colors.cursor = *color;
     }
-    if (const auto value = as_string(find_key(table, "selection_fg"))) {
-        cfg.colors.selection_fg = TomlLoader::parse_color(*value);
-    }
-    if (const auto value = as_string(find_key(table, "selection_bg"))) {
-        cfg.colors.selection_bg = TomlLoader::parse_color(*value);
-    }
-
     for (int i = 0; i < 8; ++i) {
         const std::string regular = "regular" + std::to_string(i);
         const std::string bright = "bright" + std::to_string(i);
@@ -188,16 +181,6 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         apply_colors(cfg, table, invalid_alpha);
         return;
     }
-    if (section == "scrollback") {
-        int64_t lines = 0;
-        if (as_integer(find_key(table, "lines"), lines) && lines >= 0)
-            cfg.scrollback.lines = static_cast<size_t>(lines);
-        int64_t multiplier = 0;
-        if (as_integer(find_key(table, "multiplier"), multiplier) && multiplier > 0 &&
-            multiplier <= std::numeric_limits<int>::max())
-            cfg.scrollback.multiplier = static_cast<int>(multiplier);
-        return;
-    }
     if (section == "window") {
         if (const auto value = as_string(find_key(table, "decorations"))) {
             const auto decorations = parse_window_decorations(*value);
@@ -210,7 +193,7 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
 void apply_tables(AppConfig& cfg, toml_datum_t root, bool& invalid_alpha,
                   bool& invalid_decorations) {
     constexpr std::string_view sections[] = {
-        "main", "font", "cursor", "colors", "scrollback", "window"
+        "main", "font", "cursor", "colors", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(root, section);
@@ -229,7 +212,7 @@ void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform
     if (os.type != TOML_TABLE) return;
 
     constexpr std::string_view sections[] = {
-        "main", "font", "cursor", "colors", "scrollback", "window"
+        "main", "font", "cursor", "colors", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(os, section);

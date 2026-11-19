@@ -120,7 +120,6 @@ int main(int argc, char* argv[]) {
             .default_bg = cfg->colors.background_argb(),
             .cursor_color = cfg->cursor.color
         },
-        .scrollback_lines = cfg->scrollback.lines,
         .palette = cfg->colors.palette,
         .hold_on_exit = cli.hold,
     };

@@ -1,66 +1,8 @@
 #include <doctest/doctest.h>
 #include "util/raii.hpp"
-#include "util/ring_buffer.hpp"
 #include "util/arena.hpp"
 
 using namespace gritty::util;
-
-TEST_CASE("RingBuffer basic operations") {
-    RingBuffer<int> rb(3);
-    CHECK(rb.size() == 0);
-    CHECK(rb.capacity() == 3);
-    CHECK(rb.empty());
-    CHECK(!rb.full());
-
-    rb.push_back(10);
-    rb.push_back(20);
-    CHECK(rb.size() == 2);
-    CHECK(rb[0] == 10);
-    CHECK(rb[1] == 20);
-
-    rb.push_back(30);
-    CHECK(rb.size() == 3);
-    CHECK(rb.full());
-    CHECK(rb.front() == 10);
-    CHECK(rb.back() == 30);
-
-    // Push when full overwrites oldest
-    rb.push_back(40);
-    CHECK(rb.size() == 3);
-    CHECK(rb[0] == 20);
-    CHECK(rb[1] == 30);
-    CHECK(rb[2] == 40);
-
-    rb.pop_front();
-    CHECK(rb.size() == 2);
-    CHECK(rb[0] == 30);
-    CHECK(rb[1] == 40);
-
-    REQUIRE(rb.at(0) != nullptr);
-    CHECK(*rb.at(0) == 30);
-    CHECK(rb.at(2) == nullptr);
-    CHECK(rb.at(99) == nullptr);
-}
-
-TEST_CASE("RingBuffer resizing capacity") {
-    RingBuffer<int> rb(2);
-    rb.push_back(1);
-    rb.push_back(2);
-    rb.set_capacity(4);
-    CHECK(rb.size() == 2);
-    CHECK(rb.capacity() == 4);
-    CHECK(rb[0] == 1);
-    CHECK(rb[1] == 2);
-
-    rb.push_back(3);
-    rb.push_back(4);
-    CHECK(rb.size() == 4);
-    CHECK(rb[3] == 4);
-
-    RingBuffer<int> empty;
-    CHECK(empty.emplace_back(7) == nullptr);
-    REQUIRE(empty.emplace_back(8) == nullptr);
-}
 
 TEST_CASE("ScratchArena allocation") {
     ScratchArena arena(1024);

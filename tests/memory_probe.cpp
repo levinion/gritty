@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     const std::string mode = argv[1];
     const auto start = std::chrono::steady_clock::now();
     if (mode == "combining") {
-        gritty::core::TerminalEngine terminal(80, 24, 2000);
+        gritty::core::TerminalEngine terminal(80, 24);
         const auto initial = footprint();
         for (int i = 0; i < 500000; ++i) {
             terminal.set_cursor_pos(0, 0);

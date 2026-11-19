@@ -38,19 +38,10 @@ struct ColorsConfig {
     uint32_t foreground{0xffdddddd};
     uint32_t background{0xff111111};
     uint32_t cursor{0xffffffff};
-    // Reserved for an optional standalone selection renderer; tmux owns
-    // selection/copy UI in the supported configuration.
-    std::optional<uint32_t> selection_fg;
-    std::optional<uint32_t> selection_bg;
     std::array<uint32_t, 256> palette{core::kDefaultPalette};
     bool palette_customized{false};
     double alpha{1.0}; // Default background only; text/explicit SGR backgrounds stay opaque.
     [[nodiscard]] uint32_t background_argb() const noexcept;
-};
-
-struct ScrollbackConfig {
-    size_t lines{2000};
-    int multiplier{3};
 };
 
 struct WindowConfig {
@@ -67,7 +58,6 @@ struct AppConfig {
     FontConfig font;
     CursorConfig cursor;
     ColorsConfig colors;
-    ScrollbackConfig scrollback;
     WindowConfig window;
 
     AppConfig();

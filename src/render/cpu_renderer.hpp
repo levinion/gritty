@@ -156,7 +156,7 @@ private:
         int cell_w,
         int cell_h,
         bool below_text,
-        int row, // >= 0: clip to this row band; -1: full target (overlay pass).
+        int row, // >= 0: clip to this row band; -1: full target.
         util::PixmanRegion* damage_out,
         const pixman_region32_t* clip = nullptr
     );

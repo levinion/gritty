@@ -34,7 +34,7 @@ void check_text(const core::ScreenGrid& grid, uint32_t id, std::span<const char3
 }
 
 TEST_CASE("Repeated combining text neither allocates unique entries nor loses wide leaders") {
-    core::TerminalEngine terminal(8, 3, 2);
+    core::TerminalEngine terminal(8, 3);
     for (int i = 0; i < 50000; ++i) {
         terminal.set_cursor_pos(0, 0);
         terminal.print_char(U'e');
@@ -49,15 +49,14 @@ TEST_CASE("Repeated combining text neither allocates unique entries nor loses wi
     CHECK(terminal.grid().cell(3, 0).extra_idx == 0);
 }
 
-TEST_CASE("Combining collection retains visible and historical references and grid copies") {
-    core::ScreenGrid grid(4, 2, 8);
+TEST_CASE("Combining collection drops scrolled-off references and keeps grid copies independent") {
+    core::ScreenGrid grid(4, 2);
     const char32_t acute[] = {U'\u0301'}, cedilla[] = {U'\u0327'};
     core::Cell a;
     a.codepoint = U'a';
     const uint32_t acute_id = grid.store_combining_codepoints(acute);
-    const auto history_id = acute_id;
     grid.set_cell_with_extra(0, 0, a, core::CellExtra{.combining_idx = acute_id});
-    grid.scroll_up(0, 1, 1);
+    grid.scroll_up(0, 1, 1); // The only acute reference leaves the visible grid.
     core::Cell b = a;
     const uint32_t cedilla_id = grid.store_combining_codepoints(cedilla);
     grid.set_cell_with_extra(1, 0, b, core::CellExtra{.combining_idx = cedilla_id});
@@ -69,23 +68,20 @@ TEST_CASE("Combining collection retains visible and historical references and gr
     }
     CHECK(grid.combining_storage_bytes() < 1024 * 1024);
     grid.collect_combining_garbage();
-    CHECK(grid.combining_entry_count() == 3);
-    REQUIRE(grid.scrollback_size() == 1);
-    CHECK(grid.get_cell_extra(grid.scrollback_row(0).cells[0].extra_idx).combining_idx == history_id);
-    check_text(grid, history_id, acute);
+    CHECK(grid.combining_entry_count() == 2); // Cedilla plus the last visible sequence.
+    CHECK(grid.get_combining_codepoints(acute_id).empty());
     check_text(grid, cedilla_id, cedilla);
+
+    const uint32_t readded = grid.store_combining_codepoints(acute);
+    grid.set_cell_with_extra(0, 0, a, core::CellExtra{.combining_idx = readded});
     auto copy = grid;
-    copy.resize(4, 3); // Pull historical row back into the viewport.
     copy.collect_combining_garbage();
-    check_text(copy, copy.get_cell_extra(copy.cell(0, 0).extra_idx).combining_idx, acute);
-    grid.erase_in_display(0, 0, 3);
-    CHECK(grid.combining_entry_count() == 2);
-    CHECK(grid.get_combining_codepoints(history_id).empty());
-    check_text(copy, history_id, acute); // Independent ownership after copy.
+    check_text(copy, readded, acute); // Copies own their side tables.
     grid.erase_in_display(0, 0, 2);
     grid.collect_combining_garbage();
     CHECK(grid.combining_entry_count() == 0);
     CHECK(grid.combining_storage_bytes() == 0);
+    check_text(copy, readded, acute); // Erasing one grid cannot free the other's entry.
 }
 
 TEST_CASE("Combining hash probe collisions compare full sequence content") {
@@ -123,7 +119,7 @@ TEST_CASE("Combining stores copy independently and moved-from stores remain reus
 }
 
 TEST_CASE("Collection preserves a borrowed input span and an explicit append prefix") {
-    core::ScreenGrid grid(2, 1, 0);
+    core::ScreenGrid grid(2, 1);
     uint32_t first = 0;
     for (int i = 0; i < 4096; ++i) {
         const char32_t text[] = {static_cast<char32_t>(0x10000 + i), U'\u0327'};
@@ -145,7 +141,7 @@ TEST_CASE("Collection preserves a borrowed input span and an explicit append pre
 }
 
 TEST_CASE("Long combining sequences survive periodic collection without truncation") {
-    core::TerminalEngine terminal(4, 2, 0);
+    core::TerminalEngine terminal(4, 2);
     terminal.print_char(U'e');
     for (int i = 0; i < 5000; ++i) terminal.print_char(U'\u0301');
     terminal.grid().collect_combining_garbage();

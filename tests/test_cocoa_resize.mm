@@ -33,7 +33,6 @@ TEST_CASE("Resize storm keeps native example-config memory bounded") {
         options.font_dpi = cfg.font.dpi;
         options.antialias = cfg.font.antialias;
         options.palette = cfg.colors.palette;
-        options.scrollback_lines = cfg.scrollback.lines;
         options.render_config.default_fg = cfg.colors.foreground;
         options.render_config.default_bg = cfg.colors.background_argb();
         options.shell = "/bin/sh";

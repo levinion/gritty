@@ -38,7 +38,7 @@ void TerminalEngine::reset() {
     kitty_graphics_.clear();
     set_alt_screen(false, 47);
     primary_grid_.erase_in_display(0, 0, 2);
-    primary_grid_.erase_in_display(0, 0, 3);
+    primary_grid_.collect_combining_garbage();
     alt_grid_.erase_in_display(0, 0, 2);
     alt_grid_.collect_combining_garbage();
     cursor_ = CursorState{};

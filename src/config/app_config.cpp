@@ -193,18 +193,6 @@ std::expected<void, std::string> AppConfig::apply_override(
         return {};
     }
 
-    if (lowered == "scrollback.lines") {
-        if (!parse_integer(value, integer) || integer < 0) return invalid(key, value);
-        scrollback.lines = static_cast<size_t>(integer);
-        return {};
-    }
-    if (lowered == "scrollback.multiplier") {
-        if (!parse_integer(value, integer) || integer <= 0 ||
-            integer > std::numeric_limits<int>::max()) return invalid(key, value);
-        scrollback.multiplier = static_cast<int>(integer);
-        return {};
-    }
-
     if (lowered == "window.decorations") {
         const auto decorations = parse_window_decorations(value);
         if (!decorations) return invalid(key, value);

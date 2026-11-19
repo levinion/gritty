@@ -204,7 +204,6 @@ TEST_CASE("Session preserves configured ANSI colors and all 256 prompt colors th
     settings.font_path = font;
     settings.cols = 3;
     settings.rows = 1;
-    settings.scrollback_lines = 0;
     settings.palette = (*loaded)->colors.palette;
     settings.render_config.render_cursor = false;
     settings.shell = "/bin/sh";
@@ -214,7 +213,6 @@ TEST_CASE("Session preserves configured ANSI colors and all 256 prompt colors th
     REQUIRE(session.start());
     for (int i = 0; i < 100 && output->title != "palette"; ++i) events->pump();
     REQUIRE(output->title == "palette");
-    CHECK(session.engine().primary_grid().scrollback_capacity() == 0);
     const auto pixel = [&](int col) {
         const int width = output->width / settings.cols;
         return output->pixels.data()[(output->height / 2) * output->pixels.stride() / 4 + col * width + width / 2];

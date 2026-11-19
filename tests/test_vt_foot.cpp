@@ -106,7 +106,7 @@ TEST_CASE("foot saved cursor includes pending wrap and charset but not visibilit
     CHECK(engine.grid().cell(1, 1).codepoint == U'─');
 }
 
-TEST_CASE("foot scrolling, BCE, IRM and erase-scrollback semantics") {
+TEST_CASE("foot scrolling, BCE, IRM and DECSED 3 no-op semantics") {
     TerminalEngine engine(10, 6);
     VtParser parser(engine);
     parser.feed("KEEP\x1b[3J");

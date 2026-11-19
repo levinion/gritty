@@ -86,7 +86,6 @@ struct Harness {
         opts.font_dpi = cfg.font.dpi;
         opts.antialias = cfg.font.antialias;
         opts.palette = cfg.colors.palette;
-        opts.scrollback_lines = cfg.scrollback.lines;
         opts.render_config.default_fg = cfg.colors.foreground;
         opts.render_config.default_bg = cfg.colors.background_argb();
 
@@ -326,8 +325,8 @@ void measure_present(bool flush, int presents) {
 
 // Feed the same bytes the end-to-end benchmark produces, with no rendering and
 // no window, to separate parse/terminal-state cost from draw and commit cost.
-void measure_parse(int lines, int cols, int rows, int scrollback, size_t chunk) {
-    gritty::core::TerminalEngine engine(cols, rows, static_cast<size_t>(scrollback));
+void measure_parse(int lines, int cols, int rows, size_t chunk) {
+    gritty::core::TerminalEngine engine(cols, rows);
     gritty::core::VtParser parser(engine);
     std::string payload;
     for (int i = 0; i < lines; ++i) payload += std::to_string(i) + "\r\n";
@@ -338,9 +337,9 @@ void measure_parse(int lines, int cols, int rows, int scrollback, size_t chunk) 
             parser.feed(std::string_view(payload).substr(off, chunk));
     }
     const double elapsed = cpu_ms() - before;
-    std::printf("{\"mode\":\"parse\",\"lines\":%d,\"cols\":%d,\"rows\":%d,\"scrollback\":%d,"
+    std::printf("{\"mode\":\"parse\",\"lines\":%d,\"cols\":%d,\"rows\":%d,"
         "\"chunk\":%zu,\"bytes\":%zu,\"cpu_ms\":%.1f,\"us_per_line\":%.3f}\n",
-        lines, cols, rows, scrollback, chunk, payload.size(), elapsed, elapsed * 1000.0 / lines);
+        lines, cols, rows, chunk, payload.size(), elapsed, elapsed * 1000.0 / lines);
 }
 
 // Parse inside a fully initialized session (window, renderer, fonts, PTY),
@@ -637,13 +636,12 @@ int main(int argc, char* argv[]) {
         }
         if (mode == "primitives" || mode == "all") measure_primitives();
         if (mode == "parse" || mode == "all") {
-            measure_parse(200000, 80, 24, 2000, 0);
-            measure_parse(200000, 80, 24, 2000, 50);
-            measure_parse(200000, 80, 24, 2000, 10);
-            measure_parse(200000, 80, 24, 2000, 16384);
-            measure_parse(200000, 80, 24, 2000, 2800);
-            measure_parse(200000, 80, 24, 0, 0);
-            measure_parse(200000, 120, 40, 2000, 0);
+            measure_parse(200000, 80, 24, 0);
+            measure_parse(200000, 80, 24, 50);
+            measure_parse(200000, 80, 24, 10);
+            measure_parse(200000, 80, 24, 16384);
+            measure_parse(200000, 80, 24, 2800);
+            measure_parse(200000, 120, 40, 0);
             measure_parse_render(200000, 400);
             measure_parse_render(200000, 1);
         }

@@ -24,8 +24,6 @@ void run_for_twelve_seconds(gritty::platform::macos::KqueueRunLoop& loop) {
 size_t cell_bytes(const gritty::core::ScreenGrid& grid) {
     size_t bytes = 0;
     for (int y = 0; y < grid.rows(); ++y) bytes += grid.row(y).cells.capacity() * sizeof(gritty::core::Cell);
-    for (size_t y = 0; y < grid.scrollback_size(); ++y)
-        bytes += grid.scrollback_row(y).cells.capacity() * sizeof(gritty::core::Cell);
     return bytes;
 }
 int empty_window(int width, int height) {
@@ -73,7 +71,6 @@ int main(int argc, char** argv) {
         options.font_dpi = config.font.dpi;
         options.antialias = config.font.antialias;
         options.palette = config.colors.palette;
-        options.scrollback_lines = config.scrollback.lines;
         options.render_config.default_fg = config.colors.foreground;
         options.render_config.default_bg = config.colors.background_argb();
         options.shell = idle ? "/bin/sh" : "/opt/homebrew/bin/btop";
@@ -111,11 +108,11 @@ int main(int argc, char** argv) {
         const auto& metrics = session.font_engine().metrics();
         std::printf("{\"workload\":\"%s\",\"font\":\"%s\",\"font_size\":%.2f,\"dpi\":%u,\"scale\":%.1f,"
             "\"cols\":%d,\"rows\":%d,\"cell_width\":%d,\"cell_height\":%d,"
-            "\"primary_cell_bytes\":%zu,\"alt_cell_bytes\":%zu,\"history_rows\":%zu,\"loaded_faces\":%zu,\"copied_bytes\":%zu}\n",
+            "\"primary_cell_bytes\":%zu,\"alt_cell_bytes\":%zu,\"loaded_faces\":%zu,\"copied_bytes\":%zu}\n",
             idle ? "idle" : "btop", font->path.c_str(), config.font.size, config.font.dpi, output->scale(),
             session.engine().cols(), session.engine().rows(), metrics.cell_width, metrics.cell_height,
             cell_bytes(session.engine().primary_grid()), cell_bytes(session.engine().alt_grid()),
-            session.engine().primary_grid().scrollback_size(), session.font_engine().loaded_face_count(), output->buffer_copied_bytes());
+            session.font_engine().loaded_face_count(), output->buffer_copied_bytes());
         std::printf("{\"width\":%d,\"height\":%d,\"footprint\":%llu,\"frames\":%zu,\"live_bytes\":%zu,\"peak_bytes\":%zu,\"allocations\":%zu,\"presented\":%zu,\"blocked\":%zu,"
             "\"glyph_entries\":%zu,\"glyph_bitmap_bytes\":%zu,\"glyph_hits\":%zu,\"glyph_misses\":%zu,\"glyph_evictions\":%zu}\n",
             output->pixel_width(), output->pixel_height(), static_cast<unsigned long long>(info.phys_footprint),

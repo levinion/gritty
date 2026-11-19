@@ -21,11 +21,11 @@ inline bool common_wide_char(char32_t cp) noexcept {
 
 } // namespace
 
-TerminalEngine::TerminalEngine(int cols, int rows, size_t scrollback_capacity)
+TerminalEngine::TerminalEngine(int cols, int rows)
     : cols_(cols),
       rows_(rows),
-      primary_grid_(cols, rows, scrollback_capacity),
-      alt_grid_(cols, rows, 0), // alt screen has 0 scrollback
+      primary_grid_(cols, rows),
+      alt_grid_(cols, rows),
       active_grid_(&primary_grid_),
       margin_top_(0),
       margin_bottom_(rows - 1) {
@@ -560,7 +560,7 @@ void TerminalEngine::erase_in_display(int mode) {
             break;
         case 0: erase_images(cursor_.col, cursor_.row, cols_ - 1, rows_ - 1); break;
         case 1: erase_images(0, 0, cursor_.col, cursor_.row); break;
-        case 3: break; // Scrollback has no images; keep the visible ones.
+        case 3: break; // DECSED 3 is a no-op with no local history; keep images.
         default: break;
     }
 }

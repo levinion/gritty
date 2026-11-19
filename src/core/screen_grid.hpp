@@ -5,7 +5,6 @@
 #include <span>
 #include <type_traits>
 #include <algorithm>
-#include "util/ring_buffer.hpp"
 #include "core/combining_store.hpp"
 #include "core/cell_extra_store.hpp"
 #include "core/screen_grid_cell.hpp"
@@ -71,7 +70,7 @@ struct ScrollOp {
 
 class ScreenGrid final {
 public:
-    ScreenGrid(int cols, int rows, size_t scrollback_capacity = 2000);
+    ScreenGrid(int cols, int rows);
     ~ScreenGrid() = default;
 
     ScreenGrid(const ScreenGrid&) = default;
@@ -80,12 +79,9 @@ public:
     ScreenGrid& operator=(ScreenGrid&&) noexcept = default;
 
     void resize(int cols, int rows);
-    void set_scrollback_capacity(size_t capacity);
 
     [[nodiscard]] int cols() const noexcept { return cols_; }
     [[nodiscard]] int rows() const noexcept { return rows_; }
-    [[nodiscard]] size_t scrollback_capacity() const noexcept { return scrollback_.capacity(); }
-    [[nodiscard]] size_t scrollback_size() const noexcept { return scrollback_.size(); }
 
     [[nodiscard]] const Row& row(int y) const noexcept { return visible_rows_[y]; }
     [[nodiscard]] Row& row(int y) noexcept { return visible_rows_[y]; }
@@ -106,12 +102,6 @@ public:
     void clear_hyperlink_from_extras(uint16_t hyperlink_id) noexcept;
     [[nodiscard]] size_t cell_extra_count() const noexcept { return cell_extras_.size(); }
     [[nodiscard]] size_t cell_extra_storage_bytes() const noexcept { return cell_extras_.storage_bytes(); }
-
-    // Scrollback retrieval: index 0 is oldest line in scrollback,
-    // (scrollback_size - 1) is line immediately above visible row 0.
-    [[nodiscard]] const Row& scrollback_row(size_t idx) const noexcept {
-        return scrollback_[idx];
-    }
 
     // Scroll region manipulation
     void scroll_up(int top, int bottom, int count, const Cell& empty_cell = Cell{});
@@ -145,11 +135,6 @@ public:
     void mark_all_dirty() noexcept;
     void reset_damage() noexcept;
 
-    // View offset into scrollback (0 = live screen, > 0 = viewing history)
-    [[nodiscard]] size_t view_offset() const noexcept { return view_offset_; }
-    void scroll_view(int delta) noexcept;
-    void reset_view() noexcept { view_offset_ = 0; }
-
     // Grapheme cluster store
     uint32_t store_combining_codepoints(std::span<const char32_t> cps);
     uint32_t append_combining_codepoint(uint32_t prefix, char32_t cp);
@@ -166,9 +151,7 @@ private:
     size_t max_scroll_ops_{8};
     int cols_;
     int rows_;
-    size_t view_offset_{0};
     std::vector<Row> visible_rows_;
-    util::RingBuffer<Row> scrollback_;
     CombiningStore combining_store_;
     CellExtraStore cell_extras_;
 };

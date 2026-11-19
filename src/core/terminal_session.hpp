@@ -26,7 +26,6 @@ struct SessionConfig {
     unsigned int font_dpi{96};
     render::AntialiasMode antialias{render::AntialiasMode::Grayscale};
     render::RenderConfig render_config;
-    size_t scrollback_lines{2000};
     std::array<uint32_t, 256> palette{kDefaultPalette};
     bool hold_on_exit{false};
 };

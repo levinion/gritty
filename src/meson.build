@@ -32,8 +32,6 @@ core_sources = files(
   'core/terminal_session.cpp',
   'core/kitty_graphics.cpp',
   'core/sixel_decoder.cpp',
-  'core/selection.cpp',
-  'core/overlays.cpp',
   'render/font_engine.cpp',
   'render/glyph_cache.cpp',
   'render/box_drawing.cpp',

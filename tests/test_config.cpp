@@ -26,9 +26,6 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
         foreground = "#abcdef"
         background = "#123456"
         regular1 = "#ff0000"
-
-        [scrollback]
-        lines = 5000
     )";
 
     auto res = TomlLoader::load_from_string(toml_str);
@@ -49,7 +46,6 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
     CHECK(cfg->colors.foreground == 0xFFABCDEF);
     CHECK(cfg->colors.background == 0xFF123456);
     CHECK(cfg->colors.palette[1] == 0x00FF0000);
-    CHECK(cfg->scrollback.lines == 5000);
 }
 
 TEST_CASE("TomlLoader deep-merge platform overrides") {

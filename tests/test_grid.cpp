@@ -4,11 +4,9 @@
 using namespace gritty::core;
 
 TEST_CASE("ScreenGrid initialization and cell access") {
-    ScreenGrid grid(80, 24, 100);
+    ScreenGrid grid(80, 24);
     CHECK(grid.cols() == 80);
     CHECK(grid.rows() == 24);
-    CHECK(grid.scrollback_size() == 0);
-    CHECK(grid.scrollback_capacity() == 100);
 
     Cell c;
     c.codepoint = U'A';
@@ -23,8 +21,8 @@ TEST_CASE("ScreenGrid initialization and cell access") {
     CHECK(read_back.fg.b() == 0);
 }
 
-TEST_CASE("ScreenGrid full screen scroll and scrollback") {
-    ScreenGrid grid(10, 4, 10);
+TEST_CASE("ScreenGrid full screen scroll discards top rows") {
+    ScreenGrid grid(10, 4);
     // Fill row 0 with '1', row 1 with '2', etc.
     for (int y = 0; y < 4; ++y) {
         for (int x = 0; x < 10; ++x) {
@@ -34,12 +32,8 @@ TEST_CASE("ScreenGrid full screen scroll and scrollback") {
         }
     }
 
-    CHECK(grid.scrollback_size() == 0);
-
-    // Scroll up by 1
+    // Scroll up by 1; the top row is gone, not retained for history.
     grid.scroll_up(0, 3, 1);
-    CHECK(grid.scrollback_size() == 1);
-    CHECK(grid.scrollback_row(0).cells[0].codepoint == U'0');
 
     // Row 0 should now have '1'
     CHECK(grid.cell(0, 0).codepoint == U'1');
@@ -50,15 +44,12 @@ TEST_CASE("ScreenGrid full screen scroll and scrollback") {
 
     // Scroll up by 2 more
     grid.scroll_up(0, 3, 2);
-    CHECK(grid.scrollback_size() == 3);
-    CHECK(grid.scrollback_row(1).cells[0].codepoint == U'1');
-    CHECK(grid.scrollback_row(2).cells[0].codepoint == U'2');
     CHECK(grid.cell(0, 0).codepoint == U'3');
     CHECK(grid.cell(0, 1).codepoint == ' ');
 }
 
-TEST_CASE("ScreenGrid margined scroll does not enter scrollback") {
-    ScreenGrid grid(10, 5, 10);
+TEST_CASE("ScreenGrid margined scroll preserves rows outside the region") {
+    ScreenGrid grid(10, 5);
     for (int y = 0; y < 5; ++y) {
         for (int x = 0; x < 10; ++x) {
             Cell c;
@@ -69,7 +60,6 @@ TEST_CASE("ScreenGrid margined scroll does not enter scrollback") {
 
     // Scroll margin between row 1 and row 3
     grid.scroll_up(1, 3, 1);
-    CHECK(grid.scrollback_size() == 0);
 
     CHECK(grid.cell(0, 0).codepoint == U'0'); // Untouched
     CHECK(grid.cell(0, 1).codepoint == U'2'); // Shifted up
@@ -79,7 +69,7 @@ TEST_CASE("ScreenGrid margined scroll does not enter scrollback") {
 }
 
 TEST_CASE("ScreenGrid erase line and display") {
-    ScreenGrid grid(10, 5, 10);
+    ScreenGrid grid(10, 5);
     for (int y = 0; y < 5; ++y) {
         for (int x = 0; x < 10; ++x) {
             Cell c;
@@ -110,7 +100,7 @@ TEST_CASE("ScreenGrid erase line and display") {
 }
 
 TEST_CASE("ScreenGrid cell insertion and deletion") {
-    ScreenGrid grid(5, 2, 10);
+    ScreenGrid grid(5, 2);
     for (int x = 0; x < 5; ++x) {
         Cell c;
         c.codepoint = U'A' + x;
@@ -138,7 +128,7 @@ TEST_CASE("ScreenGrid cell insertion and deletion") {
 }
 
 TEST_CASE("Whole-region scrolls record pending pixel shifts") {
-    ScreenGrid grid(10, 5, 0);
+    ScreenGrid grid(10, 5);
     std::vector<gritty::core::ScrollOp> ops;
     CHECK_FALSE(grid.has_pending_scroll());
 
@@ -172,7 +162,7 @@ TEST_CASE("Whole-region scrolls record pending pixel shifts") {
 }
 
 TEST_CASE("Distinct scroll regions queue independently with bounded fallback") {
-    ScreenGrid grid(10, 6, 0);
+    ScreenGrid grid(10, 6);
     std::vector<gritty::core::ScrollOp> ops;
 
     // Split panes: two regions scroll in the same frame.
@@ -215,7 +205,7 @@ TEST_CASE("Distinct scroll regions queue independently with bounded fallback") {
     CHECK_FALSE(grid.has_pending_scroll());
 
     // Insert/delete lines are scrolls too.
-    ScreenGrid lines(10, 5, 0);
+    ScreenGrid lines(10, 5);
     lines.delete_lines(1, 4, 1);
     lines.take_pending_scrolls(ops);
     REQUIRE(ops.size() == 1);

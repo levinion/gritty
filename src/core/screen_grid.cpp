@@ -27,8 +27,8 @@ void fill_cells(Cell* dst, size_t count, const Cell& value) noexcept {
 } // namespace
 
 
-ScreenGrid::ScreenGrid(int cols, int rows, size_t scrollback_capacity)
-    : cols_(cols), rows_(rows), scrollback_(scrollback_capacity) {
+ScreenGrid::ScreenGrid(int cols, int rows)
+    : cols_(cols), rows_(rows) {
     visible_rows_.resize(rows_);
     for (auto& row : visible_rows_) {
         row.cells.resize(cols_);
@@ -41,31 +41,15 @@ void ScreenGrid::resize(int new_cols, int new_rows) {
     scroll_ops_.clear();
 
     if (new_rows < rows_) {
-        // Pushing excess top rows into scrollback
-        int excess = rows_ - new_rows;
-        if (scrollback_.capacity() > 0) {
-            for (int i = 0; i < excess; ++i) {
-                scrollback_.push_back(std::move(visible_rows_[i]));
-            }
-        }
-        visible_rows_.erase(visible_rows_.begin(), visible_rows_.begin() + excess);
+        // Rows above the new viewport are discarded; tmux owns history.
+        visible_rows_.erase(visible_rows_.begin(), visible_rows_.begin() + (rows_ - new_rows));
+        collect_combining_garbage();
     } else if (new_rows > rows_) {
-        int add = new_rows - rows_;
-        // Pull from scrollback if available
-        while (add > 0 && !scrollback_.empty()) {
-            Row r = std::move(scrollback_.back());
-            scrollback_.pop_back();
-            r.cells.resize(new_cols);
-            r.mark_all_dirty(new_cols);
-            visible_rows_.insert(visible_rows_.begin(), std::move(r));
-            --add;
-        }
-        while (add > 0) {
+        for (int i = rows_; i < new_rows; ++i) {
             Row r;
             r.cells.resize(new_cols);
             r.mark_all_dirty(new_cols);
             visible_rows_.emplace_back(std::move(r));
-            --add;
         }
     }
 
@@ -73,22 +57,12 @@ void ScreenGrid::resize(int new_cols, int new_rows) {
     rows_ = new_rows;
 
     for (auto& row : visible_rows_) {
-        row.cells.resize(cols_);
-        if (row.cells.capacity() > 2 * static_cast<size_t>(cols_)) row.cells.shrink_to_fit();
+        if (row.cells.size() != static_cast<size_t>(cols_)) {
+            if (row.cells.capacity() > 2 * static_cast<size_t>(cols_))
+                std::vector<Cell>(cols_, Cell{}).swap(row.cells);
+            else row.cells.resize(cols_);
+        }
         row.mark_all_dirty(cols_);
-    }
-
-    if (view_offset_ > scrollback_.size()) {
-        view_offset_ = scrollback_.size();
-    }
-}
-
-void ScreenGrid::set_scrollback_capacity(size_t capacity) {
-    const bool shrinking = capacity < scrollback_.capacity();
-    scrollback_.set_capacity(capacity);
-    if (shrinking) collect_combining_garbage();
-    if (view_offset_ > scrollback_.size()) {
-        view_offset_ = scrollback_.size();
     }
 }
 
@@ -124,16 +98,16 @@ void ScreenGrid::clear_hyperlink_from_extras(uint16_t hyperlink_id) noexcept {
     };
     bool visible_affected = false;
     for (const auto& row : visible_rows_) visible_affected |= affected(row);
-    // Entries are interned and shared by visible/history cells; updating the
-    // entry in place updates every reference without allocating or changing IDs.
+    // Entries are interned and shared by visible cells; updating the entry in
+    // place updates every reference without allocating or changing IDs.
     cell_extras_.clear_hyperlink(hyperlink_id);
     if (visible_affected)
         for (auto& row : visible_rows_) row.mark_all_dirty(cols_);
 }
 
 void ScreenGrid::clear_row(Row& row, const Cell& empty_cell) {
-    // Old history can have a much wider geometry. Do not keep a formerly huge
-    // line allocation forever when recycling it into a narrower viewport.
+    // A row recycled by a scroll must not keep a stale wide allocation (for
+    // example after a shrink followed by a delete-lines operation).
     if (row.cells.size() != static_cast<size_t>(cols_)) {
         if (row.cells.capacity() > 2 * static_cast<size_t>(cols_))
             std::vector<Cell>(cols_, empty_cell).swap(row.cells);
@@ -197,12 +171,8 @@ void ScreenGrid::scroll_up(int top, int bottom, int count, const Cell& empty_cel
     if (top < 0 || bottom >= rows_ || top > bottom || count <= 0) return;
     count = std::min(count, bottom - top + 1);
 
-    if (top == 0 && bottom == rows_ - 1 && scrollback_.capacity() > 0) {
-        for (int i = 0; i < count; ++i)
-            scrollback_.exchange_back(visible_rows_[i]);
-    }
-    // Rotate ownership, not cell data. Once history is full, its oldest row
-    // becomes the new blank row without a free/allocate pair for every line.
+    // Rotate ownership, not cell data. The rows that leave the margin are
+    // wiped below, dropping their side-table references without a history copy.
     auto first = visible_rows_.begin() + top;
     auto last = visible_rows_.begin() + bottom + 1;
     std::rotate(first, first + count, last);
@@ -278,10 +248,7 @@ void ScreenGrid::erase_in_display(int x, int y, int mode, const Cell& empty_cell
                 erase_in_line(0, r, 2, empty_cell);
             }
             break;
-        case 3: // Erase scrollback only (foot term_erase_scrollback).
-            scrollback_.clear();
-            collect_combining_garbage();
-            view_offset_ = 0;
+        case 3: // DECSED 3: no scrollback to erase; tmux owns history.
             break;
         default:
             break;
@@ -341,17 +308,6 @@ void ScreenGrid::reset_damage() noexcept {
     }
 }
 
-void ScreenGrid::scroll_view(int delta) noexcept {
-    int new_offset = static_cast<int>(view_offset_) + delta;
-    if (new_offset < 0) {
-        view_offset_ = 0;
-    } else if (static_cast<size_t>(new_offset) > scrollback_.size()) {
-        view_offset_ = scrollback_.size();
-    } else {
-        view_offset_ = static_cast<size_t>(new_offset);
-    }
-}
-
 uint32_t ScreenGrid::store_combining_codepoints(std::span<const char32_t> cps) {
     if (combining_store_.needs_collection()) {
         // A caller may pass a span borrowed from this very store. Preserve its
@@ -381,7 +337,6 @@ void ScreenGrid::collect_combining_garbage(uint32_t preserve) {
         for (const auto& cell : row.cells) cell_extras_.mark(cell.extra_idx);
     };
     for (const auto& row : visible_rows_) mark_row(row);
-    for (size_t i = 0; i < scrollback_.size(); ++i) mark_row(scrollback_[i]);
     cell_extras_.mark_combining(combining_store_);
     cell_extras_.sweep();
     combining_store_.sweep();
