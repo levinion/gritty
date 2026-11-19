@@ -3,7 +3,9 @@
 #include "util/format.hpp"
 #include <array>
 #include <charconv>
+#include <cstring>
 #include <optional>
+#include <unistd.h>
 
 namespace gritty::core {
 
@@ -49,8 +51,141 @@ constexpr TermcapEntry kTermcaps[] = {
     {"Sxl", ""},        // Sixel graphics (tmux enables its image cache for this).
     {"Ms", "1b5d35323b25703125733b257032257307"},                       // OSC 52 ; Pc ; data BEL
     {"Smulx", "1b5b343a25703125646d"},                                  // CSI 4 : Ps m (extended underline)
-    {"Setulc", "1b5b35383a323a3a25703125643a25703225643a25703325646d"}, // CSI 58:2::r:g:b m
+    {"Setulc", "1b5b35383a323a3a25703125643a25703325646d"}, // CSI 58:2::r:g:b m
 };
+
+[[nodiscard]] bool equals_ignore_case(std::string_view text, std::string_view expected) noexcept {
+    if (text.size() != expected.size()) return false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lowered != expected[i]) return false;
+    }
+    return true;
+}
+
+[[nodiscard]] std::string_view trim_ascii(std::string_view text) noexcept {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
+    return text;
+}
+
+[[nodiscard]] platform::MouseCursorShape parse_cursor_shape(std::string_view name) noexcept {
+    name = trim_ascii(name);
+    using Shape = platform::MouseCursorShape;
+    if (equals_ignore_case(name, "text") || equals_ignore_case(name, "xterm") ||
+        equals_ignore_case(name, "ibeam")) return Shape::Text;
+    if (equals_ignore_case(name, "pointer") || equals_ignore_case(name, "hand2") ||
+        equals_ignore_case(name, "hand")) return Shape::Pointer;
+    if (equals_ignore_case(name, "ew-resize") || equals_ignore_case(name, "col-resize") ||
+        equals_ignore_case(name, "sb_h_double_arrow")) return Shape::EwResize;
+    if (equals_ignore_case(name, "ns-resize") || equals_ignore_case(name, "row-resize") ||
+        equals_ignore_case(name, "sb_v_double_arrow")) return Shape::NsResize;
+    if (equals_ignore_case(name, "nesw-resize")) return Shape::NeswResize;
+    if (equals_ignore_case(name, "nwse-resize")) return Shape::NwseResize;
+    if (equals_ignore_case(name, "crosshair")) return Shape::Crosshair;
+    if (equals_ignore_case(name, "move")) return Shape::Move;
+    if (equals_ignore_case(name, "not-allowed")) return Shape::NotAllowed;
+    if (equals_ignore_case(name, "none")) return Shape::Hidden;
+    return Shape::Default; // Empty and unknown names fall back.
+}
+
+[[nodiscard]] bool is_local_host(std::string_view host) noexcept {
+    if (host.empty() || equals_ignore_case(host, "localhost")) return true;
+    char buffer[256]{};
+    if (::gethostname(buffer, sizeof(buffer) - 1) != 0) return false;
+    const std::string_view local(buffer, std::strlen(buffer));
+    if (equals_ignore_case(host, local)) return true;
+    const auto dot = local.find('.');
+    return dot != std::string_view::npos && equals_ignore_case(host, local.substr(0, dot));
+}
+
+[[nodiscard]] int hex_nibble(char c) noexcept {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// OSC 7: file://<host>/<absolute path>. Reject remote hosts, NUL bytes and
+// malformed percent escapes before touching the engine's cwd.
+[[nodiscard]] std::optional<std::string> parse_file_url(std::string_view value) {
+    constexpr std::string_view scheme = "file://";
+    if (value.size() < scheme.size()) return std::nullopt;
+    for (size_t i = 0; i < scheme.size(); ++i) {
+        const char c = value[i];
+        if ((c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c) != scheme[i])
+            return std::nullopt;
+    }
+    value.remove_prefix(scheme.size());
+    const auto slash = value.find('/');
+    if (slash == std::string_view::npos || !is_local_host(value.substr(0, slash))) return std::nullopt;
+
+    std::string path;
+    path.reserve(value.size() - slash);
+    for (size_t i = slash; i < value.size(); ++i) {
+        const char c = value[i];
+        if (c == '%') {
+            if (i + 2 >= value.size()) return std::nullopt;
+            const int hi = hex_nibble(value[i + 1]);
+            const int lo = hex_nibble(value[i + 2]);
+            if (hi < 0 || lo < 0) return std::nullopt;
+            path.push_back(static_cast<char>((hi << 4) | lo));
+            i += 2;
+        } else {
+            path.push_back(c);
+        }
+    }
+    if (path.empty() || path.front() != '/' || path.find('\0') != std::string::npos)
+        return std::nullopt;
+    return path;
+}
+
+void append_decimal(std::string& out, uint32_t value) {
+    char digits[16]{};
+    const auto [end, ec] = std::to_chars(digits, digits + sizeof(digits), value);
+    if (ec == std::errc{}) out.append(digits, end);
+}
+
+void append_channel(std::string& out, uint32_t channel8) {
+    const uint32_t wide = channel8 * 257; // X11 8-bit -> 16-bit expansion.
+    char digits[4]{
+        static_cast<char>("0123456789abcdef"[(wide >> 12) & 15]),
+        static_cast<char>("0123456789abcdef"[(wide >> 8) & 15]),
+        static_cast<char>("0123456789abcdef"[(wide >> 4) & 15]),
+        static_cast<char>("0123456789abcdef"[wide & 15]),
+    };
+    out.append(digits, sizeof(digits));
+}
+
+[[nodiscard]] std::string color_reply(int command, uint32_t argb, bool with_st, int index = -1) {
+    std::string out = "\x1b]";
+    append_decimal(out, static_cast<uint32_t>(command));
+    out.push_back(';');
+    if (index >= 0) {
+        append_decimal(out, static_cast<uint32_t>(index));
+        out.push_back(';');
+    }
+    out += "rgb:";
+    append_channel(out, (argb >> 16) & 255);
+    out.push_back('/');
+    append_channel(out, (argb >> 8) & 255);
+    out.push_back('/');
+    append_channel(out, argb & 255);
+    if (with_st) out += "\x1b\\";
+    else out.push_back('\x07');
+    return out;
+}
+
+[[nodiscard]] bool parse_index(std::string_view text, int& out) noexcept {
+    if (text.empty()) return false;
+    int value = 0;
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc() || end != text.data() + text.size() || value < 0 || value > 255)
+        return false;
+    out = value;
+    return true;
+}
 
 } // namespace
 
@@ -96,6 +231,12 @@ void VtParser::update_default_color(int command, uint32_t rgb) {
     if (default_color_handler_) default_color_handler_(default_fg_, default_bg_);
 }
 
+void VtParser::update_cursor_color(uint32_t argb) {
+    if (cursor_color_ == argb) return;
+    cursor_color_ = argb;
+    if (cursor_color_handler_) cursor_color_handler_(argb);
+}
+
 void VtParser::handle_osc() {
     const std::string_view sequence = string_buffer_;
     const auto semicolon = sequence.find(';');
@@ -106,62 +247,139 @@ void VtParser::handle_osc() {
     auto [ptr, ec] = std::from_chars(cmd_str.data(), cmd_str.data() + cmd_str.size(), cmd);
     if (ec != std::errc() || ptr != cmd_str.data() + cmd_str.size()) return;
 
-    if (osc_handler_) {
-        osc_handler_(cmd, payload);
-    }
+    if (osc_handler_) osc_handler_(cmd, payload);
 
     switch (cmd) {
         case 0:
         case 2:
             engine_.set_window_title(payload);
             break;
-        case 7:
-            engine_.set_cwd(payload);
+        case 7: {
+            if (const auto path = parse_file_url(payload)) engine_.set_cwd(*path);
             break;
-        case 10:
-        case 11:
-            if (payload == "?") {
-                const auto color = cmd == 10 ? default_fg_ : default_bg_;
-                char reply[80];
-                const auto text = util::format_to_buffer(reply,
-                    "\x1b]{};rgb:{:04x}/{:04x}/{:04x}\x1b\\",
-                    cmd, ((color >> 16) & 255) * 257, ((color >> 8) & 255) * 257, (color & 255) * 257);
-                if (!text.empty()) send_response(text);
-            } else if (const auto rgb = parse_dynamic_rgb(payload)) {
-                update_default_color(cmd, *rgb);
+        }
+        case 4: {
+            // OSC 4 ; idx ; ? (repeatable), or OSC 4 ; idx ; colour.
+            size_t pos = 0;
+            while (pos < payload.size()) {
+                const auto next = payload.find(';', pos);
+                const auto token = payload.substr(pos, next == std::string_view::npos
+                    ? std::string_view::npos : next - pos);
+                int index = -1;
+                if (token == "?" || !parse_index(token, index)) {
+                    if (next == std::string_view::npos) break;
+                    pos = next + 1;
+                    continue;
+                }
+                const size_t value_begin = next == std::string_view::npos ? payload.size() : next + 1;
+                const auto value_end = payload.find(';', value_begin);
+                const auto value = payload.substr(value_begin, value_end == std::string_view::npos
+                    ? std::string_view::npos : value_end - value_begin);
+                if (value == "?") {
+                    send_response(color_reply(4, engine_.palette_color(static_cast<uint8_t>(index)),
+                                              osc_reply_with_st_, index));
+                } else if (const auto rgb = parse_dynamic_rgb(value)) {
+                    engine_.set_palette_color(static_cast<uint8_t>(index), *rgb);
+                }
+                if (value_end == std::string_view::npos) break;
+                pos = value_end + 1;
             }
             break;
+        }
+        case 10:
+        case 11:
+        case 12: {
+            if (payload == "?") {
+                const auto color = cmd == 10 ? default_fg_ : cmd == 11 ? default_bg_ : cursor_color_;
+                send_response(color_reply(cmd, color, osc_reply_with_st_));
+            } else if (const auto rgb = parse_dynamic_rgb(payload)) {
+                if (cmd == 12) update_cursor_color((cursor_color_ & 0xff000000) | *rgb);
+                else update_default_color(cmd, *rgb);
+            }
+            break;
+        }
+        case 104: {
+            if (payload.empty() || payload == ";") {
+                engine_.reset_palette();
+            } else {
+                size_t pos = 0;
+                while (pos < payload.size()) {
+                    const auto end = payload.find(';', pos);
+                    const auto token = payload.substr(pos, end == std::string_view::npos
+                        ? std::string_view::npos : end - pos);
+                    int index = -1;
+                    if (parse_index(token, index))
+                        engine_.reset_palette_color(static_cast<uint8_t>(index));
+                    if (end == std::string_view::npos) break;
+                    pos = end + 1;
+                }
+            }
+            break;
+        }
         case 110:
         case 111:
             update_default_color(cmd - 100, cmd == 110 ? configured_fg_ : configured_bg_);
             break;
+        case 112:
+            update_cursor_color(configured_cursor_);
+            break;
+        case 22: {
+            const auto shape = parse_cursor_shape(payload);
+            engine_.set_mouse_cursor_shape(shape);
+            if (mouse_cursor_shape_handler_) mouse_cursor_shape_handler_(shape);
+            break;
+        }
         case 52: {
-            // OSC 52 ; Pc ; base64(ST) — clipboard write, used by tmux's
-            // set-clipboard. Queries ("?") are intentionally not answered.
-            const auto selection_end = payload.find(';');
-            if (selection_end == std::string_view::npos || !clipboard_handler_) break;
-            const auto data = payload.substr(selection_end + 1);
-            if (data.empty() || data == "?") break;
+            // OSC 52 ; target ; payload. Writes and clear remain available;
+            // reads are opt-in via main.osc52_read.
+            const auto target_end = payload.find(';');
+            if (target_end == std::string_view::npos) break;
+            const auto target = payload.substr(0, target_end);
+            const auto data = payload.substr(target_end + 1);
+            if (data == "?") {
+                if (!osc52_read_enabled_ || !clipboard_read_handler_) break;
+                std::string reply = "\x1b]52;";
+                reply.append(target.empty() ? "c" : target.data(),
+                    target.empty() ? size_t{1} : target.size());
+                reply.push_back(';');
+                reply += util::encode_base64(clipboard_read_handler_());
+                if (osc_reply_with_st_) reply += "\x1b\\";
+                else reply.push_back('\x07');
+                send_response(reply);
+                break;
+            }
+            if (data == "!") { // Explicit clipboard clear.
+                if (clipboard_handler_) clipboard_handler_("");
+                break;
+            }
+            if (data.empty() || !clipboard_handler_) break;
             if (auto decoded = decode_osc52_base64(data, 1024 * 1024)) {
                 if (!decoded->empty()) clipboard_handler_(*decoded);
             }
             break;
         }
+        case 777: {
+            // OSC 777 ; notify ; title ; body (body may contain ';').
+            constexpr std::string_view prefix = "notify;";
+            if (!payload.starts_with(prefix) || !notification_handler_) break;
+            const auto rest = payload.substr(prefix.size());
+            const auto split = rest.find(';');
+            if (split == std::string_view::npos) break;
+            notification_handler_(rest.substr(0, split), rest.substr(split + 1));
+            break;
+        }
         case 8: {
             // OSC 8 ; params ; url
-            size_t second_semi = payload.find(';');
-            if (second_semi != std::string::npos) {
-                std::string_view url = payload.substr(second_semi + 1);
-                if (url.empty()) {
-                    engine_.clear_current_hyperlink();
-                } else {
-                    engine_.set_current_hyperlink(url);
-                }
+            const auto second_semi = payload.find(';');
+            if (second_semi != std::string_view::npos) {
+                const std::string_view url = payload.substr(second_semi + 1);
+                if (url.empty()) engine_.clear_current_hyperlink();
+                else engine_.set_current_hyperlink(url);
             }
             break;
         }
         default:
-            break;
+            break; // Unknown OSC payloads are already consumed by the parser.
     }
 }
 
@@ -183,6 +401,13 @@ void VtParser::handle_dcs() {
             inner.osc_handler_ = osc_handler_;
             inner.response_cb_ = response_cb_;
             inner.clipboard_handler_ = clipboard_handler_;
+            inner.clipboard_read_handler_ = clipboard_read_handler_;
+            inner.osc52_read_enabled_ = osc52_read_enabled_;
+            inner.notification_handler_ = notification_handler_;
+            inner.cursor_color_handler_ = cursor_color_handler_;
+            inner.mouse_cursor_shape_handler_ = mouse_cursor_shape_handler_;
+            inner.cursor_color_ = cursor_color_;
+            inner.configured_cursor_ = configured_cursor_;
             inner.sync_handler_ = sync_handler_;
             inner.default_color_handler_ = default_color_handler_;
             inner.feed(data.substr(5));

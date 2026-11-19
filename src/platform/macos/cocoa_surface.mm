@@ -5,6 +5,7 @@
 #include <utf8proc.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UserNotifications/UserNotifications.h>
 
 namespace gritty::platform::macos {
 
@@ -438,6 +439,41 @@ void CocoaLayerSurface::on_live_resize(bool active) {
 
 void CocoaLayerSurface::on_window_focus(bool focused) {
     if (focus_cb_) focus_cb_(focused);
+}
+
+void CocoaLayerSurface::set_cursor_shape(MouseCursorShape shape) {
+    cursor_shape_ = shape;
+    @autoreleasepool {
+        if (shape == MouseCursorShape::Hidden) [NSCursor setHiddenUntilMouseMoves:YES];
+        if (native_window_ && native_view_) {
+            [(NSWindow*)native_window_ invalidateCursorRectsForView:(NSView*)native_view_];
+        }
+    }
+}
+
+void CocoaLayerSurface::send_notification(std::string_view title, std::string_view body) {
+    @autoreleasepool {
+        if (@available(macOS 10.14, *)) {
+            // A bare CLI binary has no bundle identifier; registering a
+            // notification identity would be wrong (and would prompt).
+            if (![[NSBundle mainBundle] bundleIdentifier]) return;
+            NSString* ns_title = [[[NSString alloc] initWithBytes:title.data()
+                length:title.size() encoding:NSUTF8StringEncoding] autorelease];
+            NSString* ns_body = [[[NSString alloc] initWithBytes:body.data()
+                length:body.size() encoding:NSUTF8StringEncoding] autorelease];
+            if (!ns_title || !ns_body) return;
+            UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+            UNMutableNotificationContent* content = [[[UNMutableNotificationContent alloc] init] autorelease];
+            content.title = ns_title;
+            content.body = ns_body;
+            UNNotificationRequest* request = [UNNotificationRequest
+                requestWithIdentifier:[[NSUUID UUID] UUIDString]
+                content:content trigger:nil];
+            [center addNotificationRequest:request withCompletionHandler:^(NSError* error) {
+                (void)error; // Permission denial is a silent no-op.
+            }];
+        }
+    }
 }
 
 void CocoaLayerSurface::open_url(std::string_view url) {

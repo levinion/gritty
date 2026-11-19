@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,5 +23,8 @@ std::optional<std::vector<uint8_t>> decode_base64(
     Base64Mode mode,
     size_t max_bytes
 );
+
+// Standard padded base64, used for OSC 52 clipboard read replies.
+std::string encode_base64(std::string_view bytes);
 
 } // namespace gritty::util

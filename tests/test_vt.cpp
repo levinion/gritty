@@ -1,4 +1,6 @@
 #include <doctest/doctest.h>
+#include <iterator>
+#include <utility>
 #include "core/terminal_engine.hpp"
 #include "core/vt_parser.hpp"
 
@@ -220,7 +222,7 @@ TEST_CASE("VtParser OSC Window Title and CWD") {
 
     // OSC 7 ; file:///path BEL (\x07)
     parser.feed("\x1b]7;file:///home/user/code\x07");
-    CHECK(engine.cwd() == "file:///home/user/code");
+    CHECK(engine.cwd() == "/home/user/code"); // Percent-decoded absolute path.
 }
 
 TEST_CASE("VtParser OSC 8 Hyperlinks") {
@@ -527,4 +529,121 @@ TEST_CASE("Bracketed paste payloads are wrapped and cannot close themselves") {
     parser.feed("\x1b[?2004l");
     CHECK_FALSE(engine.bracketed_paste());
     CHECK(engine.format_paste_payload("plain") == "plain");
+}
+
+TEST_CASE("OSC 22 maps CSS/X11 pointer names and RIS resets the pointer") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    int changes = 0;
+    gritty::platform::MouseCursorShape last{gritty::platform::MouseCursorShape::Default};
+    parser.set_mouse_cursor_shape_handler([&](gritty::platform::MouseCursorShape shape) {
+        last = shape;
+        ++changes;
+    });
+    using Shape = gritty::platform::MouseCursorShape;
+    const std::pair<const char*, Shape> cases[] = {
+        {"default", Shape::Default}, {"left_ptr", Shape::Default},
+        {"text", Shape::Text}, {"xterm", Shape::Text},
+        {"pointer", Shape::Pointer}, {"hand2", Shape::Pointer},
+        {"ew-resize", Shape::EwResize}, {"col-resize", Shape::EwResize},
+        {"sb_h_double_arrow", Shape::EwResize},
+        {"ns-resize", Shape::NsResize}, {"row-resize", Shape::NsResize},
+        {"sb_v_double_arrow", Shape::NsResize},
+        {"nesw-resize", Shape::NeswResize}, {"nwse-resize", Shape::NwseResize},
+        {"crosshair", Shape::Crosshair}, {"move", Shape::Move},
+        {"not-allowed", Shape::NotAllowed}, {"none", Shape::Hidden},
+        {"bogus-name", Shape::Default},
+    };
+    for (const auto& [name, expected] : cases) {
+        INFO(name);
+        parser.feed(std::string("\x1b]22;") + name + "\x07");
+        CHECK(engine.mouse_cursor_shape() == expected);
+        CHECK(last == expected);
+    }
+    parser.feed("\x1b]22;text\x07");
+    REQUIRE(engine.mouse_cursor_shape() == Shape::Text);
+    parser.feed("\x1b" "c");
+    CHECK(engine.mouse_cursor_shape() == Shape::Default);
+    CHECK(last == Shape::Default);
+    CHECK(changes == static_cast<int>(std::size(cases)) + 2);
+
+    // A query's terminator is mirrored, including single-byte ST.
+    std::string replies;
+    parser.set_response_callback([&](std::string_view reply) { replies.append(reply); });
+    parser.feed("\x1b]10;?\x9c");
+    CHECK(replies == "\x1b]10;rgb:dddd/dddd/dddd\x1b\\");
+}
+
+TEST_CASE("OSC 7 accepts only local file URLs and decodes the path") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    parser.feed("\x1b]7;file:///Users/test/my%20dir\x07");
+    CHECK(engine.cwd() == "/Users/test/my dir");
+    parser.feed("\x1b]7;FILE://LOCALHOST/tmp/x\x1b\\");
+    CHECK(engine.cwd() == "/tmp/x");
+    parser.feed("\x1b]7;file://remote.example/tmp/x\x07");
+    CHECK(engine.cwd() == "/tmp/x");
+    parser.feed("\x1b]7;file:///tmp/%00bad\x07");
+    CHECK(engine.cwd() == "/tmp/x");
+    parser.feed("\x1b]7;file:///tmp/%zz\x07");
+    CHECK(engine.cwd() == "/tmp/x");
+    parser.feed("\x1b]7;relative/path\x07");
+    CHECK(engine.cwd() == "/tmp/x");
+}
+
+TEST_CASE("OSC 777 notifications keep semicolons in the body") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    std::string title, body;
+    int calls = 0;
+    parser.set_notification_handler([&](std::string_view t, std::string_view b) {
+        title.assign(t);
+        body.assign(b);
+        ++calls;
+    });
+    parser.feed("\x1b]777;notify;Title;Body;with;semicolon\x07");
+    REQUIRE(calls == 1);
+    CHECK(title == "Title");
+    CHECK(body == "Body;with;semicolon");
+    parser.feed("\x1b]777;notify;NoBody\x1b\\");
+    CHECK(calls == 1);
+}
+
+TEST_CASE("OSC 52 read replies are off by default and opt-in otherwise") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    std::string replies, written = "stale";
+    int writes = 0;
+    parser.set_response_callback([&](std::string_view reply) { replies.append(reply); });
+    parser.set_clipboard_handler([&](std::string_view text) {
+        written.assign(text);
+        ++writes;
+    });
+    parser.feed("\x1b]52;c;!\x07"); // Explicit clear must reach the clipboard.
+    CHECK(writes == 1);
+    CHECK(written.empty());
+    parser.feed("\x1b]52;c;?\x07");
+    CHECK(replies.empty());
+
+    parser.set_osc52_read_enabled(true);
+    parser.set_clipboard_read_handler([] { return std::string("secret"); });
+    parser.feed("\x1b]52;c;?\x07");
+    CHECK(replies == "\x1b]52;c;c2VjcmV0\x07");
+    replies.clear();
+    parser.feed("\x1b]52;c;?\x1b\\");
+    CHECK(replies == "\x1b]52;c;c2VjcmV0\x1b\\");
+}
+
+TEST_CASE("Unknown and oversized OSC payloads are consumed without grid output") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    parser.feed("\x1b]9;4;1;50\x07\x1b]133;A\x1b\\");
+    parser.feed("\x1b]1337;" + std::string(256 * 1024, 'x') + "\x07");
+    for (int y = 0; y < engine.rows(); ++y)
+        for (int x = 0; x < engine.cols(); ++x)
+            CHECK(engine.grid().cell(x, y).codepoint == U' ');
+    parser.feed("OK");
+    CHECK(engine.grid().cell(0, 0).codepoint == U'O');
+    CHECK(engine.grid().cell(1, 0).codepoint == U'K');
+    CHECK(engine.cursor_col() == 2);
 }

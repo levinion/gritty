@@ -89,9 +89,11 @@ size_t string_payload_run(const uint8_t* data, size_t length, bool osc) {
     const uint8x16_t can = vdupq_n_u8(0x18);
     const uint8x16_t sub = vdupq_n_u8(0x1a);
     const uint8x16_t bel = vdupq_n_u8(0x07);
+    const uint8x16_t st = vdupq_n_u8(0x9c);
     for (; i + 16 <= length; i += 16) {
         const uint8x16_t v = vld1q_u8(data + i);
         uint8x16_t bad = vorrq_u8(vceqq_u8(v, esc), vorrq_u8(vceqq_u8(v, can), vceqq_u8(v, sub)));
+        bad = vorrq_u8(bad, vceqq_u8(v, st)); // Single-byte ST.
         if (osc) bad = vorrq_u8(bad, vceqq_u8(v, bel));
         if (vmaxvq_u8(bad) == 0) continue;
         const uint8x8_t packed = vshrn_n_u16(vreinterpretq_u16_u8(bad), 4);
@@ -102,7 +104,8 @@ size_t string_payload_run(const uint8_t* data, size_t length, bool osc) {
 #endif
     while (i < length) {
         const uint8_t byte = data[i];
-        if (byte == 0x1b || byte == 0x18 || byte == 0x1a || (osc && byte == 0x07)) break;
+        if (byte == 0x1b || byte == 0x18 || byte == 0x1a || byte == 0x9c ||
+            (osc && byte == 0x07)) break;
         ++i;
     }
     return i;
@@ -334,6 +337,8 @@ void VtParser::process_byte(uint8_t byte) {
             dcs_tmux_escape_pending_ = true;
             return;
         }
+        // ESC \ is the two-byte ST; every OSC terminated by ESC replies with ST.
+        if (state_ == ParserState::OscString) osc_reply_with_st_ = true;
         finish_string();
         clear_sequence();
         utf8_state_ = 0;
@@ -344,6 +349,11 @@ void VtParser::process_byte(uint8_t byte) {
         state_ == ParserState::ApcString || state_ == ParserState::IgnoredString) {
         // BEL terminates OSC only. DCS/APC are terminated by ST, not BEL.
         if (byte == 0x07 && state_ == ParserState::OscString) {
+            osc_reply_with_st_ = false;
+            finish_string();
+            state_ = ParserState::Ground;
+        } else if (byte == 0x9c && state_ != ParserState::IgnoredString) {
+            if (state_ == ParserState::OscString) osc_reply_with_st_ = true;
             finish_string();
             state_ = ParserState::Ground;
         } else if (state_ != ParserState::IgnoredString) append_string(byte);
@@ -441,7 +451,11 @@ void VtParser::handle_escape(uint8_t byte) {
     }
     switch (byte) {
         case '[': clear_sequence(); state_ = ParserState::CsiEntry; break;
-        case ']': state_ = ParserState::OscString; string_type_ = StringType::Osc; break;
+        case ']':
+            osc_reply_with_st_ = false;
+            state_ = ParserState::OscString;
+            string_type_ = StringType::Osc;
+            break;
         case 'P': state_ = ParserState::DcsEntry; string_type_ = StringType::Dcs; break;
         case '_': state_ = ParserState::ApcString; string_type_ = StringType::Apc; break;
         case 'X': case '^': state_ = ParserState::IgnoredString; break;
@@ -455,6 +469,9 @@ void VtParser::handle_escape(uint8_t byte) {
             engine_.reset();
             update_default_color(10, configured_fg_);
             update_default_color(11, configured_bg_);
+            update_cursor_color(configured_cursor_);
+            if (mouse_cursor_shape_handler_)
+                mouse_cursor_shape_handler_(engine_.mouse_cursor_shape());
             if (sync_handler_) sync_handler_(false);
             break;
         default: break;

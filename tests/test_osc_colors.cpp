@@ -4,10 +4,11 @@
 #include "core/vt_parser.hpp"
 
 namespace {
-std::string color_reply(int command, uint32_t color) {
+std::string color_reply(int command, uint32_t color, bool with_st = true) {
     char text[80];
-    std::snprintf(text, sizeof(text), "\033]%d;rgb:%04x/%04x/%04x\033\\", command,
-                  ((color >> 16) & 255) * 257, ((color >> 8) & 255) * 257, (color & 255) * 257);
+    std::snprintf(text, sizeof(text), "\033]%d;rgb:%04x/%04x/%04x%s", command,
+                  ((color >> 16) & 255) * 257, ((color >> 8) & 255) * 257, (color & 255) * 257,
+                  with_st ? "\033\\" : "\a");
     return text;
 }
 }
@@ -39,7 +40,8 @@ TEST_CASE("OSC default colors use bounded foot-style hex components and notify r
         CHECK(bg == (0x80000000 | item.rgb));
         CHECK(updates == 2);
         parser.feed("\033]10;?\a\033]11;?\033\\");
-        CHECK(replies == color_reply(10, fg) + color_reply(11, bg));
+        // Replies mirror each request's own terminator.
+        CHECK(replies == color_reply(10, fg, false) + color_reply(11, bg, true));
         parser.feed(sequence); // Identical colors must not force another full redraw.
         CHECK(updates == 2);
         parser.feed("\033]110\a\033]111\033\\"); // Resets have no semicolon.
@@ -51,6 +53,47 @@ TEST_CASE("OSC default colors use bounded foot-style hex components and notify r
         CHECK(fg == 0xff010203);
         CHECK(bg == 0x80040506);
     }
+}
+
+TEST_CASE("OSC 4/12 queries and palette resets use request terminators") {
+    gritty::core::TerminalEngine engine(4, 2);
+    gritty::core::VtParser parser(engine);
+    parser.set_default_colors(0xff010203, 0x80040506, 0xff0a0b0c);
+    std::string replies;
+    parser.set_response_callback([&](std::string_view reply) { replies.append(reply); });
+
+    parser.feed("\033]10;?\a\033]11;?\033\\\033]12;?\a");
+    CHECK(replies == color_reply(10, 0xff010203, false) + color_reply(11, 0x80040506, true) +
+          color_reply(12, 0xff0a0b0c, false));
+
+    replies.clear();
+    parser.feed("\033]4;1;?;2;?\033\\");
+    const std::string indexed_st = "\033]4;1;rgb:cccc/0404/0303\033\\"
+                                   "\033]4;2;rgb:1919/cbcb/0000\033\\";
+    CHECK(replies == indexed_st);
+    const std::string indexed = "\033]4;1;rgb:cccc/0404/0303\a"
+                                "\033]4;2;rgb:1919/cbcb/0000\a";
+    replies.clear();
+    parser.feed("\033]4;1;?;2;?\a");
+    CHECK(replies == indexed);
+
+    parser.feed("\033]4;1;#010203\a");
+    CHECK(engine.palette_color(1) == 0x010203);
+    parser.feed("\033]104;1\a");
+    CHECK(engine.palette_color(1) == 0xcc0403);
+    parser.feed("\033]4;1;#010203\a\033]104;\033\\");
+    CHECK(engine.palette_color(1) == 0xcc0403);
+    parser.feed("\033]4;2;#010203\a\033]104\a");
+    CHECK(engine.palette_color(2) == 0x19cb00);
+
+    parser.feed("\033]12;#112233\a");
+    replies.clear();
+    parser.feed("\033]12;?\a");
+    CHECK(replies == color_reply(12, 0xff112233, false));
+    parser.feed("\033]112\a");
+    replies.clear();
+    parser.feed("\033]12;?\a");
+    CHECK(replies == color_reply(12, 0xff0a0b0c, false));
 }
 
 TEST_CASE("Malformed OSC colors and cancelled setters cannot change query or renderer state") {
@@ -70,5 +113,5 @@ TEST_CASE("Malformed OSC colors and cancelled setters cannot change query or ren
     parser.feed("\033]10;#ffffff\030\033]11;#ffffff\032");
     parser.feed("\033]10;?\a\033]11;?\a");
     CHECK(updates == 0);
-    CHECK(replies == color_reply(10, 0xff010203) + color_reply(11, 0x80040506));
+    CHECK(replies == color_reply(10, 0xff010203, false) + color_reply(11, 0x80040506, false));
 }

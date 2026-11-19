@@ -75,7 +75,7 @@ TEST_CASE("tmux OSC default color queries receive replies rather than time out")
     std::string replies;
     parser.set_response_callback([&](std::string_view value) { replies += value; });
     parser.feed("\x1b]10;?\x1b\\\x1b]11;?\x07");
-    CHECK(replies == "\x1b]10;rgb:dddd/dddd/dddd\x1b\\\x1b]11;rgb:1111/1111/1111\x1b\\");
+    CHECK(replies == "\x1b]10;rgb:dddd/dddd/dddd\x1b\\\x1b]11;rgb:1111/1111/1111\x07");
 }
 
 TEST_CASE("foot alternate screen modes distinguish cursor save from screen switching") {

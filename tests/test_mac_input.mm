@@ -102,6 +102,24 @@ TEST_CASE("Cocoa Command chords are swallowed and Cmd+V pastes the pasteboard") 
     }
 }
 
+TEST_CASE("Cocoa surface records OSC 22 pointer shapes") {
+    @autoreleasepool {
+        gritty::platform::macos::CocoaLayerSurface surface(80, 25);
+        using Shape = gritty::platform::MouseCursorShape;
+        CHECK(surface.cursor_shape() == Shape::Default);
+        surface.set_cursor_shape(Shape::Text);
+        CHECK(surface.cursor_shape() == Shape::Text);
+        surface.set_cursor_shape(Shape::NotAllowed);
+        CHECK(surface.cursor_shape() == Shape::NotAllowed);
+        surface.set_cursor_shape(Shape::Hidden);
+        CHECK(surface.cursor_shape() == Shape::Hidden);
+        surface.set_cursor_shape(Shape::Default);
+        CHECK(surface.cursor_shape() == Shape::Default);
+        // Bare CLI test binary has no bundle ID: notifications must no-op.
+        surface.send_notification("title", "body");
+    }
+}
+
 TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
     @autoreleasepool {
         auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);

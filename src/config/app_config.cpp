@@ -117,9 +117,15 @@ std::expected<void, std::string> AppConfig::apply_override(
     if (lowered == "main.app_id") { main.app_id = value; return {}; }
     if (lowered == "font.family") { font.family = value; return {}; }
 
+    bool flag = false;
+    if (lowered == "main.osc52_read") {
+        if (!parse_bool(value, flag)) return invalid(key, value);
+        main.osc52_read = flag;
+        return {};
+    }
+
     double real = 0.0;
     int64_t integer = 0;
-    bool flag = false;
     std::string mode;
 
     if (lowered == "font.size") {

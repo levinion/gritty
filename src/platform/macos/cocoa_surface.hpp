@@ -44,6 +44,9 @@ public:
     void set_transparent(bool transparent) override;
     void set_decorations(WindowDecorations decorations) override;
     [[nodiscard]] WindowDecorations decorations() const noexcept override { return decorations_; }
+    void set_cursor_shape(MouseCursorShape shape) override;
+    [[nodiscard]] MouseCursorShape cursor_shape() const noexcept { return cursor_shape_; }
+    void send_notification(std::string_view title, std::string_view body) override;
     [[nodiscard]] bool mouse_reporting() const noexcept {
         return mouse_reporting_cb_ && mouse_reporting_cb_();
     }
@@ -117,6 +120,7 @@ private:
     size_t presented_frames_{0};
     bool transparent_{false};
     WindowDecorations decorations_{WindowDecorations::Full};
+    MouseCursorShape cursor_shape_{MouseCursorShape::Default};
     std::string window_title_{"Gritty"};
     void* native_window_{nullptr};
     void* native_view_{nullptr};

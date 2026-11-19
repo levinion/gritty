@@ -27,6 +27,8 @@ struct SessionConfig {
     render::AntialiasMode antialias{render::AntialiasMode::Grayscale};
     render::RenderConfig render_config;
     std::array<uint32_t, 256> palette{kDefaultPalette};
+    // Mirrors config::MainConfig::osc52_read.
+    bool osc52_read{false};
     bool hold_on_exit{false};
 };
 

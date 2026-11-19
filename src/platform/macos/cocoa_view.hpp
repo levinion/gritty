@@ -22,6 +22,8 @@ namespace gritty::platform::macos { class CocoaLayerSurface; }
 - (BOOL)requestFrame;
 - (void)stopFrames;
 - (void)sendKeyCode:(gritty::input::KeyCode)key;
+- (void)resetCursorRects;
+- (void)cursorUpdate:(NSEvent*)event;
 @end
 
 @interface GrittyWindowDelegate : NSObject <NSWindowDelegate> {

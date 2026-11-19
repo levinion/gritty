@@ -34,6 +34,13 @@ TerminalEngine::TerminalEngine(int cols, int rows)
     for (auto& stack : kitty_keyboard_stacks_) stack.reserve(64);
 }
 
+void TerminalEngine::configure_initial_colors(uint32_t foreground, uint32_t background,
+                                              uint32_t cursor_color) noexcept {
+    configured_fg_ = foreground;
+    configured_bg_ = background;
+    configured_cursor_ = cursor_color;
+}
+
 void TerminalEngine::configure_palette(const std::array<uint32_t, 256>& colors) noexcept {
     configured_palette_ = colors;
     for (auto& color : configured_palette_) color &= 0xffffff;
@@ -46,6 +53,10 @@ void TerminalEngine::set_palette_color(uint8_t index, uint32_t rgb24) noexcept {
     palette_[index] = rgb24;
     primary_grid_.mark_all_dirty();
     alt_grid_.mark_all_dirty();
+}
+
+void TerminalEngine::reset_palette_color(uint8_t index) noexcept {
+    set_palette_color(index, configured_palette_[index]);
 }
 
 void TerminalEngine::reset_palette() noexcept {

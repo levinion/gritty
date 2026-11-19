@@ -20,6 +20,32 @@ constexpr bool is_whitespace(char c) noexcept {
 
 } // namespace
 
+std::string encode_base64(std::string_view bytes) {
+    static constexpr char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((bytes.size() + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 3 <= bytes.size(); i += 3) {
+        const uint32_t word = (static_cast<uint32_t>(static_cast<uint8_t>(bytes[i])) << 16) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(bytes[i + 1])) << 8) |
+            static_cast<uint32_t>(static_cast<uint8_t>(bytes[i + 2]));
+        out.push_back(alphabet[(word >> 18) & 63]);
+        out.push_back(alphabet[(word >> 12) & 63]);
+        out.push_back(alphabet[(word >> 6) & 63]);
+        out.push_back(alphabet[word & 63]);
+    }
+    if (i < bytes.size()) {
+        uint32_t word = static_cast<uint32_t>(static_cast<uint8_t>(bytes[i])) << 16;
+        if (i + 1 < bytes.size()) word |= static_cast<uint32_t>(static_cast<uint8_t>(bytes[i + 1])) << 8;
+        out.push_back(alphabet[(word >> 18) & 63]);
+        out.push_back(alphabet[(word >> 12) & 63]);
+        out.push_back(i + 1 < bytes.size() ? alphabet[(word >> 6) & 63] : '=');
+        out.push_back('=');
+    }
+    return out;
+}
+
 std::optional<std::vector<uint8_t>> decode_base64(
     std::string_view input,
     Base64Mode mode,

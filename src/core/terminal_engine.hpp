@@ -12,6 +12,7 @@
 #include "core/kitty_graphics.hpp"
 #include "util/raii.hpp"
 #include "core/palette.hpp"
+#include "platform/pal_interfaces.hpp"
 
 namespace gritty::core {
 
@@ -121,6 +122,14 @@ public:
     void set_cursor_shape(CursorShape s, bool blink) noexcept {
         cursor_.shape = s;
         cursor_.blink = blink;
+    }
+
+    // OSC 22 pointer shape; reset to Default by RIS.
+    [[nodiscard]] platform::MouseCursorShape mouse_cursor_shape() const noexcept {
+        return mouse_cursor_shape_;
+    }
+    void set_mouse_cursor_shape(platform::MouseCursorShape shape) noexcept {
+        mouse_cursor_shape_ = shape;
     }
 
     // Cursor movement
@@ -245,8 +254,15 @@ public:
     // Palette management (256 colors)
     [[nodiscard]] uint32_t palette_color(uint8_t index) const noexcept { return palette_[index]; }
     void set_palette_color(uint8_t index, uint32_t rgb24) noexcept;
+    void reset_palette_color(uint8_t index) noexcept;
     void configure_palette(const std::array<uint32_t, 256>& colors) noexcept;
     void reset_palette() noexcept;
+    // Immutable initial colour snapshot used by OSC resets and RIS.
+    void configure_initial_colors(uint32_t foreground, uint32_t background,
+                                  uint32_t cursor_color) noexcept;
+    [[nodiscard]] uint32_t configured_foreground() const noexcept { return configured_fg_; }
+    [[nodiscard]] uint32_t configured_background() const noexcept { return configured_bg_; }
+    [[nodiscard]] uint32_t configured_cursor_color() const noexcept { return configured_cursor_; }
 
     // Window title & OSC properties
     [[nodiscard]] std::string_view window_title() const noexcept { return window_title_; }
@@ -301,6 +317,7 @@ private:
 
     MouseTrackingMode mouse_tracking_{MouseTrackingMode::None};
     MouseFormat mouse_format_{MouseFormat::Normal};
+    platform::MouseCursorShape mouse_cursor_shape_{platform::MouseCursorShape::Default};
 
     std::array<std::vector<uint32_t>, 2> kitty_keyboard_stacks_;
     std::vector<PlacedImage> images_;
@@ -308,6 +325,9 @@ private:
     std::vector<bool> tabs_;
     std::array<uint32_t, 256> palette_;
     std::array<uint32_t, 256> configured_palette_{kDefaultPalette};
+    uint32_t configured_fg_{0xffdddddd};
+    uint32_t configured_bg_{0xff111111};
+    uint32_t configured_cursor_{0xffffffff};
 
     std::string window_title_;
     std::string cwd_;

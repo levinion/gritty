@@ -19,6 +19,8 @@ struct MainConfig {
     std::string term{"xterm-256color"};
     std::string title{"Gritty"};
     std::string app_id{"gritty"};
+    // Opt-in: let a child answer OSC 52 clipboard read queries.
+    bool osc52_read{false};
 };
 
 struct FontConfig {

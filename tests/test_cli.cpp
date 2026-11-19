@@ -94,6 +94,7 @@ TEST_CASE("CLI command passthrough stops option parsing immediately") {
 TEST_CASE("CLI collects and applies option overrides") {
     const auto args = argv_of({
         "-o", "main.title=Override", "-omain.app_id=com.gritty", "-ofont.size=11.5",
+        "-omain.osc52_read=true",
         "--option=colors.background=\"#112233\"",
         "--option=cursor.blink=true",
         "--option=window.dimensions.columns=120",
@@ -102,7 +103,7 @@ TEST_CASE("CLI collects and applies option overrides") {
     const auto raw = raw_argv(args);
     const auto parsed = cfg::parse_cli(static_cast<int>(raw.size()), raw.data());
     REQUIRE(parsed.has_value());
-    REQUIRE(parsed->config_overrides.size() == 7);
+    REQUIRE(parsed->config_overrides.size() == 8);
 
     cfg::AppConfig config;
     size_t cols = 0;
@@ -113,6 +114,7 @@ TEST_CASE("CLI collects and applies option overrides") {
     }
     CHECK(config.main.title == "Override");
     CHECK(config.main.app_id == "com.gritty");
+    CHECK(config.main.osc52_read);
     CHECK(config.font.size == 11.5);
     CHECK(config.colors.background == 0xff112233);
     CHECK(config.cursor.blink);

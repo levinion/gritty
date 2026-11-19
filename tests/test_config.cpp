@@ -10,6 +10,7 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
         [main]
         term = "foot"
         title = "My Term"
+        osc52_read = true
 
         [font]
         family = "CustomFont"
@@ -34,6 +35,7 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
 
     CHECK(cfg->main.term == "foot");
     CHECK(cfg->main.title == "My Term");
+    CHECK(cfg->main.osc52_read);
     CHECK(cfg->font.family == "CustomFont");
     CHECK(cfg->font.size == 15.5);
     CHECK(cfg->font.dpi == 144);

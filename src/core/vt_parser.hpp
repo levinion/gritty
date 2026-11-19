@@ -49,22 +49,32 @@ public:
     using DcsHandler = std::function<void(std::string_view)>;
     using OscHandler = std::function<void(int, std::string_view)>;
     using ResponseCallback = std::function<void(std::string_view)>;
-    // OSC 52 clipboard writes. The parser never answers clipboard queries, so
-    // a remote program cannot read the clipboard back.
+    // OSC 52 clipboard writes; reads are gated by an explicit policy.
     using ClipboardHandler = std::function<void(std::string_view)>;
+    using ClipboardReadHandler = std::function<std::string()>;
+    using NotificationHandler = std::function<void(std::string_view, std::string_view)>;
+    using CursorColorHandler = std::function<void(uint32_t)>;
+    using MouseCursorShapeHandler = std::function<void(platform::MouseCursorShape)>;
 
     void set_apc_handler(ApcHandler handler) { apc_handler_ = std::move(handler); }
     void set_dcs_handler(DcsHandler handler) { dcs_handler_ = std::move(handler); }
     void set_osc_handler(OscHandler handler) { osc_handler_ = std::move(handler); }
     void set_response_callback(ResponseCallback cb) { response_cb_ = std::move(cb); }
     void set_clipboard_handler(ClipboardHandler handler) { clipboard_handler_ = std::move(handler); }
+    void set_clipboard_read_handler(ClipboardReadHandler handler) { clipboard_read_handler_ = std::move(handler); }
+    void set_osc52_read_enabled(bool enabled) noexcept { osc52_read_enabled_ = enabled; }
+    void set_notification_handler(NotificationHandler handler) { notification_handler_ = std::move(handler); }
+    void set_cursor_color_handler(CursorColorHandler handler) { cursor_color_handler_ = std::move(handler); }
+    void set_mouse_cursor_shape_handler(MouseCursorShapeHandler handler) { mouse_cursor_shape_handler_ = std::move(handler); }
     void set_sync_handler(std::function<void(bool)> handler) { sync_handler_ = std::move(handler); }
     void set_default_color_handler(std::function<void(uint32_t, uint32_t)> handler) { default_color_handler_ = std::move(handler); }
 
     void reset() noexcept;
-    void set_default_colors(uint32_t foreground, uint32_t background) noexcept {
+    void set_default_colors(uint32_t foreground, uint32_t background,
+                            uint32_t cursor_color = 0xffffffff) noexcept {
         configured_fg_ = default_fg_ = foreground;
         configured_bg_ = default_bg_ = background;
+        configured_cursor_ = cursor_color_ = cursor_color;
     }
 
 private:
@@ -83,6 +93,7 @@ private:
     void handle_sgr();
     void handle_osc();
     void update_default_color(int command, uint32_t rgb);
+    void update_cursor_color(uint32_t argb);
     void handle_decset(bool set);
 
     void parse_csi_param_byte(uint8_t byte);
@@ -157,6 +168,7 @@ private:
     enum class StringType : uint8_t { None, Osc, Dcs, Apc };
     StringType string_type_{StringType::None};
     std::string string_buffer_;
+    bool osc_reply_with_st_{false}; // Replies mirror the request terminator.
 
     // Callbacks
     ApcHandler apc_handler_;
@@ -164,6 +176,11 @@ private:
     OscHandler osc_handler_;
     ResponseCallback response_cb_;
     ClipboardHandler clipboard_handler_;
+    ClipboardReadHandler clipboard_read_handler_;
+    bool osc52_read_enabled_{false};
+    NotificationHandler notification_handler_;
+    CursorColorHandler cursor_color_handler_;
+    MouseCursorShapeHandler mouse_cursor_shape_handler_;
     std::function<void(bool)> sync_handler_;
     std::function<void(uint32_t, uint32_t)> default_color_handler_;
 
@@ -178,8 +195,10 @@ private:
     int passthrough_depth_{0};
     uint32_t default_fg_{0xffdddddd};
     uint32_t default_bg_{0xff111111};
+    uint32_t cursor_color_{0xffffffff};
     uint32_t configured_fg_{0xffdddddd};
     uint32_t configured_bg_{0xff111111};
+    uint32_t configured_cursor_{0xffffffff};
 };
 
 } // namespace gritty::core

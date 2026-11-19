@@ -20,6 +20,22 @@ enum class WindowDecorations : uint8_t {
     Buttonless = 3,
 };
 
+// Pointer shapes requested by OSC 22. Kept platform-neutral here; native
+// cursor mapping lives in each platform backend.
+enum class MouseCursorShape : uint8_t {
+    Default = 0,
+    Text,
+    Pointer,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    Crosshair,
+    Move,
+    NotAllowed,
+    Hidden,
+};
+
 // Case-insensitive, allocation-free parser for the TOML/CLI string values.
 [[nodiscard]] constexpr std::optional<WindowDecorations> parse_window_decorations(
     std::string_view value
@@ -54,6 +70,7 @@ public:
     virtual void set_title(const std::string& title) { (void)title; }
     virtual void set_transparent(bool transparent) { (void)transparent; }
     virtual void set_decorations(WindowDecorations decorations) { (void)decorations; }
+    virtual void set_cursor_shape(MouseCursorShape shape) { (void)shape; }
     [[nodiscard]] virtual WindowDecorations decorations() const noexcept {
         return WindowDecorations::Full;
     }
@@ -110,6 +127,11 @@ public:
     virtual void set_mouse_reporting_provider(MouseReportingProvider cb) { (void)cb; }
     // Open a hyperlink (OSC 8) in the platform's default handler.
     virtual void open_url(std::string_view url) { (void)url; }
+    // OSC 777 desktop notification. Implementations must not block the loop.
+    virtual void send_notification(std::string_view title, std::string_view body) {
+        (void)title;
+        (void)body;
+    }
 };
 
 // Event loop interface (EpollEventLoop or KqueueRunLoop)

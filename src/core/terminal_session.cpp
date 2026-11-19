@@ -25,6 +25,9 @@ TerminalSession::TerminalSession(
       font_engine_(config.antialias),
       renderer_(font_engine_, config.render_config) {
     engine_.configure_palette(config.palette);
+    engine_.configure_initial_colors(config.render_config.default_fg,
+                                     config.render_config.default_bg,
+                                     config.render_config.cursor_color);
     parser_.set_sync_handler([this](bool enabled) {
         if (!loop_) return;
         // foot terminal.c arms a one-second watchdog for DECSET 2026.
@@ -34,12 +37,24 @@ TerminalSession::TerminalSession(
         });
         else loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 0, {});
     });
-    parser_.set_default_colors(config.render_config.default_fg, config.render_config.default_bg);
+    parser_.set_default_colors(config.render_config.default_fg, config.render_config.default_bg,
+                               config.render_config.cursor_color);
     parser_.set_default_color_handler([this](uint32_t foreground, uint32_t background) {
         auto colors = renderer_.config();
         colors.default_fg = foreground;
         colors.default_bg = background;
         renderer_.set_config(colors); // Invalidate text and window margins together.
+    });
+    parser_.set_cursor_color_handler([this](uint32_t argb) {
+        auto colors = renderer_.config();
+        colors.cursor_color = argb;
+        renderer_.set_config(colors);
+    });
+    parser_.set_mouse_cursor_shape_handler([this](platform::MouseCursorShape shape) {
+        if (surface_) surface_->set_cursor_shape(shape);
+    });
+    parser_.set_notification_handler([this](std::string_view title, std::string_view body) {
+        if (surface_) surface_->send_notification(title, body);
     });
     parser_.set_response_callback([this](std::string_view resp) {
         write_pty(resp);
@@ -47,6 +62,10 @@ TerminalSession::TerminalSession(
     // tmux's set-clipboard writes reach the system pasteboard through OSC 52.
     parser_.set_clipboard_handler([this](std::string_view text) {
         if (clipboard_) clipboard_->copy_text(text);
+    });
+    parser_.set_osc52_read_enabled(config.osc52_read);
+    parser_.set_clipboard_read_handler([this] {
+        return clipboard_ ? clipboard_->paste_text() : std::string{};
     });
     // Kitty graphics: parse APC through the engine, and mirror every placement
     // into the terminal's render list (the image bitmap is shared by refcount).

@@ -144,6 +144,8 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         if (const auto value = as_string(find_key(table, "shell"))) cfg.main.shell = *value;
         if (const auto value = as_string(find_key(table, "term"))) cfg.main.term = *value;
         if (const auto value = as_string(find_key(table, "title"))) cfg.main.title = *value;
+        bool osc52_read = false;
+        if (as_bool(find_key(table, "osc52_read"), osc52_read)) cfg.main.osc52_read = osc52_read;
         return;
     }
     if (section == "font") {

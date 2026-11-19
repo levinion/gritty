@@ -4,6 +4,8 @@
 shell = ""
 term = "xterm-256color"
 title = "Gritty"
+# Default off: never answer OSC 52 clipboard read queries from a remote shell.
+osc52_read = false
 
 [font]
 family = "Monaco"

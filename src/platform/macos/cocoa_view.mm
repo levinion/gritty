@@ -75,6 +75,24 @@
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)canBecomeKeyView { return YES; }
 
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    if (!_surface || _surface->cursor_shape() == gritty::platform::MouseCursorShape::Hidden) return;
+    NSCursor* cursor = cursor_for_shape(_surface->cursor_shape());
+    if (cursor) [self addCursorRect:self.bounds cursor:cursor];
+}
+
+- (void)cursorUpdate:(NSEvent*)event {
+    (void)event;
+    if (!_surface) return;
+    if (_surface->cursor_shape() == gritty::platform::MouseCursorShape::Hidden) {
+        [NSCursor setHiddenUntilMouseMoves:YES];
+        return;
+    }
+    NSCursor* cursor = cursor_for_shape(_surface->cursor_shape());
+    if (cursor) [cursor set];
+}
+
 - (void)viewDidChangeBackingProperties {
     @autoreleasepool {
         [super viewDidChangeBackingProperties];
@@ -94,6 +112,25 @@
 }
 
 namespace {
+NSCursor* cursor_for_shape(gritty::platform::MouseCursorShape shape) {
+    using gritty::platform::MouseCursorShape;
+    switch (shape) {
+        case MouseCursorShape::Text: return [NSCursor IBeamCursor];
+        case MouseCursorShape::Pointer: return [NSCursor pointingHandCursor];
+        case MouseCursorShape::EwResize: return [NSCursor resizeLeftRightCursor];
+        case MouseCursorShape::NsResize: return [NSCursor resizeUpDownCursor];
+        // AppKit exposes no public diagonal resize cursor.
+        case MouseCursorShape::NeswResize:
+        case MouseCursorShape::NwseResize: return [NSCursor crosshairCursor];
+        case MouseCursorShape::Crosshair: return [NSCursor crosshairCursor];
+        case MouseCursorShape::Move: return [NSCursor openHandCursor];
+        case MouseCursorShape::NotAllowed: return [NSCursor operationNotAllowedCursor];
+        case MouseCursorShape::Hidden: return nil;
+        case MouseCursorShape::Default: return [NSCursor arrowCursor];
+    }
+    return [NSCursor arrowCursor];
+}
+
 bool command_key_is(NSEvent* event, NSString* expected) {
     NSString* chars = [event charactersIgnoringModifiers];
     return chars.length > 0 && [[chars lowercaseString] isEqualToString:expected];

@@ -55,6 +55,7 @@ void TerminalEngine::reset() {
     modify_other_keys_ = 0;
     mouse_tracking_ = MouseTrackingMode::None;
     mouse_format_ = MouseFormat::Normal;
+    mouse_cursor_shape_ = platform::MouseCursorShape::Default;
     for (auto& stack : kitty_keyboard_stacks_) stack.clear();
     current_hyperlink_id_ = 0;
     hyperlinks_.clear();

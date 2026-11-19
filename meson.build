@@ -58,6 +58,7 @@ if host_os == 'darwin'
     'QuartzCore',
     'ImageIO',
     'IOSurface',
+    'UserNotifications',
   ])
   platform_deps += [apple_frameworks]
 elif host_os == 'linux'
