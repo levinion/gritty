@@ -16,10 +16,10 @@ struct ConfigError {
     int column{0};
 };
 
-class IniLoader final {
+class TomlLoader final {
 public:
     static std::expected<std::shared_ptr<AppConfig>, ConfigError> load_from_string(
-        std::string_view ini_str,
+        std::string_view toml_str,
         std::string_view platform_override = ""
     );
 

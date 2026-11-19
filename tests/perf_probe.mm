@@ -21,7 +21,7 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "config/ini_loader.hpp"
+#include "config/toml_loader.hpp"
 #include "core/terminal_session.hpp"
 #include "platform/macos/cocoa_surface.hpp"
 #include "platform/macos/ct_discovery.hpp"
@@ -73,7 +73,7 @@ struct Harness {
     KqueueRunLoop* pump_events{nullptr};
 
     bool start(const SessionConfig& options, const char* title) {
-        auto config = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
+        auto config = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
         if (!config) return false;
         const auto& cfg = **config;
         CoreTextFinder finder;
@@ -183,7 +183,7 @@ struct ScrollBench {
 // per scrolled line, which is exactly the cost the memmove optimization targets.
 ScrollBench measure_scroll(int density, gritty::render::CpuRenderer::ScrollMode mode, int frames, int lines_per_frame) {
     ScrollBench out;
-    auto config = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
+    auto config = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
     if (!config) return out;
     CoreTextFinder finder;
     const auto font = finder.find_font({.family = (**config).font.family});
@@ -248,7 +248,7 @@ IOSurfaceRef make_perf_surface(int w, int h) {
 
 CellsBench measure_cells(const std::string& variant, int frames, bool on_iosurface = false, bool batch = true) {
     CellsBench out;
-    auto config = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
+    auto config = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
     if (!config) return out;
     CoreTextFinder finder;
     const auto font = finder.find_font({.family = (**config).font.family});
@@ -368,7 +368,7 @@ void measure_session_parse(int lines) {
 // Same input, batched into frames exactly like a vsync-paced session, but
 // drawing into a plain pixman image (no layer, no commit).
 void measure_parse_render(int lines, int lines_per_frame) {
-    auto config = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
+    auto config = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
     if (!config) return;
     CoreTextFinder finder;
     const auto font = finder.find_font({.family = (**config).font.family});
@@ -403,7 +403,7 @@ void measure_parse_render(int lines, int lines_per_frame) {
 
 // Split-pane workload: two independent scroll regions shift once per frame.
 void measure_split_scroll(int max_ops, int frames) {
-    auto config = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
+    auto config = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
     if (!config) return;
     CoreTextFinder finder;
     const auto font = finder.find_font({.family = (**config).font.family});
@@ -449,7 +449,7 @@ void measure_split_scroll(int max_ops, int frames) {
 // composite, grid scroll, cell write. Tells which part of a frame is worth
 // attacking next.
 void measure_primitives() {
-    auto config = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
+    auto config = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
     if (!config) return;
     CoreTextFinder finder;
     const auto font = finder.find_font({.family = (**config).font.family});

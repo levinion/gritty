@@ -14,7 +14,7 @@
 #include "platform/posix_pty.hpp"
 #include "width_cases.hpp"
 #include "font_fixture.hpp"
-#include "config/ini_loader.hpp"
+#include "config/toml_loader.hpp"
 
 namespace {
 using namespace gritty;
@@ -315,7 +315,7 @@ TEST_CASE("Pinned Unicode width vectors agree with the installed tmux format eng
 }
 
 TEST_CASE("Real tmux indexed prompt colors survive an ANSI theme override") {
-    const auto loaded = config::IniLoader::load_from_string("[colors]\nregular1 = #123456\n");
+    const auto loaded = config::TomlLoader::load_from_string("[colors]\nregular1 = '#123456'\n");
     REQUIRE(loaded.has_value());
     TmuxHarness tmux;
     tmux.engine.configure_palette((*loaded)->colors.palette);
