@@ -28,6 +28,7 @@ struct SessionConfig {
     render::RenderConfig render_config;
     size_t scrollback_lines{2000};
     std::array<uint32_t, 256> palette{kDefaultPalette};
+    bool hold_on_exit{false};
 };
 
 class TerminalSession final {

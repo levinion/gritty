@@ -1,13 +1,11 @@
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
-#include <string_view>
 #include <vector>
-#include <filesystem>
-#include <cstdlib>
-#include <cmath>
-#include <charconv>
-#include <system_error>
 
+#include "config/cli.hpp"
 #include "config/toml_loader.hpp"
 #include "core/terminal_session.hpp"
 
@@ -22,144 +20,75 @@ using namespace gritty;
 
 namespace {
 
-void print_help(const char* prog) {
-    std::cout << "Usage: " << prog << " [options] [command [args...]]\n\n"
-              << "Options:\n"
-              << "  -c, --config <path>    Path to config.toml\n"
-              << "  -f, --font <family>    Font family name\n"
-              << "  -s, --size <pt>        Font size in points\n"
-              << "  -t, --title <title>    Window title\n"
-              << "  --cols <n>             Initial terminal columns\n"
-              << "  --rows <n>             Initial terminal rows\n"
-              << "  -v, --version          Print version\n"
-              << "  -e, --exec <command>   Execute command instead of the configured shell\n"
-              << "  -h, --help             Show this help\n";
-}
-
 std::string find_default_config() {
     const char* xdg = std::getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) {
-        std::string p = std::string(xdg) + "/gritty/config.toml";
-        if (std::filesystem::exists(p)) return p;
+        const std::string dir = std::string(xdg) + "/gritty/";
+        for (const char* name : {"config.toml", "gritty.ini", "config.ini"}) {
+            const std::string p = dir + name;
+            if (std::filesystem::exists(p)) return p;
+        }
     }
     const char* home = std::getenv("HOME");
     if (home && *home) {
-        std::string p = std::string(home) + "/.config/gritty/config.toml";
-        if (std::filesystem::exists(p)) return p;
+        const std::string dir = std::string(home) + "/.config/gritty/";
+        for (const char* name : {"config.toml", "gritty.ini", "config.ini"}) {
+            const std::string p = dir + name;
+            if (std::filesystem::exists(p)) return p;
+        }
     }
     return "";
-}
-
-// std::from_chars does not accept a leading '+'; keep accepting it for CLI
-// compatibility without reintroducing locale-dependent string conversion.
-bool parse_font_size(std::string_view text, double& out) noexcept {
-    const char* first = text.data();
-    const char* last = text.data() + text.size();
-    if (first != last && *first == '+') ++first;
-    const auto [ptr, ec] = std::from_chars(first, last, out);
-    return ec == std::errc{} && ptr == last &&
-           std::isfinite(out) && out >= 1.0 && out <= 200.0;
-}
-
-bool parse_geometry_value(std::string_view text, size_t& out) noexcept {
-    int parsed = 0;
-    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed);
-    if (ec != std::errc{} || ptr != text.data() + text.size() || parsed < 1 || parsed > 1000)
-        return false;
-    out = static_cast<size_t>(parsed);
-    return true;
 }
 
 } // namespace
 
 int main(int argc, char* argv[]) {
-    std::string config_path;
-    std::string font_override;
-    double font_size_override = 0;
-    std::string title_override;
-    size_t cols_override = 0;
-    size_t rows_override = 0;
-    std::string command;
-    std::vector<std::string> command_args;
-
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if ((arg == "-c" || arg == "--config" || arg == "-f" || arg == "--font" ||
-             arg == "-s" || arg == "--size" || arg == "-t" || arg == "--title" ||
-             arg == "--cols" || arg == "--rows" || arg == "-e" || arg == "--exec") &&
-            i + 1 >= argc) {
-            std::cerr << "Missing value for " << arg << "\n";
-            return 1;
-        }
-        if (arg == "-h" || arg == "--help") {
-            print_help(argv[0]);
-            return 0;
-        } else if (arg == "-v" || arg == "--version") {
-            std::cout << "Gritty 0.1.0 (foot parity + Kitty protocols)\n";
-            return 0;
-        } else if (arg == "-c" || arg == "--config") {
-            if (++i < argc) config_path = argv[i];
-        } else if (arg == "-f" || arg == "--font") {
-            if (++i < argc) font_override = argv[i];
-        } else if (arg == "-s" || arg == "--size") {
-            const std::string_view value(argv[++i]);
-            if (!parse_font_size(value, font_size_override)) {
-                std::cerr << "Invalid font size (expected 1..200 points)\n";
-                return 1;
-            }
-        } else if (arg == "-t" || arg == "--title") {
-            if (++i < argc) title_override = argv[i];
-        } else if (arg == "--cols" || arg == "--rows") {
-            const std::string_view value(argv[++i]);
-            size_t parsed = 0;
-            if (!parse_geometry_value(value, parsed)) {
-                std::cerr << "Invalid " << arg << " (expected 1..1000)\n";
-                return 1;
-            }
-            if (arg == "--cols") cols_override = parsed;
-            else rows_override = parsed;
-        } else if (arg == "-e" || arg == "--exec") {
-            if (++i < argc) {
-                command = argv[i];
-                for (int j = i + 1; j < argc; ++j) command_args.push_back(argv[j]);
-                break;
-            }
-        } else if (arg == "--" || !arg.starts_with('-')) {
-            if (arg == "--") {
-                if (++i >= argc) break;
-                arg = argv[i];
-            }
-            command = arg;
-            for (int j = i + 1; j < argc; ++j) {
-                command_args.push_back(argv[j]);
-            }
-            break;
-        } else {
-            std::cerr << "Unknown option: " << arg << "\n";
-            return 1;
-        }
+    const auto parsed_cli = config::parse_cli(argc, argv);
+    if (!parsed_cli) {
+        std::cerr << "gritty: " << parsed_cli.error() << "\n";
+        return 1;
+    }
+    const auto& cli = parsed_cli.value();
+    if (cli.action == config::CliAction::Help) {
+        std::cout << config::format_cli_help(argv[0]);
+        return 0;
+    }
+    if (cli.action == config::CliAction::Version) {
+        std::cout << config::format_cli_version();
+        return 0;
     }
 
-    if (config_path.empty()) {
-        config_path = find_default_config();
-    }
+    std::string config_path = cli.config_path;
+    if (config_path.empty()) config_path = find_default_config();
 
     std::shared_ptr<config::AppConfig> cfg;
     if (!config_path.empty()) {
         auto res = config::TomlLoader::load_from_file(config_path);
-        if (res) {
-            cfg = *res;
-        } else {
+        if (!res) {
             std::cerr << "Config error in " << config_path << ": " << res.error().message << "\n";
             return 1;
         }
+        cfg = *res;
     } else {
         cfg = std::make_shared<config::AppConfig>();
     }
 
-    if (!font_override.empty()) cfg->font.family = font_override;
-    if (font_size_override > 0) cfg->font.size = font_size_override;
-    if (!title_override.empty()) cfg->main.title = title_override;
+    size_t override_cols = 0;
+    size_t override_rows = 0;
+    for (const auto& expr : cli.config_overrides) {
+        auto result = cfg->apply_override(expr, &override_cols, &override_rows);
+        if (!result) {
+            std::cerr << "gritty: " << result.error() << "\n";
+            return 1;
+        }
+    }
+
+    if (!cli.font_family.empty()) cfg->font.family = cli.font_family;
+    if (cli.font_size > 0) cfg->font.size = cli.font_size;
+    if (!cli.title.empty()) cfg->main.title = cli.title;
+    if (!cli.app_id.empty()) cfg->main.app_id = cli.app_id;
+    const size_t cols = cli.cols ? cli.cols : (override_cols ? override_cols : 80);
+    const size_t rows = cli.rows ? cli.rows : (override_rows ? override_rows : 24);
 
 #if defined(PLATFORM_MACOS)
     platform::macos::CoreTextFinder font_discovery;
@@ -167,14 +96,10 @@ int main(int argc, char* argv[]) {
         .family = cfg->font.family
     });
 
-    const size_t cols = cols_override ? cols_override : 80;
-    const size_t rows = rows_override ? rows_override : 24;
-
     std::string resolved_font_path;
     if (match) {
         resolved_font_path = match->path;
     } else {
-        // Fallback to Monaco or Menlo
         auto fallback = font_discovery.find_font(platform::FontPattern{.family = "Monaco"});
         if (fallback) resolved_font_path = fallback->path;
         else resolved_font_path = "/System/Library/Fonts/Monaco.ttf";
@@ -185,9 +110,9 @@ int main(int argc, char* argv[]) {
         .font_size = cfg->font.size,
         .cols = static_cast<int>(cols),
         .rows = static_cast<int>(rows),
-        .shell = command.empty() ? cfg->main.shell : command,
-        .cwd = "",
-        .args = command_args,
+        .shell = cli.command.empty() ? cfg->main.shell : cli.command,
+        .cwd = cli.working_directory,
+        .args = cli.command_args,
         .font_dpi = cfg->font.dpi,
         .antialias = cfg->font.antialias,
         .render_config = {
@@ -196,10 +121,11 @@ int main(int argc, char* argv[]) {
             .cursor_color = cfg->cursor.color
         },
         .scrollback_lines = cfg->scrollback.lines,
-        .palette = cfg->colors.palette
+        .palette = cfg->colors.palette,
+        .hold_on_exit = cli.hold,
     };
 
-    const double point_size = font_size_override > 0 ? font_size_override : cfg->font.size;
+    const double point_size = cli.font_size > 0 ? cli.font_size : cfg->font.size;
     const int initial_w = static_cast<int>(std::ceil(static_cast<double>(cols) * point_size * 0.65));
     const int initial_h = static_cast<int>(std::ceil(static_cast<double>(rows) * point_size * 1.30));
     auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(initial_w, initial_h);
@@ -229,7 +155,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Using font: " << resolved_font_path << " (" << cfg->font.size << "pt)\n";
 
     session->run();
-
     return 0;
 #else
     std::cerr << "Linux window backend is not implemented yet.\n";

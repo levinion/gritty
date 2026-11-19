@@ -316,12 +316,20 @@ void TerminalSession::handle_pty_read() {
                 (timing_active && std::chrono::steady_clock::now() - started >= kTimeBudget))
                 hit_budget = true; // Stopped by budget, not by EAGAIN.
         } else if (n == 0) { // EOF
-            if (loop_) loop_->stop();
+            if (config_.hold_on_exit) {
+                // Stop polling the closed PTY but keep the event loop (and the
+                // window) alive until the user closes it.
+                if (loop_ && pty_.master_fd() >= 0) loop_->remove_fd(pty_.master_fd());
+            } else if (loop_) loop_->stop();
             break;
         } else {
             if (errno == EINTR) continue;
             // Linux PTYs report EIO when the slave closes, not EOF.
-            if (errno != EAGAIN && errno != EWOULDBLOCK && loop_) loop_->stop();
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                if (config_.hold_on_exit) {
+                    if (loop_ && pty_.master_fd() >= 0) loop_->remove_fd(pty_.master_fd());
+                } else if (loop_) loop_->stop();
+            }
             break;
         }
     }

@@ -52,7 +52,7 @@ public:
         watched = mask;
         cb = std::move(callback);
     }
-    void remove_fd(int) override { cb = {}; }
+    void remove_fd(int) override { cb = {}; ++remove_count; }
     void set_timer(int delay, std::function<void()> callback) override {
         timer_delay = delay;
         timer = std::move(callback);
@@ -75,6 +75,7 @@ public:
     uint32_t watched{0};
     FdCallback cb;
     int fd{-1};
+    int remove_count{0};
     bool stopped{false};
 };
 }
@@ -243,6 +244,29 @@ TEST_CASE("TerminalSession passes command arguments, title and handles child exi
     CHECK(session.engine().grid().cell(0, 0).codepoint == U'A');
     CHECK(session.engine().grid().cell(11, 0).codepoint == U'K');
     CHECK(output->title == "session-title");
+}
+
+TEST_CASE("TerminalSession hold_on_exit keeps the loop alive after child exit") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.cols = 8;
+    config.rows = 2;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "exit 0"};
+    config.hold_on_exit = true;
+    core::TerminalSession session(config, std::make_unique<TestSurface>(), std::move(loop), nullptr);
+    REQUIRE(session.start());
+    const int removals_after_start = events->remove_count;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (events->remove_count == removals_after_start &&
+           std::chrono::steady_clock::now() < deadline) events->pump();
+    CHECK(events->remove_count > removals_after_start);
+    CHECK_FALSE(events->stopped);
+    CHECK_FALSE(static_cast<bool>(events->cb));
 }
 
 TEST_CASE("TerminalSession retries large nonblocking writes without losing bytes") {

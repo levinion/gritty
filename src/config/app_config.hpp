@@ -2,7 +2,10 @@
 
 #include <string>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <string_view>
 #include <memory>
 #include <optional>
 #include "core/terminal_engine.hpp"
@@ -14,6 +17,7 @@ struct MainConfig {
     std::string shell;
     std::string term{"xterm-256color"};
     std::string title{"Gritty"};
+    std::string app_id{"gritty"};
 };
 
 struct FontConfig {
@@ -56,6 +60,12 @@ struct AppConfig {
     ScrollbackConfig scrollback;
 
     AppConfig();
+
+    [[nodiscard]] std::expected<void, std::string> apply_override(
+        std::string_view expr,
+        size_t* cols_out = nullptr,
+        size_t* rows_out = nullptr
+    );
 };
 
 class ConfigStore final {
