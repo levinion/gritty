@@ -94,6 +94,11 @@
 }
 
 namespace {
+bool command_key_is(NSEvent* event, NSString* expected) {
+    NSString* chars = [event charactersIgnoringModifiers];
+    return chars.length > 0 && [[chars lowercaseString] isEqualToString:expected];
+}
+
 bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     if (has_marked_text) return NO;
     const auto flags = [event modifierFlags];
@@ -113,6 +118,28 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 
 - (void)keyDown:(NSEvent *)event {
     if (!_surface) return;
+    const auto flags = [event modifierFlags];
+    if (flags & NSEventModifierFlagCommand) {
+        // Never let AppKit's key bindings or NSTextInputClient see a Command
+        // chord: Cmd+V used to become a plain 'v' via insertText:.
+        // CapsLock/NumericPad and other incidental flags are irrelevant here.
+        const bool plain = (flags & (NSEventModifierFlagControl | NSEventModifierFlagOption)) == 0;
+        NSWindow* window = self.window;
+        if (plain && command_key_is(event, @"v")) {
+            _surface->paste_from_pasteboard();
+        } else if (plain && command_key_is(event, @"h")) {
+            [NSApp hide:nil];
+        } else if (plain && window && command_key_is(event, @"m")) {
+            [window performMiniaturize:nil];
+        } else if (plain && window &&
+                   (command_key_is(event, @"w") || command_key_is(event, @"q"))) {
+            // Same path as the close button: windowWillClose ->
+            // CocoaLayerSurface::on_window_close -> close callback stops the
+            // KqueueRunLoop, so C++ destructors and the PTY are cleaned up.
+            [window performClose:nil];
+        }
+        return; // Every other Command chord is swallowed, never sent to PTY.
+    }
     if (!direct_key_event(event, [self hasMarkedText])) {
         _imeHandled = NO;
         [self interpretKeyEvents:@[event]];
@@ -123,6 +150,8 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 }
 
 - (void)keyUp:(NSEvent *)event {
+    // The matching keyDown was consumed; do not leak a release event either.
+    if ([event modifierFlags] & NSEventModifierFlagCommand) return;
     if (_surface) {
         auto ev = gritty::platform::macos::MacInput::translate_key_event(event);
         ev.action = gritty::input::KeyAction::Release;

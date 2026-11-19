@@ -50,6 +50,58 @@ TEST_CASE("Cocoa drag events preserve the held mouse button for tmux") {
     }
 }
 
+TEST_CASE("Cocoa Command chords are swallowed and Cmd+V pastes the pasteboard") {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        NSPasteboard* board = [NSPasteboard generalPasteboard];
+        NSString* previous = [board stringForType:NSPasteboardTypeString];
+        [board clearContents];
+        REQUIRE([board setString:@"clipboard-text" forType:NSPasteboardTypeString]);
+
+        auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);
+        std::string pasted, committed;
+        int key_events = 0;
+        surface->set_key_callback([&](const gritty::input::KeyEvent&) { ++key_events; });
+        surface->set_text_commit_callback([&](std::string_view text) { committed.assign(text); });
+        surface->set_paste_callback([&](std::string_view text) { pasted.assign(text); });
+        auto* view = [[GrittyView alloc] initWithSurface:surface.get()];
+        REQUIRE(view != nil);
+        auto key = [](NSString* chars, NSString* unmodified, NSEventModifierFlags flags, unsigned short code) {
+            return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+                timestamp:0 windowNumber:0 context:nil characters:chars
+                charactersIgnoringModifiers:unmodified isARepeat:NO keyCode:code];
+        };
+
+        // CapsLock/NumericPad flags must not stop Cmd+V, and neither key event
+        // nor insertText: may leak a bare 'v' into the PTY.
+        [view keyDown:key(@"v", @"v",
+            NSEventModifierFlagCommand | NSEventModifierFlagCapsLock | NSEventModifierFlagNumericPad, 9)];
+        CHECK(pasted == "clipboard-text");
+        CHECK(key_events == 0);
+        CHECK(committed.empty());
+        [view keyUp:key(@"v", @"v", NSEventModifierFlagCommand, 9)];
+        CHECK(key_events == 0);
+
+        [view keyDown:key(@"x", @"x", NSEventModifierFlagCommand, 7)];
+        CHECK(pasted == "clipboard-text");
+        CHECK(key_events == 0);
+        CHECK(committed.empty());
+
+        // Ctrl/Option shortcuts still travel through the normal key path.
+        [view keyDown:key(@"\x02", @"b", NSEventModifierFlagControl, 11)];
+        CHECK(key_events == 1);
+        [view keyDown:key(@"\x01", @"a", NSEventModifierFlagControl, 0)];
+        CHECK(key_events == 2);
+        [view keyDown:key(@"\u222b", @"b", NSEventModifierFlagOption, 11)];
+        CHECK(key_events == 3);
+
+        [view detachSurface];
+        [view release];
+        [board clearContents];
+        if (previous) [board setString:previous forType:NSPasteboardTypeString];
+    }
+}
+
 TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
     @autoreleasepool {
         auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);

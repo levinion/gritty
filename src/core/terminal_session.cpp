@@ -158,6 +158,7 @@ TerminalSession::~TerminalSession() {
     if (surface_) {
         surface_->set_key_callback({});
         surface_->set_text_commit_callback({});
+        surface_->set_paste_callback({});
         surface_->set_mouse_callback({});
         surface_->set_resize_callback({});
         surface_->set_close_callback({});
@@ -206,6 +207,11 @@ bool TerminalSession::start() {
         // KeyEvent/Kitty keyboard encoder, which would truncate CJK phrases.
         surface_->set_text_commit_callback([this](std::string_view text) {
             write_pty(text);
+        });
+        // Native Cmd+V bypasses key events/IME entirely; the engine decides
+        // whether the child expects bracketed-paste markers.
+        surface_->set_paste_callback([this](std::string_view text) {
+            paste_text(text);
         });
         surface_->set_mouse_callback([this](const input::MouseEvent& ev) {
             handle_mouse_event(ev);
@@ -373,6 +379,11 @@ void TerminalSession::handle_pty_read() {
             render_frame(false);
         }
     }
+}
+
+void TerminalSession::paste_text(std::string_view text) {
+    if (text.empty()) return;
+    write_pty(engine_.format_paste_payload(text));
 }
 
 void TerminalSession::handle_key_event(const input::KeyEvent& ev) {

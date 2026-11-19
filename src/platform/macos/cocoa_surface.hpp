@@ -62,6 +62,7 @@ public:
 
     void set_key_callback(KeyCallback cb) override { key_cb_ = std::move(cb); }
     void set_text_commit_callback(TextCommitCallback cb) override { text_commit_cb_ = std::move(cb); }
+    void set_paste_callback(PasteCallback cb) override { paste_cb_ = std::move(cb); }
     void set_mouse_callback(MouseCallback cb) override { mouse_cb_ = std::move(cb); }
     void set_resize_callback(ResizeCallback cb) override { resize_cb_ = std::move(cb); }
     void set_close_callback(CloseCallback cb) override { close_cb_ = std::move(cb); }
@@ -81,6 +82,9 @@ public:
         return cursor_rect_cb_ ? cursor_rect_cb_() : CursorRect{};
     }
     void commit_text(std::string_view utf8);
+    // Invoked by GrittyView for Cmd+V. Reads the system pasteboard and hands
+    // the raw UTF-8 to the session's paste callback.
+    void paste_from_pasteboard();
     void open_url(std::string_view url) override;
 
     // Internal bridge for Obj-C view & window
@@ -130,6 +134,7 @@ private:
 
     KeyCallback key_cb_;
     TextCommitCallback text_commit_cb_;
+    PasteCallback paste_cb_;
     MouseCallback mouse_cb_;
     ResizeCallback resize_cb_;
     CloseCallback close_cb_;

@@ -163,6 +163,10 @@ public:
     void print_wide_run(std::span<const char32_t> cps);
     void print_utf8(std::string_view utf8_str);
 
+    // Clipboard/IME insertions are formatted here so every paste path obeys
+    // DECSET 2004 and cannot smuggle an early bracketed-paste terminator.
+    [[nodiscard]] std::string format_paste_payload(std::string_view text) const;
+
     // Editing operations
     void erase_in_display(int mode);
     void erase_in_line(int mode);

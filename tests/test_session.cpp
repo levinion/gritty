@@ -22,7 +22,10 @@ public:
     }
     pixman_image_t* get_back_buffer() override { return blocked ? nullptr : pixels.get(); }
     void set_frame_ready_callback(FrameReadyCallback callback) override { frame_ready = std::move(callback); }
+    void set_paste_callback(PasteCallback callback) override { paste = std::move(callback); }
+    void paste_text(std::string_view text) { if (paste) paste(text); }
     FrameReadyCallback frame_ready;
+    PasteCallback paste;
     bool blocked{false};
     void present(const util::PixmanRegion& damage) override {
         ++frames;
@@ -420,6 +423,46 @@ TEST_CASE("DECSET 1004 focus reports are forwarded to the child") {
     }
     std::remove(path.c_str());
     CHECK(data == "\x1b[I\x1b[O");
+}
+
+TEST_CASE("Native paste is bracketed and sanitized before reaching the PTY") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    const std::string path = "/tmp/gritty-paste-" + std::to_string(::getpid()) + ".bin";
+    std::remove(path.c_str());
+    const std::string expected = "\x1b[200~secret tail\x1b[201~";
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "stty raw -echo; printf '\\033[?2004h'; dd of=" + path
+        + " bs=1 count=" + std::to_string(expected.size()) + " 2>/dev/null; sleep 1"};
+    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+
+    for (int i = 0; i < 200 && !session.engine().bracketed_paste(); ++i) {
+        events->pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(session.engine().bracketed_paste());
+    output->paste_text("secret\x1b[201~ tail");
+
+    std::string data;
+    for (int i = 0; i < 200 && data.size() < expected.size(); ++i) {
+        events->pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) continue;
+        char buf[64]{};
+        const size_t n = std::fread(buf, 1, sizeof(buf), f);
+        std::fclose(f);
+        data.assign(buf, n);
+    }
+    std::remove(path.c_str());
+    CHECK(data == expected);
 }
 
 TEST_CASE("Kitty graphics APC is parsed, acknowledged and rendered") {

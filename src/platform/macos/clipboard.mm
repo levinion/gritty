@@ -21,7 +21,8 @@ std::string PasteboardClipboard::paste_text() {
         NSPasteboard* pb = [NSPasteboard generalPasteboard];
         NSString* str = [pb stringForType:NSPasteboardTypeString];
         if (!str) return "";
-        return [str UTF8String];
+        return std::string([str UTF8String],
+            [str lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
     }
 }
 

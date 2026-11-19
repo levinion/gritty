@@ -54,6 +54,8 @@ public:
     [[nodiscard]] const render::FontEngine& font_engine() const noexcept { return font_engine_; }
 
     void handle_key_event(const input::KeyEvent& ev);
+    // Format clipboard text for the child (DECSET 2004) and write it to PTY.
+    void paste_text(std::string_view text);
     void handle_mouse_event(const input::MouseEvent& ev);
     void handle_surface_resize(int px_w, int px_h, double scale);
     void write_pty(std::string_view data);

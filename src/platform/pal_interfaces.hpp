@@ -87,6 +87,9 @@ public:
     // must not steal those events.
     using MouseReportingProvider = std::function<bool()>;
     using TextCommitCallback = std::function<void(std::string_view)>;
+    // Native paste (Cmd+V / middle-click) hands raw UTF-8 to the session,
+    // which applies the terminal's DECSET 2004 formatting before PTY write.
+    using PasteCallback = std::function<void(std::string_view)>;
     using CloseCallback = std::function<void()>;
     using FrameReadyCallback = std::function<void()>;
     using FocusCallback = std::function<void(bool focused)>;
@@ -94,6 +97,7 @@ public:
     virtual void set_key_callback(KeyCallback cb) { (void)cb; }
     // IME committed text bypasses KeyEvent/keyboard-protocol encoding.
     virtual void set_text_commit_callback(TextCommitCallback cb) { (void)cb; }
+    virtual void set_paste_callback(PasteCallback cb) { (void)cb; }
     virtual void set_mouse_callback(MouseCallback cb) { (void)cb; }
     virtual void set_resize_callback(ResizeCallback cb) { (void)cb; }
     virtual void set_close_callback(CloseCallback cb) { (void)cb; }

@@ -179,6 +179,54 @@ TEST_CASE("KqueueRunLoop with NSApp dispatches IME text and window close") {
     }
 }
 
+TEST_CASE("Cocoa Command keys paste, swallow bare characters and close gracefully") {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        NSPasteboard* board = [NSPasteboard generalPasteboard];
+        NSString* previous = [board stringForType:NSPasteboardTypeString];
+        [board clearContents];
+        REQUIRE([board setString:@"native-paste" forType:NSPasteboardTypeString]);
+
+        Surface surface(320, 240);
+        surface.show_window("Gritty command key regression");
+        surface.flush_pending_resize();
+        NSWindow* window = find_window(@"Gritty command key regression");
+        REQUIRE(window != nil);
+        std::string pasted;
+        int keys = 0;
+        surface.set_paste_callback([&](std::string_view text) { pasted.assign(text); });
+        surface.set_key_callback([&](const gritty::input::KeyEvent&) { ++keys; });
+        auto key = [&](NSString* chars, NSString* unmodified, NSEventModifierFlags flags, unsigned short code) {
+            return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+                timestamp:0 windowNumber:[window windowNumber] context:nil characters:chars
+                charactersIgnoringModifiers:unmodified isARepeat:NO keyCode:code];
+        };
+
+        gritty::platform::macos::KqueueRunLoop events;
+        bool closed = false;
+        surface.set_close_callback([&] {
+            closed = true;
+            events.stop();
+        });
+        [NSApp postEvent:key(@"v", @"v", NSEventModifierFlagCommand | NSEventModifierFlagCapsLock, 9)
+                 atStart:YES];
+        [NSApp postEvent:key(@"x", @"x", NSEventModifierFlagCommand, 7) atStart:YES];
+        events.set_timer(gritty::platform::IEventLoop::TimerId::FrameCoalesce, 100, [&] {
+            [NSApp postEvent:key(@"q", @"q", NSEventModifierFlagCommand, 12) atStart:YES];
+        });
+        events.set_timer(gritty::platform::IEventLoop::TimerId::SyncWatchdog, 1500, [&] {
+            events.stop();
+        });
+        events.run();
+        CHECK(pasted == "native-paste");
+        CHECK(keys == 0); // Cmd+X must not produce a bare 'x'.
+        CHECK(closed);   // Cmd+Q uses the close-button path, not NSApp terminate.
+
+        [board clearContents];
+        if (previous) [board setString:previous forType:NSPasteboardTypeString];
+    }
+}
+
 TEST_CASE("Idle reclamation keeps polling a detached surface until its external reader releases it") {
     @autoreleasepool {
         Surface surface(128, 96);

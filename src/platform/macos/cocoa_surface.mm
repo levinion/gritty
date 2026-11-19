@@ -1,6 +1,7 @@
 #include "platform/macos/cocoa_surface.hpp"
 #include "platform/macos/cocoa_view.hpp"
 #include "platform/macos/application_icon.hpp"
+#include "platform/macos/clipboard.hpp"
 #include <utf8proc.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
@@ -267,6 +268,13 @@ void CocoaLayerSurface::commit_text(std::string_view utf8) {
         return;
     }
     if (text_commit_cb_) text_commit_cb_(utf8);
+}
+
+void CocoaLayerSurface::paste_from_pasteboard() {
+    PasteboardClipboard clipboard;
+    std::string text = clipboard.paste_text();
+    if (text.empty()) return;
+    if (paste_cb_) paste_cb_(text);
 }
 
 void CocoaLayerSurface::on_mouse_event(const input::MouseEvent& ev) {

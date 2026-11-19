@@ -518,6 +518,35 @@ void TerminalEngine::print_utf8(std::string_view utf8_str) {
     }
 }
 
+std::string TerminalEngine::format_paste_payload(std::string_view text) const {
+    if (!bracketed_paste_) return std::string(text);
+
+    constexpr std::string_view begin_marker = "\x1b[200~";
+    constexpr std::string_view end_marker = "\x1b[201~";
+    std::string payload;
+    payload.reserve(begin_marker.size() + text.size() + end_marker.size());
+    payload.append(begin_marker);
+
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const size_t next = text.find(end_marker, pos);
+        if (next == std::string_view::npos) {
+            payload.append(text.substr(pos));
+            break;
+        }
+        payload.append(text.substr(pos, next - pos));
+        pos = next + end_marker.size();
+    }
+    // Removing a marker can join an earlier "\x1b[201" with a following '~'
+    // into a new terminator, so repeat until the whole payload is inert.
+    for (size_t at = begin_marker.size();
+         (at = payload.find(end_marker, at)) != std::string::npos;) {
+        payload.erase(at, end_marker.size());
+    }
+    payload.append(end_marker);
+    return payload;
+}
+
 void TerminalEngine::erase_in_display(int mode) {
     if (mode != 3) wrap_next_ = false;
     Cell empty_cell;

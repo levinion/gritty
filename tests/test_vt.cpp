@@ -503,3 +503,28 @@ TEST_CASE("print_ascii_run honors insert mode and DEC graphics fallback") {
     CHECK(fast.grid().cell(0, 0) == slow.grid().cell(0, 0));
     CHECK(fast.grid().cell(1, 0) == slow.grid().cell(1, 0));
 }
+
+TEST_CASE("Bracketed paste payloads are wrapped and cannot close themselves") {
+    TerminalEngine engine(40, 5);
+    VtParser parser(engine);
+
+    CHECK_FALSE(engine.bracketed_paste());
+    CHECK(engine.format_paste_payload("raw\x1b[201~") == "raw\x1b[201~");
+
+    parser.feed("\x1b[?2004h");
+    REQUIRE(engine.bracketed_paste());
+    CHECK(engine.format_paste_payload("caf\xc3\xa9") ==
+          "\x1b[200~caf\xc3\xa9\x1b[201~");
+    CHECK(engine.format_paste_payload("a\x1b[201~b") == "\x1b[200~ab\x1b[201~");
+    CHECK(engine.format_paste_payload("\x1b[201~\x1b[201~") ==
+          "\x1b[200~\x1b[201~");
+    // Deleting one terminator must not join an earlier prefix and a later
+    // '~' into a fresh terminator.
+    CHECK(engine.format_paste_payload("\x1b[201\x1b[201~~") ==
+          "\x1b[200~\x1b[201~");
+    CHECK(engine.format_paste_payload("") == "\x1b[200~\x1b[201~");
+
+    parser.feed("\x1b[?2004l");
+    CHECK_FALSE(engine.bracketed_paste());
+    CHECK(engine.format_paste_payload("plain") == "plain");
+}
