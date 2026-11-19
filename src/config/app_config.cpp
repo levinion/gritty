@@ -77,6 +77,12 @@ std::unexpected<std::string> invalid(std::string_view key, std::string_view valu
 
 } // namespace
 
+std::optional<platform::WindowDecorations> parse_window_decorations(
+    std::string_view value
+) noexcept {
+    return platform::parse_window_decorations(value);
+}
+
 AppConfig::AppConfig() {
 #if defined(PLATFORM_MACOS)
     font.family = "Monaco";
@@ -196,6 +202,13 @@ std::expected<void, std::string> AppConfig::apply_override(
         if (!parse_integer(value, integer) || integer <= 0 ||
             integer > std::numeric_limits<int>::max()) return invalid(key, value);
         scrollback.multiplier = static_cast<int>(integer);
+        return {};
+    }
+
+    if (lowered == "window.decorations") {
+        const auto decorations = parse_window_decorations(value);
+        if (!decorations) return invalid(key, value);
+        window.decorations = *decorations;
         return {};
     }
 

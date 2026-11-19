@@ -7,6 +7,26 @@
 
 namespace gritty::platform::macos {
 
+namespace {
+
+NSWindowStyleMask style_mask_for_decorations(WindowDecorations decorations) noexcept {
+    switch (decorations) {
+        case WindowDecorations::None:
+            return NSWindowStyleMaskBorderless;
+        case WindowDecorations::Transparent:
+        case WindowDecorations::Buttonless:
+            return NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                   NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable |
+                   NSWindowStyleMaskFullSizeContentView;
+        case WindowDecorations::Full:
+        default:
+            return NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                   NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+    }
+}
+
+} // namespace
+
 CocoaLayerSurface::CocoaLayerSurface(int width, int height, double scale)
     : pixel_width_(width), pixel_height_(height), scale_(scale) {
     @autoreleasepool {
@@ -132,15 +152,13 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         }
 
         NSRect frame = NSMakeRect(100, 100, pixel_width_ / scale_, pixel_height_ / scale_);
-        NSWindowStyleMask mask = NSWindowStyleMaskTitled |
-                                 NSWindowStyleMaskClosable |
-                                 NSWindowStyleMaskMiniaturizable |
-                                 NSWindowStyleMaskResizable;
+        const NSWindowStyleMask mask = style_mask_for_decorations(decorations_);
+        window_title_ = title;
 
-        NSWindow* window = [[NSWindow alloc] initWithContentRect:frame
-                                                       styleMask:mask
-                                                         backing:NSBackingStoreBuffered
-                                                           defer:NO];
+        GrittyWindow* window = [[GrittyWindow alloc] initWithContentRect:frame
+                                                                styleMask:mask
+                                                                  backing:NSBackingStoreBuffered
+                                                                    defer:NO];
         [window setReleasedWhenClosed:NO];
         window.opaque = !transparent_;
         window.backgroundColor = transparent_ ? NSColor.clearColor : NSColor.blackColor;
@@ -155,12 +173,11 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         [window setDelegate:delegate];
         native_delegate_ = (void*)delegate;
 
-        [window makeKeyAndOrderFront:nil];
-        [window makeFirstResponder:view];
-
         native_window_ = (void*)window;
         native_view_ = (void*)view;
+        apply_window_decorations();
 
+        [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     }
 }
@@ -184,10 +201,45 @@ void CocoaLayerSurface::set_transparent(bool transparent) {
 }
 
 void CocoaLayerSurface::set_title(const std::string& title) {
+    window_title_ = title;
     @autoreleasepool {
         if (native_window_) {
             NSWindow* win = (NSWindow*)native_window_;
             win.title = [NSString stringWithUTF8String:title.c_str()];
+        }
+    }
+}
+
+void CocoaLayerSurface::set_decorations(WindowDecorations decorations) {
+    decorations_ = decorations;
+    apply_window_decorations();
+}
+
+void CocoaLayerSurface::apply_window_decorations() {
+    if (!native_window_) return;
+    @autoreleasepool {
+        GrittyWindow* window = (GrittyWindow*)native_window_;
+        [window setStyleMask:style_mask_for_decorations(decorations_)];
+        window.hasShadow = YES;
+
+        const bool full_size = decorations_ == WindowDecorations::Transparent ||
+                               decorations_ == WindowDecorations::Buttonless;
+        window.titlebarAppearsTransparent = full_size;
+        window.titleVisibility = full_size ? NSWindowTitleHidden : NSWindowTitleVisible;
+
+        const bool show_buttons = decorations_ != WindowDecorations::Buttonless &&
+                                  decorations_ != WindowDecorations::None;
+        [window standardWindowButton:NSWindowCloseButton].hidden = !show_buttons;
+        [window standardWindowButton:NSWindowMiniaturizeButton].hidden = !show_buttons;
+        [window standardWindowButton:NSWindowZoomButton].hidden = !show_buttons;
+
+        // AppKit can reset the title, content view and first responder when the
+        // style mask changes; restore all three after the transition.
+        window.title = [NSString stringWithUTF8String:window_title_.c_str()];
+        if (native_view_) {
+            GrittyView* view = (GrittyView*)native_view_;
+            [window setContentView:view];
+            [window makeFirstResponder:view];
         }
     }
 }

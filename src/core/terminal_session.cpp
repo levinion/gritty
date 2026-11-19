@@ -162,6 +162,7 @@ TerminalSession::~TerminalSession() {
         surface_->set_resize_callback({});
         surface_->set_close_callback({});
         surface_->set_frame_ready_callback({});
+        surface_->set_mouse_reporting_provider({});
     }
     if (loop_ && pty_.master_fd() >= 0) {
         loop_->remove_fd(pty_.master_fd());
@@ -229,6 +230,9 @@ bool TerminalSession::start() {
             };
         });
         surface_->set_bracketed_paste_provider([this] { return engine_.bracketed_paste(); });
+        surface_->set_mouse_reporting_provider([this] {
+            return engine_.mouse_tracking() != MouseTrackingMode::None;
+        });
 
         if (cell_w > 0 && cell_h > 0) {
             surface_->resize(config_.cols * cell_w, config_.rows * cell_h, surface_->scale());

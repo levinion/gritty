@@ -146,7 +146,7 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool& invalid_alpha) {
 }
 
 void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
-                   bool& invalid_alpha) {
+                   bool& invalid_alpha, bool& invalid_decorations) {
     if (section == "main") {
         if (const auto value = as_string(find_key(table, "shell"))) cfg.main.shell = *value;
         if (const auto value = as_string(find_key(table, "term"))) cfg.main.term = *value;
@@ -196,21 +196,31 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         if (as_integer(find_key(table, "multiplier"), multiplier) && multiplier > 0 &&
             multiplier <= std::numeric_limits<int>::max())
             cfg.scrollback.multiplier = static_cast<int>(multiplier);
+        return;
+    }
+    if (section == "window") {
+        if (const auto value = as_string(find_key(table, "decorations"))) {
+            const auto decorations = parse_window_decorations(*value);
+            if (!decorations) invalid_decorations = true;
+            else cfg.window.decorations = *decorations;
+        }
     }
 }
 
-void apply_tables(AppConfig& cfg, toml_datum_t root, bool& invalid_alpha) {
+void apply_tables(AppConfig& cfg, toml_datum_t root, bool& invalid_alpha,
+                  bool& invalid_decorations) {
     constexpr std::string_view sections[] = {
-        "main", "font", "cursor", "colors", "scrollback"
+        "main", "font", "cursor", "colors", "scrollback", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(root, section);
-        if (table.type == TOML_TABLE) apply_section(cfg, section, table, invalid_alpha);
+        if (table.type == TOML_TABLE)
+            apply_section(cfg, section, table, invalid_alpha, invalid_decorations);
     }
 }
 
 void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform,
-                    bool& invalid_alpha) {
+                    bool& invalid_alpha, bool& invalid_decorations) {
     // Accept both [platform.macos.font] and legacy [macos.font] forms.
     toml_datum_t platform_root = find_key(root, "platform");
     const bool prefixed = platform_root.type == TOML_TABLE;
@@ -219,15 +229,16 @@ void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform
     if (os.type != TOML_TABLE) return;
 
     constexpr std::string_view sections[] = {
-        "main", "font", "cursor", "colors", "scrollback"
+        "main", "font", "cursor", "colors", "scrollback", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(os, section);
-        if (table.type == TOML_TABLE) apply_section(cfg, section, table, invalid_alpha);
+        if (table.type == TOML_TABLE)
+            apply_section(cfg, section, table, invalid_alpha, invalid_decorations);
     }
     if (prefixed) {
         // [platform.macos] font = { family = "...", size = 14.0 }
-        apply_tables(cfg, os, invalid_alpha);
+        apply_tables(cfg, os, invalid_alpha, invalid_decorations);
     }
 }
 
@@ -241,11 +252,16 @@ std::expected<std::shared_ptr<AppConfig>, ConfigError> load(
 
     auto cfg = std::make_shared<AppConfig>();
     bool invalid_alpha = false;
-    apply_tables(*cfg, parsed.root(), invalid_alpha);
-    apply_platform(*cfg, parsed.root(), target_platform(platform_override), invalid_alpha);
+    bool invalid_decorations = false;
+    apply_tables(*cfg, parsed.root(), invalid_alpha, invalid_decorations);
+    apply_platform(*cfg, parsed.root(), target_platform(platform_override),
+                   invalid_alpha, invalid_decorations);
     if (invalid_alpha)
         return std::unexpected(ConfigError{
             .message = "colors.alpha must be a finite number between 0 and 1"});
+    if (invalid_decorations)
+        return std::unexpected(ConfigError{
+            .message = "window.decorations must be full, none, transparent, or buttonless"});
     return cfg;
 }
 

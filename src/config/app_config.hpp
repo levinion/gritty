@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include "core/terminal_engine.hpp"
+#include "platform/pal_interfaces.hpp"
 #include "render/font_engine.hpp"
 
 namespace gritty::config {
@@ -52,12 +53,22 @@ struct ScrollbackConfig {
     int multiplier{3};
 };
 
+struct WindowConfig {
+    platform::WindowDecorations decorations{platform::WindowDecorations::Full};
+};
+
+// Case-insensitive parser shared by TOML, CLI overrides and tests.
+[[nodiscard]] std::optional<platform::WindowDecorations> parse_window_decorations(
+    std::string_view value
+) noexcept;
+
 struct AppConfig {
     MainConfig main;
     FontConfig font;
     CursorConfig cursor;
     ColorsConfig colors;
     ScrollbackConfig scrollback;
+    WindowConfig window;
 
     AppConfig();
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,33 @@
 #include "input/input_events.hpp"
 
 namespace gritty::platform {
+
+enum class WindowDecorations : uint8_t {
+    Full = 0,
+    None = 1,
+    Transparent = 2,
+    Buttonless = 3,
+};
+
+// Case-insensitive, allocation-free parser for the TOML/CLI string values.
+[[nodiscard]] constexpr std::optional<WindowDecorations> parse_window_decorations(
+    std::string_view value
+) noexcept {
+    auto equals = [value](std::string_view expected) noexcept {
+        if (value.size() != expected.size()) return false;
+        for (size_t i = 0; i < value.size(); ++i) {
+            const char c = value[i];
+            const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+            if (lowered != expected[i]) return false;
+        }
+        return true;
+    };
+    if (equals("full")) return WindowDecorations::Full;
+    if (equals("none")) return WindowDecorations::None;
+    if (equals("transparent")) return WindowDecorations::Transparent;
+    if (equals("buttonless")) return WindowDecorations::Buttonless;
+    return std::nullopt;
+}
 
 // Window surface interface (WaylandShmSurface or CocoaLayerSurface)
 class IWindowSurface {
@@ -25,6 +53,10 @@ public:
     virtual void present(const util::PixmanRegion& damage) = 0;
     virtual void set_title(const std::string& title) { (void)title; }
     virtual void set_transparent(bool transparent) { (void)transparent; }
+    virtual void set_decorations(WindowDecorations decorations) { (void)decorations; }
+    [[nodiscard]] virtual WindowDecorations decorations() const noexcept {
+        return WindowDecorations::Full;
+    }
     // True means presentation is scheduled; false keeps synchronous/headless
     // backends working without a native frame clock.
     virtual bool request_frame() { return false; }
@@ -51,6 +83,9 @@ public:
     };
     using CursorRectProvider = std::function<CursorRect()>;
     using BracketedPasteProvider = std::function<bool()>;
+    // True while the child has enabled mouse reporting; native titlebar drags
+    // must not steal those events.
+    using MouseReportingProvider = std::function<bool()>;
     using TextCommitCallback = std::function<void(std::string_view)>;
     using CloseCallback = std::function<void()>;
     using FrameReadyCallback = std::function<void()>;
@@ -68,6 +103,7 @@ public:
     virtual void set_focus_callback(FocusCallback cb) { (void)cb; }
     virtual void set_cursor_rect_provider(CursorRectProvider cb) { (void)cb; }
     virtual void set_bracketed_paste_provider(BracketedPasteProvider cb) { (void)cb; }
+    virtual void set_mouse_reporting_provider(MouseReportingProvider cb) { (void)cb; }
     // Open a hyperlink (OSC 8) in the platform's default handler.
     virtual void open_url(std::string_view url) { (void)url; }
 };

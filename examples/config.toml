@@ -47,6 +47,10 @@ bright7 = "#ffffff"
 lines = 2000
 multiplier = 3
 
+[window]
+# full | none | transparent | buttonless
+decorations = "full"
+
 # macOS Platform Overrides (automatically deep-merged on macOS)
 [platform.macos]
 font = { family = "JetBrainsMono Nerd Font", size = 14.0 }

@@ -148,6 +148,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    surf_ptr->set_decorations(cfg->window.decorations);
     surf_ptr->show_window(cfg->main.title);
     session->render_frame(true);
 

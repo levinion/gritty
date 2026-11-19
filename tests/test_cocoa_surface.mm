@@ -8,6 +8,7 @@
 #include <type_traits>
 #include <mach/mach.h>
 #include "platform/macos/cocoa_surface.hpp"
+#include "platform/macos/cocoa_view.hpp"
 #include "platform/macos/kqueue_loop.hpp"
 #include "platform/macos/application_icon.hpp"
 
@@ -398,5 +399,63 @@ TEST_CASE("Shared surface orientation and premultiplied alpha survive native lay
         CHECK(pixels[(h - 1) * row + w - 1] == 0xffeeee00);
         CGContextRelease(context);
         CGColorSpaceRelease(cs);
+    }
+}
+
+TEST_CASE("Cocoa window decorations modes and runtime transitions") {
+    @autoreleasepool {
+        using gritty::platform::WindowDecorations;
+        Surface surface(256, 192);
+        surface.show_window("Gritty decorations regression");
+        NSWindow* window = find_window(@"Gritty decorations regression");
+        REQUIRE(window != nil);
+        REQUIRE([window isKindOfClass:[GrittyWindow class]]);
+        CHECK([(GrittyWindow*)window canBecomeKeyWindow]);
+        CHECK([(GrittyWindow*)window canBecomeMainWindow]);
+
+        surface.set_decorations(WindowDecorations::None);
+        pump(0.01);
+        CHECK(window.styleMask == NSWindowStyleMaskBorderless);
+        CHECK([(GrittyWindow*)window canBecomeKeyWindow]);
+
+        surface.set_decorations(WindowDecorations::Transparent);
+        pump(0.01);
+        CHECK((window.styleMask & NSWindowStyleMaskFullSizeContentView) != 0);
+        CHECK(window.titlebarAppearsTransparent);
+        CHECK(window.titleVisibility == NSWindowTitleHidden);
+        CHECK([window standardWindowButton:NSWindowCloseButton].hidden == NO);
+        CHECK([window standardWindowButton:NSWindowMiniaturizeButton].hidden == NO);
+        CHECK([window standardWindowButton:NSWindowZoomButton].hidden == NO);
+
+        surface.set_decorations(WindowDecorations::Buttonless);
+        pump(0.01);
+        CHECK((window.styleMask & NSWindowStyleMaskFullSizeContentView) != 0);
+        CHECK([window standardWindowButton:NSWindowCloseButton].hidden == YES);
+        CHECK([window standardWindowButton:NSWindowMiniaturizeButton].hidden == YES);
+        CHECK([window standardWindowButton:NSWindowZoomButton].hidden == YES);
+
+        for (const auto mode : {WindowDecorations::Full, WindowDecorations::Transparent,
+                                WindowDecorations::Buttonless, WindowDecorations::None,
+                                WindowDecorations::Full}) {
+            surface.set_decorations(mode);
+            pump(0.01);
+            CHECK([window.title isEqualToString:@"Gritty decorations regression"]);
+            CHECK([window.firstResponder isKindOfClass:[GrittyView class]]);
+            CHECK(surface.decorations() == mode);
+        }
+    }
+}
+
+TEST_CASE("Cocoa initial window decorations use the configured style mask") {
+    @autoreleasepool {
+        using gritty::platform::WindowDecorations;
+        Surface surface(256, 192);
+        surface.set_decorations(WindowDecorations::Buttonless);
+        surface.show_window("Gritty initial decorations regression");
+        NSWindow* window = find_window(@"Gritty initial decorations regression");
+        REQUIRE(window != nil);
+        CHECK((window.styleMask & NSWindowStyleMaskFullSizeContentView) != 0);
+        CHECK(window.titlebarAppearsTransparent);
+        CHECK([window standardWindowButton:NSWindowCloseButton].hidden == YES);
     }
 }

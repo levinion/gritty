@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include "config/toml_loader.hpp"
 
+#include <utility>
+
 using namespace gritty::config;
 
 TEST_CASE("TomlLoader parse basic config and hex colors") {
@@ -112,4 +114,36 @@ TEST_CASE("TomlLoader parse hex colors utility") {
     CHECK(TomlLoader::parse_color("0x0000ff") == 0xFF0000FF);
     CHECK(TomlLoader::parse_color("#80112233") == 0x80112233);
     CHECK(TomlLoader::parse_color("invalid") == std::nullopt);
+}
+
+TEST_CASE("TomlLoader parses window decorations") {
+    using gritty::platform::WindowDecorations;
+
+    CHECK(parse_window_decorations("full") == WindowDecorations::Full);
+    CHECK(parse_window_decorations("NONE") == WindowDecorations::None);
+    CHECK(parse_window_decorations("Transparent") == WindowDecorations::Transparent);
+    CHECK(parse_window_decorations("BUTTONLESS") == WindowDecorations::Buttonless);
+    CHECK_FALSE(parse_window_decorations("borderless").has_value());
+
+    for (const auto pair : {
+        std::pair<const char*, WindowDecorations>{"full", WindowDecorations::Full},
+        {"none", WindowDecorations::None},
+        {"Transparent", WindowDecorations::Transparent},
+        {"BUTTONLESS", WindowDecorations::Buttonless},
+    }) {
+        const auto result = TomlLoader::load_from_string(
+            std::string("[window]\ndecorations = \"") + pair.first + "\"\n");
+        REQUIRE(result.has_value());
+        CHECK((*result)->window.decorations == pair.second);
+    }
+
+    const auto invalid = TomlLoader::load_from_string("[window]\ndecorations = \"invalid\"\n");
+    REQUIRE_FALSE(invalid.has_value());
+    CHECK(invalid.error().message.find("window.decorations") != std::string::npos);
+
+    auto cfg = AppConfig{};
+    const auto overridden = cfg.apply_override("window.decorations=TRANSPARENT");
+    REQUIRE(overridden.has_value());
+    CHECK(cfg.window.decorations == WindowDecorations::Transparent);
+    CHECK_FALSE(cfg.apply_override("window.decorations=invalid").has_value());
 }

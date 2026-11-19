@@ -4,6 +4,11 @@
 #include <algorithm>
 #include <string_view>
 
+@implementation GrittyWindow
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
 @implementation GrittyView
 
 - (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface {
@@ -130,7 +135,24 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     (void)event;
 }
 
-- (void)mouseDown:(NSEvent *)event { [self handleMouse:event]; }
+- (void)mouseDown:(NSEvent *)event {
+    if (_surface && self.window) {
+        const auto decorations = _surface->decorations();
+        const bool borderless_titlebar = decorations == gritty::platform::WindowDecorations::Transparent ||
+                                         decorations == gritty::platform::WindowDecorations::Buttonless;
+        const auto flags = [event modifierFlags] &
+            (NSEventModifierFlagShift | NSEventModifierFlagControl |
+             NSEventModifierFlagOption | NSEventModifierFlagCommand);
+        if (borderless_titlebar && flags == 0 && !_surface->mouse_reporting()) {
+            const NSPoint local = [self convertPoint:[event locationInWindow] fromView:nil];
+            if (local.y >= self.bounds.size.height - 28.0) {
+                [self.window performWindowDragWithEvent:event];
+                return;
+            }
+        }
+    }
+    [self handleMouse:event];
+}
 - (void)mouseUp:(NSEvent *)event { [self handleMouse:event]; }
 - (void)rightMouseDown:(NSEvent *)event { [self handleMouse:event]; }
 - (void)rightMouseUp:(NSEvent *)event { [self handleMouse:event]; }

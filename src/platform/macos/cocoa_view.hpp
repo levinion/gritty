@@ -6,6 +6,9 @@
 
 namespace gritty::platform::macos { class CocoaLayerSurface; }
 
+@interface GrittyWindow : NSWindow
+@end
+
 @interface GrittyView : NSView <NSTextInputClient> {
     gritty::platform::macos::CocoaLayerSurface* _surface;
     CADisplayLink* _displayLink;

@@ -42,6 +42,11 @@ public:
     void show_window(const std::string& title = "Gritty");
     void set_title(const std::string& title) override;
     void set_transparent(bool transparent) override;
+    void set_decorations(WindowDecorations decorations) override;
+    [[nodiscard]] WindowDecorations decorations() const noexcept override { return decorations_; }
+    [[nodiscard]] bool mouse_reporting() const noexcept {
+        return mouse_reporting_cb_ && mouse_reporting_cb_();
+    }
     [[nodiscard]] bool is_transparent() const noexcept { return transparent_; }
     [[nodiscard]] size_t buffer_allocation_count() const noexcept { return buffers_.allocation_count(); }
     [[nodiscard]] size_t buffer_live_bytes() const noexcept { return buffers_.live_bytes(); }
@@ -64,6 +69,9 @@ public:
     void set_focus_callback(FocusCallback cb) override { focus_cb_ = std::move(cb); }
     void set_cursor_rect_provider(CursorRectProvider cb) override { cursor_rect_cb_ = std::move(cb); }
     void set_bracketed_paste_provider(BracketedPasteProvider cb) override { bracketed_paste_cb_ = std::move(cb); }
+    void set_mouse_reporting_provider(MouseReportingProvider cb) override {
+        mouse_reporting_cb_ = std::move(cb);
+    }
 
     // Called by GrittyView's NSTextInputClient implementation.
     [[nodiscard]] bool input_wants_bracketed_paste() const noexcept {
@@ -88,6 +96,7 @@ public:
 
 private:
     void reallocate_buffer();
+    void apply_window_decorations();
     void schedule_resize(double delay);
     void cancel_resize_timer();
     void schedule_buffer_trim();
@@ -103,6 +112,8 @@ private:
     IOSurfaceFramePool buffers_;
     size_t presented_frames_{0};
     bool transparent_{false};
+    WindowDecorations decorations_{WindowDecorations::Full};
+    std::string window_title_{"Gritty"};
     void* native_window_{nullptr};
     void* native_view_{nullptr};
     void* native_delegate_{nullptr};
@@ -126,6 +137,7 @@ private:
     FocusCallback focus_cb_;
     CursorRectProvider cursor_rect_cb_;
     BracketedPasteProvider bracketed_paste_cb_;
+    MouseReportingProvider mouse_reporting_cb_;
 };
 
 } // namespace gritty::platform::macos
