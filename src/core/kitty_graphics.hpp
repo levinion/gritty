@@ -97,6 +97,9 @@ public:
     void clear_placements();
     void delete_image(uint32_t image_id);
     void clear();
+    // Idle cleanup: drop retained capacity from chunked base64 transfers and
+    // placement tables once no image is left on screen. Never called per frame.
+    void release_temporary_buffers();
 
 private:
     std::optional<util::PixmanImage> decode_image(

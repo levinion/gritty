@@ -8,6 +8,7 @@
 #include "config/cli.hpp"
 #include "config/toml_loader.hpp"
 #include "core/terminal_session.hpp"
+#include "util/heap_trim.hpp"
 
 #if defined(PLATFORM_MACOS)
 #include "platform/macos/cocoa_surface.hpp"
@@ -114,10 +115,12 @@ int main(int argc, char* argv[]) {
         .cwd = cli.working_directory,
         .args = cli.command_args,
         .font_dpi = cfg->font.dpi,
+        .padding_x = cfg->window.padding.x,
+        .padding_y = cfg->window.padding.y,
         .antialias = cfg->font.antialias,
         .render_config = {
             .default_fg = cfg->colors.foreground,
-            .default_bg = cfg->colors.background_argb(),
+            .default_bg = cfg->effective_background_argb(),
             .cursor_color = cfg->cursor.color
         },
         .palette = cfg->colors.palette,
@@ -125,10 +128,10 @@ int main(int argc, char* argv[]) {
         .hold_on_exit = cli.hold,
     };
 
-    const double point_size = cli.font_size > 0 ? cli.font_size : cfg->font.size;
-    const int initial_w = static_cast<int>(std::ceil(static_cast<double>(cols) * point_size * 0.65));
-    const int initial_h = static_cast<int>(std::ceil(static_cast<double>(rows) * point_size * 1.30));
-    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(initial_w, initial_h);
+    // Start with no IOSurface: TerminalSession::start() loads the font and
+    // resizes to the exact grid geometry, so an approximate startup window
+    // would allocate and then discard a full-size framebuffer.
+    auto surface = std::make_unique<platform::macos::CocoaLayerSurface>(0, 0);
     auto loop = std::make_unique<platform::macos::KqueueRunLoop>();
     auto clipboard = std::make_unique<platform::macos::PasteboardClipboard>();
 
@@ -148,9 +151,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Register fallback file paths only: FontEngine opens each face lazily on
+    // the first glyph miss, so CJK/Emoji fonts cost no startup heap.
+    for (const auto& fallback : font_discovery.fallback_chain(
+             platform::FontPattern{.family = cfg->font.family})) {
+        if (fallback.path != resolved_font_path) session->add_fallback_font(fallback.path);
+    }
+
     surf_ptr->set_decorations(cfg->window.decorations);
     surf_ptr->show_window(cfg->main.title);
     session->render_frame(true);
+    // Config parsing and font discovery allocate short-lived heap pages.
+    // Trim once here, never on a rendering, input or PTY path.
+    util::trim_transient_heap();
 
     std::cout << "Gritty Terminal running.\n";
     std::cout << "Using font: " << resolved_font_path << " (" << cfg->font.size << "pt)\n";

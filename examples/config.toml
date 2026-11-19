@@ -22,9 +22,11 @@ color = "#ffffff"
 [colors]
 foreground = "#dddddd"
 background = "#111111" # Also accepts #AARRGGBB, e.g. #cc111111 (80% opaque)
-alpha = 0.8            # 0.0 = clear, 1.0 = opaque; try 0.8 for a translucent default background
+alpha = 1.0            # 0.0 = clear, 1.0 = opaque; only used when decorations are not "full"
 # alpha multiplies any alpha in background. Text and explicit app backgrounds stay opaque.
-# For Neovim transparency, set Normal/NormalNC/NormalFloat bg to NONE in your theme.
+# Full decorations are always opaque; use decorations = "transparent" (or "buttonless") with
+# alpha < 1 for a translucent background. For Neovim transparency, set
+# Normal/NormalNC/NormalFloat bg to NONE in your theme.
 cursor = "#ffffff"
 
 # ANSI 16 colors
@@ -49,6 +51,9 @@ bright7 = "#ffffff"
 [window]
 # full | none | transparent | buttonless
 decorations = "full"
+# Space around the terminal grid, in logical points (0..512 each side).
+# padding = 8            # shorthand for both axes
+# padding = { x = 8, y = 4 }
 
 # macOS Platform Overrides (automatically deep-merged on macOS)
 [platform.macos]

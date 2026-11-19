@@ -567,6 +567,7 @@ void KittyGraphicsEngine::clear_placements() {
     if (placement_delete_handler_) for (const auto& p : placements_) placement_delete_handler_(p);
     placements_.clear();
     virtual_placements_.clear();
+    if (images_.empty()) release_temporary_buffers();
 }
 
 void KittyGraphicsEngine::delete_image(uint32_t image_id) {
@@ -584,6 +585,7 @@ void KittyGraphicsEngine::delete_image(uint32_t image_id) {
                 return p.image_id == image_id;
             }),
         placements_.end());
+    if (images_.empty() && placements_.empty()) release_temporary_buffers();
 }
 
 void KittyGraphicsEngine::clear() {
@@ -591,6 +593,17 @@ void KittyGraphicsEngine::clear() {
     images_.clear();
     placements_.clear();
     current_memory_ = 0;
+    release_temporary_buffers();
+}
+
+void KittyGraphicsEngine::release_temporary_buffers() {
+    std::string empty;
+    pending_chunk_.buffer.swap(empty);
+    if (!images_.empty() || !placements_.empty() || !virtual_placements_.empty()) return;
+    placements_.shrink_to_fit();
+    virtual_placements_.shrink_to_fit();
+    decltype(images_) fresh;
+    images_.swap(fresh);
 }
 
 } // namespace gritty::core

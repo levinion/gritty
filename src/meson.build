@@ -38,17 +38,19 @@ core_sources = files(
   'input/input_mapper.cpp',
   'input/mouse_tracker.cpp',
   'util/base64.cpp',
+  'util/heap_trim.cpp',
 ) + platform_sources
 
 # Exceptions are treated as programming errors, not control flow. Tests keep
 # exceptions enabled for doctest.
 no_exception_args = ['-fno-exceptions']
+cpp_core_args = no_exception_args + ['-fno-rtti']
 
 gritty_core_lib = static_library('gritty_core',
   core_sources,
   include_directories: inc_dir,
   dependencies: [common_deps, platform_deps],
-  cpp_args: no_exception_args,
+  cpp_args: cpp_core_args,
   objcpp_args: no_exception_args,
 )
 
@@ -65,6 +67,6 @@ gritty_sources = files(
 gritty_exe = executable('gritty',
   gritty_sources,
   dependencies: [gritty_core_dep],
-  cpp_args: no_exception_args,
+  cpp_args: cpp_core_args,
   install: true,
 )

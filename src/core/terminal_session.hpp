@@ -24,6 +24,9 @@ struct SessionConfig {
     std::string cwd;
     std::vector<std::string> args;
     unsigned int font_dpi{96};
+    // Logical points on both sides of the terminal grid.
+    int padding_x{0};
+    int padding_y{0};
     render::AntialiasMode antialias{render::AntialiasMode::Grayscale};
     render::RenderConfig render_config;
     std::array<uint32_t, 256> palette{kDefaultPalette};
@@ -53,6 +56,8 @@ public:
     [[nodiscard]] platform::IWindowSurface& surface() noexcept { return *surface_; }
     [[nodiscard]] platform::IEventLoop& event_loop() noexcept { return *loop_; }
     [[nodiscard]] const render::FontEngine& font_engine() const noexcept { return font_engine_; }
+    // Registers a fallback path only; FreeType opens the face on first miss.
+    void add_fallback_font(std::string_view path) { font_engine_.add_fallback_font(path); }
 
     void handle_key_event(const input::KeyEvent& ev);
     // Format clipboard text for the child (DECSET 2004) and write it to PTY.
@@ -76,6 +81,7 @@ public:
     void on_window_focus(bool focused);
 
 private:
+    void update_padding_pixels() noexcept;
     void finish_synchronized_update();
     void render_pending_frame();
     void handle_pty_read();
@@ -97,6 +103,8 @@ private:
     std::array<uint8_t, 65536> read_buf_{};
     std::string last_title_;
     double font_scale_{1.0};
+    int padding_x_px_{0};
+    int padding_y_px_{0};
     std::string pending_write_;
     size_t write_offset_{0};
     bool watching_write_{false};

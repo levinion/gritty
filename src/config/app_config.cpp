@@ -109,6 +109,12 @@ AppConfig::AppConfig() {
 #endif
 }
 
+uint32_t AppConfig::effective_background_argb() const noexcept {
+    if (window.decorations == platform::WindowDecorations::Full)
+        return (colors.background & 0x00ffffffu) | 0xff000000u;
+    return colors.background_argb();
+}
+
 uint32_t ColorsConfig::background_argb() const noexcept {
     const double opacity = std::isfinite(alpha) ? std::clamp(alpha, 0.0, 1.0) : 1.0;
     const auto effective_alpha = static_cast<uint32_t>(std::lround((background >> 24) * opacity));
@@ -228,6 +234,17 @@ std::expected<void, std::string> AppConfig::apply_override(
         const auto decorations = parse_window_decorations(value);
         if (!decorations) return invalid(key, value);
         window.decorations = *decorations;
+        return {};
+    }
+    if (lowered == "window.padding" || lowered == "window.padding.x" ||
+        lowered == "window.padding.y") {
+        int64_t amount = 0;
+        if (!parse_integer(value, amount) || amount < 0 || amount > 512)
+            return invalid(key, value);
+        if (lowered == "window.padding" || lowered == "window.padding.x")
+            window.padding.x = static_cast<int>(amount);
+        if (lowered == "window.padding" || lowered == "window.padding.y")
+            window.padding.y = static_cast<int>(amount);
         return {};
     }
 

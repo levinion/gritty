@@ -95,6 +95,28 @@ TEST_CASE("Background opacity accepts numeric alpha and composes with AARRGGBB")
     CHECK((*result)->colors.background_argb() == 0x40111111);
 }
 
+TEST_CASE("Full decorations force an opaque background over configured alpha") {
+    using gritty::platform::WindowDecorations;
+    auto loaded = TomlLoader::load_from_string(
+        "[colors]\nbackground = '#604020'\nalpha = 0.5\n");
+    REQUIRE(loaded.has_value());
+    auto cfg = *loaded;
+    CHECK(cfg->colors.background_argb() == 0x80604020); // Raw value is unchanged.
+    CHECK(cfg->window.decorations == WindowDecorations::Full);
+    CHECK(cfg->effective_background_argb() == 0xff604020);
+
+    cfg->window.decorations = WindowDecorations::Transparent;
+    CHECK(cfg->effective_background_argb() == 0x80604020);
+    cfg->window.decorations = WindowDecorations::Buttonless;
+    CHECK(cfg->effective_background_argb() == 0x80604020);
+    cfg->window.decorations = WindowDecorations::None;
+    CHECK(cfg->effective_background_argb() == 0x80604020);
+
+    cfg->window.decorations = WindowDecorations::Full;
+    REQUIRE(cfg->apply_override("colors.alpha=0.25").has_value());
+    CHECK(cfg->effective_background_argb() == 0xff604020);
+}
+
 TEST_CASE("Background opacity rejects invalid values") {
     for (const auto* value : {"-0.1", "1.1", "nan", "inf", "'opaque'", "true", "[]"}) {
         CAPTURE(value);
@@ -180,4 +202,35 @@ TEST_CASE("OSC 52 modes parse case-insensitively from TOML and overrides") {
     REQUIRE(cfg.apply_override("main.osc52_read=false").has_value());
     CHECK(cfg.main.osc52 == Osc52Mode::CopyOnly);
     CHECK_FALSE(cfg.apply_override("main.osc52=third-party").has_value());
+}
+
+TEST_CASE("Window padding parses scalar, table and override forms") {
+    auto result = TomlLoader::load_from_string("[window]\npadding = 8\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->window.padding.x == 8);
+    CHECK((*result)->window.padding.y == 8);
+
+    result = TomlLoader::load_from_string("[window]\npadding = { x = 4, y = 9 }\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->window.padding.x == 4);
+    CHECK((*result)->window.padding.y == 9);
+
+    result = TomlLoader::load_from_string(
+        "[platform.macos.window]\npadding = { x = 6, y = 2 }\n", "macos");
+    REQUIRE(result.has_value());
+    CHECK((*result)->window.padding.x == 6);
+    CHECK((*result)->window.padding.y == 2);
+
+    AppConfig cfg;
+    REQUIRE(cfg.apply_override("window.padding.x=3").has_value());
+    REQUIRE(cfg.apply_override("window.padding.y=7").has_value());
+    CHECK(cfg.window.padding.x == 3);
+    CHECK(cfg.window.padding.y == 7);
+    REQUIRE(cfg.apply_override("window.padding=5").has_value());
+    CHECK(cfg.window.padding.x == 5);
+    CHECK(cfg.window.padding.y == 5);
+
+    CHECK_FALSE(cfg.apply_override("window.padding=-1").has_value());
+    CHECK_FALSE(cfg.apply_override("window.padding.x=513").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\npadding = -2\n").has_value());
 }

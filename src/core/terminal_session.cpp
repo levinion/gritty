@@ -148,6 +148,7 @@ bool TerminalSession::start() {
             static_cast<unsigned int>(std::lround(config_.font_dpi * font_scale_)))) {
         return false;
     }
+    update_padding_pixels();
 
     const auto& metrics = font_engine_.metrics();
     int cell_w = metrics.cell_width;
@@ -160,8 +161,8 @@ bool TerminalSession::start() {
         .env = {},
         .cols = config_.cols,
         .rows = config_.rows,
-        .pixel_width = config_.cols * cell_w,
-        .pixel_height = config_.rows * cell_h
+        .pixel_width = config_.cols * cell_w + 2 * padding_x_px_,
+        .pixel_height = config_.rows * cell_h + 2 * padding_y_px_
     };
 
     if (!pty_.spawn(pty_opts)) {
@@ -200,8 +201,8 @@ bool TerminalSession::start() {
             const double scale = surface_ ? surface_->scale() : 1.0;
             const double s = scale > 0 ? scale : 1.0;
             return {
-                engine_.cursor_col() * metrics.cell_width / s,
-                engine_.cursor_row() * metrics.cell_height / s,
+                padding_x_px_ / s + engine_.cursor_col() * metrics.cell_width / s,
+                padding_y_px_ / s + engine_.cursor_row() * metrics.cell_height / s,
                 metrics.cell_width / s,
                 metrics.cell_height / s,
             };
@@ -212,7 +213,8 @@ bool TerminalSession::start() {
         });
 
         if (cell_w > 0 && cell_h > 0) {
-            surface_->resize(config_.cols * cell_w, config_.rows * cell_h, surface_->scale());
+            surface_->resize(config_.cols * cell_w + 2 * padding_x_px_,
+                             config_.rows * cell_h + 2 * padding_y_px_, surface_->scale());
         }
     }
 
@@ -375,10 +377,17 @@ void TerminalSession::handle_mouse_event(const input::MouseEvent& ev) {
     auto normalized = ev;
     const auto& metrics = font_engine_.metrics();
     if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
-    normalized.pixel_x = std::clamp(ev.pixel_x, 0, engine_.cols() * metrics.cell_width - 1);
-    normalized.pixel_y = std::clamp(ev.pixel_y, 0, engine_.rows() * metrics.cell_height - 1);
-    normalized.col = normalized.pixel_x / metrics.cell_width;
-    normalized.row = normalized.pixel_y / metrics.cell_height;
+    // Mouse coordinates arrive in surface pixels; padding belongs to the
+    // window frame, so clicks in it are not terminal cells.
+    const int x = ev.pixel_x - padding_x_px_;
+    const int y = ev.pixel_y - padding_y_px_;
+    const int content_w = engine_.cols() * metrics.cell_width;
+    const int content_h = engine_.rows() * metrics.cell_height;
+    if (x < 0 || y < 0 || x >= content_w || y >= content_h) return;
+    normalized.pixel_x = x;
+    normalized.pixel_y = y;
+    normalized.col = x / metrics.cell_width;
+    normalized.row = y / metrics.cell_height;
 
     // Cmd+click on an OSC 8 link opens it. When tmux has mouse reporting on,
     // the click belongs to tmux (it can forward or handle links itself).
@@ -414,10 +423,11 @@ void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
                 static_cast<unsigned int>(std::lround(config_.font_dpi * scale)))) return;
         font_scale_ = scale;
     }
+    update_padding_pixels();
     const auto& metrics = font_engine_.metrics();
     if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
-    int new_cols = px_w / metrics.cell_width;
-    int new_rows = px_h / metrics.cell_height;
+    int new_cols = (px_w - 2 * padding_x_px_) / metrics.cell_width;
+    int new_rows = (px_h - 2 * padding_y_px_) / metrics.cell_height;
 
     if (new_cols > 0 && new_rows > 0 && (new_cols != engine_.cols() || new_rows != engine_.rows())) {
         engine_.resize(new_cols, new_rows);
@@ -426,6 +436,12 @@ void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
     // same. Update PTY pixel dimensions and repaint the entire new buffer.
     if (new_cols > 0 && new_rows > 0) pty_.resize(new_cols, new_rows, px_w, px_h);
     render_frame(true);
+}
+
+void TerminalSession::update_padding_pixels() noexcept {
+    const double s = font_scale_ > 0 ? font_scale_ : 1.0;
+    padding_x_px_ = std::max(0, static_cast<int>(std::lround(config_.padding_x * s)));
+    padding_y_px_ = std::max(0, static_cast<int>(std::lround(config_.padding_y * s)));
 }
 
 void TerminalSession::finish_synchronized_update() {
@@ -468,9 +484,51 @@ void TerminalSession::render_pending_frame() {
     pixman_image_t* back_buf = surface_->get_back_buffer();
     if (!back_buf) return;
 
-    damage_region_.clear();
-    renderer_.render(engine_, back_buf, &damage_region_, full_redraw_pending_);
+    const int target_w = pixman_image_get_width(back_buf);
+    const int target_h = pixman_image_get_height(back_buf);
+    const auto& metrics = font_engine_.metrics();
+    const int content_w = std::min(engine_.cols() * metrics.cell_width,
+                                   target_w - 2 * padding_x_px_);
+    const int content_h = std::min(engine_.rows() * metrics.cell_height,
+                                   target_h - 2 * padding_y_px_);
+    const bool full_redraw = full_redraw_pending_;
     full_redraw_pending_ = false;
+
+    damage_region_.clear();
+    if (full_redraw || content_w <= 0 || content_h <= 0) {
+        // Padding is static; repaint it only with the whole frame (startup,
+        // resize or a new surface), then let the renderer own the grid area.
+        const uint32_t argb = renderer_.config().default_bg;
+        const pixman_color_t bg{
+            static_cast<uint16_t>(((argb >> 16) & 0xff) * 257),
+            static_cast<uint16_t>(((argb >> 8) & 0xff) * 257),
+            static_cast<uint16_t>((argb & 0xff) * 257),
+            static_cast<uint16_t>(((argb >> 24) & 0xff) * 257),
+        };
+        const pixman_rectangle16_t rect{0, 0,
+            static_cast<uint16_t>(std::max(0, target_w)),
+            static_cast<uint16_t>(std::max(0, target_h))};
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, back_buf, &bg, 1, &rect);
+        damage_region_.union_rect(0, 0, std::max(0, target_w), std::max(0, target_h));
+    }
+
+    if (content_w > 0 && content_h > 0) {
+        const auto format = pixman_image_get_format(back_buf);
+        const int bpp = std::max(1, static_cast<int>(PIXMAN_FORMAT_BPP(format) / 8));
+        auto* pixels = reinterpret_cast<uint8_t*>(pixman_image_get_data(back_buf));
+        const int stride = pixman_image_get_stride(back_buf);
+        auto* content_bits = reinterpret_cast<uint32_t*>(
+            pixels + static_cast<size_t>(padding_y_px_) * stride +
+                static_cast<size_t>(padding_x_px_) * bpp);
+        util::PixmanImage content_view(pixman_image_create_bits(
+            format, content_w, content_h, content_bits, stride));
+        util::PixmanRegion content_damage;
+        renderer_.render(engine_, content_view.get(), &content_damage, full_redraw);
+        if (!full_redraw && !content_damage.empty()) {
+            content_damage.translate(padding_x_px_, padding_y_px_);
+            damage_region_.union_region(content_damage);
+        }
+    }
     surface_->present(damage_region_);
     if (present_observer_) present_observer_();
 }

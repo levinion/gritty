@@ -571,3 +571,61 @@ TEST_CASE("Small paced PTY output bypasses the coalescing timer") {
     CHECK(output->frames > frames);
     CHECK(events->timer_delay == 0); // No FrameCoalesce timer was armed.
 }
+
+TEST_CASE("Window padding surrounds the grid and offsets input coordinates") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.cols = 8;
+    config.rows = 2;
+    config.padding_x = 4;
+    config.padding_y = 3;
+    config.render_config.render_cursor = false;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "read line"};
+    core::TerminalSession session(config, std::move(surface), std::make_unique<TestLoop>(), nullptr);
+    REQUIRE(session.start());
+
+    const auto& metrics = session.font_engine().metrics();
+    CHECK(output->width == config.cols * metrics.cell_width + 8);
+    CHECK(output->height == config.rows * metrics.cell_height + 6);
+    CHECK(output->last_damage.x1 == 0);
+    CHECK(output->last_damage.y1 == 0);
+    CHECK(output->last_damage.x2 == output->width);
+    CHECK(output->last_damage.y2 == output->height);
+    const auto pixel = [&](int x, int y) {
+        return output->pixels.data()[y * (output->pixels.stride() / 4) + x];
+    };
+    CHECK(pixel(0, 0) == config.render_config.default_bg);
+    CHECK(pixel(output->width - 1, output->height - 1) == config.render_config.default_bg);
+
+    core::Cell block;
+    block.codepoint = U'\u2588'; // Full block: exact foreground colour.
+    session.engine().grid().set_cell(0, 0, block);
+    session.render_frame(true);
+    CHECK(pixel(config.padding_x + metrics.cell_width / 2,
+                config.padding_y + metrics.cell_height / 2) == 0xffdddddd);
+
+    const auto id = session.engine().get_or_create_hyperlink_id("https://example.com/pad");
+    core::Cell linked;
+    linked.codepoint = U'x';
+    session.engine().grid().set_cell_with_extra(0, 0, linked,
+        core::CellExtra{.hyperlink_id = id});
+    input::MouseEvent click;
+    click.button = input::MouseButton::Left;
+    click.action = input::MouseAction::Press;
+    click.mods.meta = true;
+    click.pixel_x = config.padding_x + metrics.cell_width / 2;
+    click.pixel_y = config.padding_y + metrics.cell_height / 2;
+    session.handle_mouse_event(click);
+    CHECK(output->opened_url == "https://example.com/pad");
+
+    output->opened_url.clear();
+    click.pixel_x = 1;
+    click.pixel_y = 1;
+    session.handle_mouse_event(click);
+    CHECK(output->opened_url.empty());
+}

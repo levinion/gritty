@@ -258,7 +258,9 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
     if (face_idx >= faces_.size()) return nullptr;
     FT_Face face = faces_[face_idx].face.get();
 
-    FT_Int32 load_flags = FT_LOAD_DEFAULT;
+    // FT_LOAD_COLOR is ignored by monochrome faces. On a colour hit FreeType
+    // returns FT_PIXEL_MODE_BGRA, handled below as an independent source page.
+    FT_Int32 load_flags = FT_LOAD_DEFAULT | FT_LOAD_COLOR;
     FT_Render_Mode render_mode = FT_RENDER_MODE_LIGHT;
 
     switch (effective_antialias_mode()) {
@@ -301,6 +303,7 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
         cached.width = 0;
         cached.height = 0;
         cached.is_subpixel = false;
+        cached.is_color = false;
         GlyphKey key{
             .glyph_index = glyph_index,
             .face_idx = face_idx,
@@ -310,7 +313,35 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
         return cache_glyph(key, std::move(cached));
     }
 
-    if (bitmap.pixel_mode == FT_PIXEL_MODE_LCD) {
+    if (bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
+        // Colour emoji: allocate a BGRA page only on an actual hit. Keep it
+        // out of the monochrome A8 atlas and out of glyph batching.
+        cached.width = static_cast<int>(bitmap.width);
+        cached.height = static_cast<int>(bitmap.rows);
+        cached.is_subpixel = false;
+        cached.is_color = true;
+        const int w = cached.width, h = cached.height;
+        pixman_image_t* raw_img = pixman_image_create_bits(
+            PIXMAN_a8r8g8b8, w, h, nullptr, w * 4);
+        if (!raw_img) return nullptr;
+        cached.mask.reset(raw_img);
+        auto* dst = cached.mask.data();
+        const int dst_stride = cached.mask.stride() / 4;
+        for (int y = 0; y < h; ++y) {
+            const uint8_t* src_row = bitmap.buffer + static_cast<size_t>(y) * bitmap.pitch;
+            uint32_t* dst_row = dst + static_cast<size_t>(y) * dst_stride;
+            for (int x = 0; x < w; ++x) {
+                const uint8_t a = src_row[x * 4 + 3];
+                const auto premultiply = [a](uint8_t c) noexcept -> uint8_t {
+                    return static_cast<uint8_t>((static_cast<uint32_t>(c) * a + 127u) / 255u);
+                };
+                dst_row[x] = (static_cast<uint32_t>(a) << 24) |
+                    (static_cast<uint32_t>(premultiply(src_row[x * 4 + 2])) << 16) |
+                    (static_cast<uint32_t>(premultiply(src_row[x * 4 + 1])) << 8) |
+                    premultiply(src_row[x * 4]);
+            }
+        }
+    } else if (bitmap.pixel_mode == FT_PIXEL_MODE_LCD) {
         // Horizontal RGB: bitmap.width is 3 * pixel_width
         int pixel_width = bitmap.width / 3;
         int pixel_height = bitmap.rows;

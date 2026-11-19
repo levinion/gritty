@@ -12,6 +12,19 @@ uint32_t next_atlas_generation() noexcept {
     static std::atomic<uint32_t> generation{1};
     return generation.fetch_add(1, std::memory_order_relaxed);
 }
+
+void composite_cached_glyph(pixman_image_t* target, pixman_image_t* solid,
+                            const CachedGlyph& glyph, int x, int y) noexcept {
+    if (glyph.is_color) {
+        // Colour emoji pages carry their own premultiplied pixels; the SGR
+        // foreground is deliberately ignored, as in foot's colour glyph path.
+        pixman_image_composite32(PIXMAN_OP_OVER, glyph.mask.get(), nullptr, target,
+            0, 0, 0, 0, x, y, glyph.width, glyph.height);
+    } else {
+        pixman_image_composite32(PIXMAN_OP_OVER, solid, glyph.mask.get(), target,
+            0, 0, 0, 0, x, y, glyph.width, glyph.height);
+    }
+}
 } // namespace
 
 CpuRenderer::CpuRenderer(FontEngine& font_engine, RenderConfig config)
@@ -984,11 +997,9 @@ void CpuRenderer::render_cell_foreground(
                     const CachedGlyph* glyph = font_engine_.glyph_for_index(
                         shaped->face_idx, part.glyph_index, cell.attrs.bold, cell.attrs.italic);
                     if (glyph && glyph->mask.valid() && glyph->width > 0 && glyph->height > 0) {
-                        pixman_image_composite32(PIXMAN_OP_OVER, glyph_solid, glyph->mask.get(), target,
-                            0, 0, 0, 0,
+                        composite_cached_glyph(target, glyph_solid, *glyph,
                             px + pen_x + part.x_offset + glyph->bearing_x,
-                            py + metrics.ascent - pen_y - part.y_offset - glyph->bearing_y,
-                            glyph->width, glyph->height);
+                            py + metrics.ascent - pen_y - part.y_offset - glyph->bearing_y);
                     }
                     pen_x += part.x_advance;
                     pen_y += part.y_advance;
@@ -1002,11 +1013,8 @@ void CpuRenderer::render_cell_foreground(
         if (cp != 0) {
             const CachedGlyph* glyph = font_engine_.get_glyph(cp, cell.attrs.bold, cell.attrs.italic);
             if (glyph && glyph->mask.valid() && glyph->width > 0 && glyph->height > 0) {
-                pixman_image_composite32(PIXMAN_OP_OVER, glyph_solid, glyph->mask.get(), target,
-                    0, 0, 0, 0,
-                    px + glyph->bearing_x,
-                    py + metrics.ascent - glyph->bearing_y,
-                    glyph->width, glyph->height);
+                composite_cached_glyph(target, glyph_solid, *glyph,
+                    px + glyph->bearing_x, py + metrics.ascent - glyph->bearing_y);
             }
         }
     }

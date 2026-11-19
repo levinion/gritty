@@ -94,6 +94,21 @@ TEST_CASE("KittyGraphicsEngine chunked transmission") {
     CHECK(img->image.width() == 1);
 }
 
+TEST_CASE("Kitty clear releases chunk buffers without breaking later transfers") {
+    KittyGraphicsEngine engine;
+    CHECK(engine.process_apc_sequence("Ga=T,f=32,s=1,v=1,i=31,m=1;/w", 0, 0).empty());
+    CHECK(engine.process_apc_sequence("Gm=0;AA/w==", 0, 0) == "\x1b_Gi=31;OK\x1b\\");
+    REQUIRE(engine.get_image(31) != nullptr);
+
+    engine.clear();
+    CHECK(engine.get_image(31) == nullptr);
+    CHECK(engine.memory_bytes() == 0);
+
+    CHECK(engine.process_apc_sequence("Ga=T,f=32,s=1,v=1,i=32,m=1;/w", 0, 0).empty());
+    CHECK(engine.process_apc_sequence("Gm=0;AA/w==", 1, 1) == "\x1b_Gi=32;OK\x1b\\");
+    CHECK(engine.get_image(32) != nullptr);
+}
+
 TEST_CASE("Kitty Unicode placeholder virtual placements and feature query") {
     KittyGraphicsEngine engine;
     int placements = 0;

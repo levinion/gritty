@@ -56,6 +56,7 @@ platform_deps = []
 platform_sources = []
 
 if host_os == 'darwin'
+  add_project_link_arguments('-Wl,-dead_strip', language: ['cpp', 'c', 'objcpp'])
   apple_frameworks = dependency('appleframeworks', modules: [
     'Cocoa',
     'CoreText',
@@ -68,6 +69,7 @@ if host_os == 'darwin'
   ])
   platform_deps += [apple_frameworks]
 elif host_os == 'linux'
+  add_project_link_arguments('-Wl,--gc-sections', language: ['cpp', 'c'])
   wayland_client_dep = dependency('wayland-client')
   wayland_cursor_dep = dependency('wayland-cursor')
   wayland_protocols_dep = dependency('wayland-protocols', version: '>= 1.25')

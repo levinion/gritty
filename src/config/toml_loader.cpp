@@ -138,8 +138,32 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool& invalid_alpha) {
     cfg.colors.alpha = parsed;
 }
 
+void apply_padding(AppConfig& cfg, toml_datum_t table, bool& invalid_padding) {
+    const toml_datum_t padding = find_key(table, "padding");
+    if (padding.type == TOML_UNKNOWN) return;
+
+    int64_t x = cfg.window.padding.x;
+    int64_t y = cfg.window.padding.y;
+    bool valid = true;
+    if (padding.type == TOML_INT64) {
+        x = y = padding.u.int64;
+    } else if (padding.type == TOML_TABLE) {
+        if (!as_integer(find_key(padding, "x"), x)) x = -1;
+        if (!as_integer(find_key(padding, "y"), y)) y = -1;
+    } else {
+        valid = false;
+    }
+    if (x < 0 || x > 512 || y < 0 || y > 512) valid = false;
+    if (!valid) {
+        invalid_padding = true;
+        return;
+    }
+    cfg.window.padding.x = static_cast<int>(x);
+    cfg.window.padding.y = static_cast<int>(y);
+}
+
 void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
-                   bool& invalid_alpha, bool& invalid_decorations) {
+                   bool& invalid_alpha, bool& invalid_decorations, bool& invalid_padding) {
     if (section == "main") {
         if (const auto value = as_string(find_key(table, "shell"))) cfg.main.shell = *value;
         if (const auto value = as_string(find_key(table, "term"))) cfg.main.term = *value;
@@ -194,23 +218,25 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
             if (!decorations) invalid_decorations = true;
             else cfg.window.decorations = *decorations;
         }
+        apply_padding(cfg, table, invalid_padding);
     }
 }
 
 void apply_tables(AppConfig& cfg, toml_datum_t root, bool& invalid_alpha,
-                  bool& invalid_decorations) {
+                  bool& invalid_decorations, bool& invalid_padding) {
     constexpr std::string_view sections[] = {
         "main", "font", "cursor", "colors", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(root, section);
         if (table.type == TOML_TABLE)
-            apply_section(cfg, section, table, invalid_alpha, invalid_decorations);
+            apply_section(cfg, section, table, invalid_alpha, invalid_decorations,
+                          invalid_padding);
     }
 }
 
 void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform,
-                    bool& invalid_alpha, bool& invalid_decorations) {
+                    bool& invalid_alpha, bool& invalid_decorations, bool& invalid_padding) {
     // Accept both [platform.macos.font] and legacy [macos.font] forms.
     toml_datum_t platform_root = find_key(root, "platform");
     const bool prefixed = platform_root.type == TOML_TABLE;
@@ -224,11 +250,12 @@ void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform
     for (const auto section : sections) {
         const toml_datum_t table = find_key(os, section);
         if (table.type == TOML_TABLE)
-            apply_section(cfg, section, table, invalid_alpha, invalid_decorations);
+            apply_section(cfg, section, table, invalid_alpha, invalid_decorations,
+                          invalid_padding);
     }
     if (prefixed) {
         // [platform.macos] font = { family = "...", size = 14.0 }
-        apply_tables(cfg, os, invalid_alpha, invalid_decorations);
+        apply_tables(cfg, os, invalid_alpha, invalid_decorations, invalid_padding);
     }
 }
 
@@ -243,15 +270,19 @@ std::expected<std::shared_ptr<AppConfig>, ConfigError> load(
     auto cfg = std::make_shared<AppConfig>();
     bool invalid_alpha = false;
     bool invalid_decorations = false;
-    apply_tables(*cfg, parsed.root(), invalid_alpha, invalid_decorations);
+    bool invalid_padding = false;
+    apply_tables(*cfg, parsed.root(), invalid_alpha, invalid_decorations, invalid_padding);
     apply_platform(*cfg, parsed.root(), target_platform(platform_override),
-                   invalid_alpha, invalid_decorations);
+                   invalid_alpha, invalid_decorations, invalid_padding);
     if (invalid_alpha)
         return std::unexpected(ConfigError{
             .message = "colors.alpha must be a finite number between 0 and 1"});
     if (invalid_decorations)
         return std::unexpected(ConfigError{
             .message = "window.decorations must be full, none, transparent, or buttonless"});
+    if (invalid_padding)
+        return std::unexpected(ConfigError{
+            .message = "window.padding must be an integer between 0 and 512"});
     return cfg;
 }
 

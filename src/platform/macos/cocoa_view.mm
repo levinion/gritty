@@ -212,8 +212,14 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
         if (borderless_titlebar && flags == 0 && !_surface->mouse_reporting()) {
             const NSPoint local = [self convertPoint:[event locationInWindow] fromView:nil];
             if (local.y >= self.bounds.size.height - 28.0) {
-                [self.window performWindowDragWithEvent:event];
-                return;
+                // AppKit logs "Window move completed without beginning" when a
+                // drag starts after the physical button was released (rapid
+                // click or delayed runloop delivery). Verify live button state
+                // before handing the press to the native window mover.
+                const BOOL left_held = ([NSEvent pressedMouseButtons] & (1 << 0)) != 0;
+                if (event.type == NSEventTypeLeftMouseDown && event.buttonNumber == 0 && left_held)
+                    [self.window performWindowDragWithEvent:event];
+                return; // The custom titlebar belongs to the window, not the PTY.
             }
         }
     }

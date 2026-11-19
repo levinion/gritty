@@ -52,6 +52,8 @@ struct CachedGlyph {
     int width{0};
     int height{0};
     bool is_subpixel{false};
+    // Straight-colour emoji bitmaps are their own source image, not a mask.
+    bool is_color{false};
 
     // Owned by the renderer's glyph atlas, not by the glyph cache. Generation
     // invalidates handles after an atlas rebuild.

@@ -57,8 +57,14 @@ struct ColorsConfig {
     [[nodiscard]] uint32_t background_argb() const noexcept;
 };
 
+struct WindowPadding {
+    int x{0}; // Logical pixels/points, applied on both left and right.
+    int y{0}; // Logical pixels/points, applied on both top and bottom.
+};
+
 struct WindowConfig {
     platform::WindowDecorations decorations{platform::WindowDecorations::Full};
+    WindowPadding padding;
 };
 
 // Case-insensitive parser shared by TOML, CLI overrides and tests.
@@ -74,6 +80,11 @@ struct AppConfig {
     WindowConfig window;
 
     AppConfig();
+
+    // Full native decorations imply an opaque window: alpha < 1 is ignored so
+    // the titlebar and terminal content cannot become see-through by accident.
+    // Other decoration modes keep the configured per-pixel background alpha.
+    [[nodiscard]] uint32_t effective_background_argb() const noexcept;
 
     [[nodiscard]] std::expected<void, std::string> apply_override(
         std::string_view expr,
