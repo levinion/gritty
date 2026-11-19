@@ -18,6 +18,7 @@ endif
 core_sources = files(
   'config/app_config.cpp',
   'config/toml_loader.cpp',
+  'config/tomlc17.c',
   'core/screen_grid.cpp',
   'core/combining_store.cpp',
   'core/cell_extra_store.cpp',

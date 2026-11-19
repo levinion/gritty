@@ -1,7 +1,8 @@
-project('gritty', 'cpp',
+project('gritty', ['cpp', 'c'],
   version: '0.1.0',
   default_options: [
     'cpp_std=c++23',
+    'c_std=c17',
     'warning_level=3',
     'b_ndebug=if-release',
   ]
@@ -31,7 +32,6 @@ utf8proc_dep = dependency('libutf8proc', fallback: ['utf8proc', 'utf8proc_dep'],
 if not utf8proc_dep.found()
   utf8proc_dep = dependency('utf8proc')
 endif
-tomlc17_dep = dependency('libtomlc17')
 png_dep = dependency('libpng')
 zlib_dep = dependency('zlib')
 threads_dep = dependency('threads')
@@ -41,7 +41,6 @@ common_deps = [
   freetype_dep,
   harfbuzz_dep,
   utf8proc_dep,
-  tomlc17_dep,
   png_dep,
   zlib_dep,
   threads_dep,
