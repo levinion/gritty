@@ -140,6 +140,86 @@ TEST_CASE("BoxDrawingRenderer half blocks") {
     CHECK(pixels[15 * w + 5] == 0xFF000000);
 }
 
+TEST_CASE("Every box drawing, block and braille codepoint renders procedurally") {
+    constexpr int w = 16;
+    constexpr int h = 28;
+    gritty::util::PixmanImage img(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, w * 4));
+    REQUIRE(img.valid());
+    const pixman_color_t black = {0, 0, 0, 0xffff};
+    const pixman_color_t white = {0xffff, 0xffff, 0xffff, 0xffff};
+    const pixman_rectangle16_t all = {0, 0, static_cast<uint16_t>(w), static_cast<uint16_t>(h)};
+
+    for (char32_t cp = 0x2500; cp <= 0x28FF; ++cp) {
+        if (cp > 0x259F && cp < 0x2800) continue; // Not a geometric block.
+        CAPTURE(cp);
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, img.get(), &black, 1, &all);
+        REQUIRE(BoxDrawingRenderer::render(img.get(), cp, 0, 0, w, h, white));
+        if (cp == 0x2800) continue; // Blank braille cell is intentionally empty.
+        bool inked = false;
+        for (int y = 0; y < h && !inked; ++y)
+            for (int x = 0; x < w; ++x)
+                if (img.data()[y * w + x] == 0xffffffffu) { inked = true; break; }
+        CHECK(inked);
+    }
+
+    // Diagonals must reach both end corners; the rounded corner must reach
+    // the right and bottom edges so it joins the neighbouring straight lines.
+    const auto inked_at = [&](int x, int y) {
+        return img.data()[y * w + x] == 0xffffffffu;
+    };
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, img.get(), &black, 1, &all);
+    REQUIRE(BoxDrawingRenderer::render(img.get(), 0x256D, 0, 0, w, h, white));
+    CHECK(inked_at(w - 1, h - 1 - w / 2));
+    CHECK(inked_at(w - 1 - w / 2, h - 1));
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, img.get(), &black, 1, &all);
+    REQUIRE(BoxDrawingRenderer::render(img.get(), 0x2571, 0, 0, w, h, white));
+    CHECK(inked_at(w - 1, 0));
+    CHECK(inked_at(0, h - 1));
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, img.get(), &black, 1, &all);
+    REQUIRE(BoxDrawingRenderer::render(img.get(), 0x2572, 0, 0, w, h, white));
+    CHECK(inked_at(0, 0));
+    CHECK(inked_at(w - 1, h - 1));
+}
+
+TEST_CASE("CpuRenderer draws procedural geometry into terminal cells") {
+    const auto font_path = find_test_font();
+    if (font_path.empty()) { WARN("No test font found"); return; }
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(font_path, 13.0, 96));
+    const auto& metrics = fonts.metrics();
+    constexpr int cols = 4;
+    constexpr int rows = 1;
+    gritty::util::PixmanImage target(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, cols * metrics.cell_width, rows * metrics.cell_height, nullptr,
+        cols * metrics.cell_width * 4));
+    REQUIRE(target.valid());
+    const pixman_color_t black = {0, 0, 0, 0xffff};
+    const pixman_rectangle16_t all = {
+        0, 0, static_cast<uint16_t>(cols * metrics.cell_width),
+        static_cast<uint16_t>(rows * metrics.cell_height)};
+
+    for (const char32_t cp : {char32_t{0x2504}, char32_t{0x256D}, char32_t{0x2573},
+                              char32_t{0x259A}, char32_t{0x28FF}}) {
+        TerminalEngine engine(cols, rows);
+        engine.set_cursor_visible(false);
+        Cell cell;
+        cell.codepoint = cp;
+        engine.grid().set_cell(0, 0, cell);
+        CpuRenderer renderer(fonts);
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, target.get(), &black, 1, &all);
+        renderer.render(engine, target.get(), nullptr, true);
+        bool inked = false;
+        for (int y = 0; y < metrics.cell_height && !inked; ++y)
+            for (int x = 0; x < metrics.cell_width; ++x)
+                if (target.data()[y * (target.stride() / 4) + x] == 0xffddddddu) {
+                    inked = true;
+                    break;
+                }
+        CAPTURE(cp);
+        CHECK(inked);
+    }
+}
+
 TEST_CASE("FontEngine font loading and metrics") {
     std::string font_path = find_test_font();
     if (font_path.empty()) {

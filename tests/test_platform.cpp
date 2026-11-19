@@ -166,7 +166,10 @@ TEST_CASE("KqueueRunLoop one-shot timer and cancellation") {
     macos::KqueueRunLoop loop;
     bool fired = false;
     loop.set_timer(5, [&] { fired = true; });
-    loop.poll_once(100);
+    // A CFRunLoop source may wake the first poll before the kernel timer is
+    // due; keep polling until the deadline instead of assuming a single wait.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (!fired && std::chrono::steady_clock::now() < deadline) loop.poll_once(5);
     CHECK(fired);
     fired = false;
     loop.set_timer(5, [&] { fired = true; });

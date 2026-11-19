@@ -17,7 +17,6 @@ test_sources = files(
   'test_config.cpp',
   'test_cli.cpp',
   'test_kitty_graphics.cpp',
-  'test_sixel.cpp',
 )
 
 if host_os == 'darwin'

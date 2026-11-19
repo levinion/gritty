@@ -57,14 +57,14 @@ struct CursorState {
     uint8_t selected_charset{0};
 };
 
-// A raster image anchored to cell coordinates on one screen. Both Kitty
-// graphics placements and Sixel images land here; the renderer draws them in
-// z-order (negative below text, non-negative above) and scroll/erase hooks keep
-// them attached to the cells they were placed over.
+// A raster image anchored to cell coordinates on one screen. Kitty graphics
+// placements land here; the renderer draws them in z-order (negative below
+// text, non-negative above) and scroll/erase hooks keep them attached to the
+// cells they were placed over.
 struct PlacedImage {
     util::PixmanImage image;
-    uint32_t image_id{0};      // Kitty image id (0 for Sixel).
-    uint32_t placement_id{0};  // Kitty placement id (0 for Sixel).
+    uint32_t image_id{0};      // Kitty image id (0 for anonymous transfers).
+    uint32_t placement_id{0};  // Kitty placement id.
     int col{0};
     int row{0};
     int cols{1};
@@ -135,7 +135,7 @@ public:
     // Cursor movement
     void set_cursor_pos(int col, int row);
 
-    // Placed raster images (Kitty graphics and Sixel).
+    // Placed raster images (Kitty graphics only).
     [[nodiscard]] const std::vector<PlacedImage>& images() const noexcept { return images_; }
     [[nodiscard]] KittyGraphicsEngine& kitty_graphics() noexcept { return kitty_graphics_; }
     [[nodiscard]] const KittyGraphicsEngine& kitty_graphics() const noexcept { return kitty_graphics_; }

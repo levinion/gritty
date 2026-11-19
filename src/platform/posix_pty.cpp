@@ -1,5 +1,7 @@
 #include "platform/posix_pty.hpp"
 
+#include "util/version.hpp"
+
 #if defined(__APPLE__)
 #include <util.h>
 #else
@@ -72,7 +74,7 @@ bool PosixPty::spawn(const PtySpawnOptions& options) {
         ::setenv("TERM", "xterm-256color", 1);
         ::setenv("COLORTERM", "truecolor", 1);
         ::setenv("TERM_PROGRAM", "gritty", 1);
-        ::setenv("TERM_PROGRAM_VERSION", "0.1.0", 1);
+        ::setenv("TERM_PROGRAM_VERSION", std::string(util::kVersion).c_str(), 1);
 
         for (const auto& e : options.env) {
             size_t eq = e.find('=');

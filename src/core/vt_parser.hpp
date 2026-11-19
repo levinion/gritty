@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <functional>
+#include "config/app_config.hpp"
 #include "core/terminal_engine.hpp"
 
 namespace gritty::core {
@@ -44,12 +45,12 @@ public:
     void feed(std::string_view data);
     void feed(const uint8_t* data, size_t length);
 
-    // Callbacks for DCS / APC / OSC handlers (e.g. Kitty graphics, Sixel)
+    // Callbacks for DCS / APC / OSC handlers (e.g. Kitty graphics, tmux passthrough)
     using ApcHandler = std::function<void(std::string_view)>;
     using DcsHandler = std::function<void(std::string_view)>;
     using OscHandler = std::function<void(int, std::string_view)>;
     using ResponseCallback = std::function<void(std::string_view)>;
-    // OSC 52 clipboard writes; reads are gated by an explicit policy.
+    // OSC 52 clipboard writes and reads are gated by the four-state policy.
     using ClipboardHandler = std::function<void(std::string_view)>;
     using ClipboardReadHandler = std::function<std::string()>;
     using NotificationHandler = std::function<void(std::string_view, std::string_view)>;
@@ -62,7 +63,7 @@ public:
     void set_response_callback(ResponseCallback cb) { response_cb_ = std::move(cb); }
     void set_clipboard_handler(ClipboardHandler handler) { clipboard_handler_ = std::move(handler); }
     void set_clipboard_read_handler(ClipboardReadHandler handler) { clipboard_read_handler_ = std::move(handler); }
-    void set_osc52_read_enabled(bool enabled) noexcept { osc52_read_enabled_ = enabled; }
+    void set_osc52_mode(config::Osc52Mode mode) noexcept { osc52_mode_ = mode; }
     void set_notification_handler(NotificationHandler handler) { notification_handler_ = std::move(handler); }
     void set_cursor_color_handler(CursorColorHandler handler) { cursor_color_handler_ = std::move(handler); }
     void set_mouse_cursor_shape_handler(MouseCursorShapeHandler handler) { mouse_cursor_shape_handler_ = std::move(handler); }
@@ -177,7 +178,7 @@ private:
     ResponseCallback response_cb_;
     ClipboardHandler clipboard_handler_;
     ClipboardReadHandler clipboard_read_handler_;
-    bool osc52_read_enabled_{false};
+    config::Osc52Mode osc52_mode_{config::Osc52Mode::CopyOnly};
     NotificationHandler notification_handler_;
     CursorColorHandler cursor_color_handler_;
     MouseCursorShapeHandler mouse_cursor_shape_handler_;

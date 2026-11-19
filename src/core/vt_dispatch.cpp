@@ -1,5 +1,6 @@
 #include "core/vt_parser.hpp"
 #include "util/format.hpp"
+#include "util/version.hpp"
 #include <algorithm>
 
 namespace gritty::core {
@@ -149,8 +150,13 @@ void VtParser::handle_query(uint8_t final) {
     else if (has_greater_) {
         if (get_param(0, 0) != 0) return;
         if (final == 'c') send_response("\x1b[>1;100;0c");
-        // Never impersonate foot: tmux would enable its unsupported features.
-        else if (final == 'q') send_response("\x1bP>|gritty(0.1.0)\x1b\\");
+        // XTVERSION: advertise the Meson project version so tmux can detect
+        // gritty without extra configuration.
+        else if (final == 'q') {
+            const auto text = util::format_to_buffer(
+                reply_buffer, "\x1bP>|gritty({})\x1b\\", util::kVersion);
+            if (!text.empty()) send_response(text);
+        }
         return;
     } else if (final == 'n') {
         const int query = get_param(0, 0);
@@ -162,8 +168,8 @@ void VtParser::handle_query(uint8_t final) {
                 row, engine_.cursor_col() + 1);
         }
     } else if (!is_private_ && final == 'c' && get_param(0, 0) == 0) {
-        // VT220 with ANSI color and Sixel (parameter 4); no rectangular editing claims.
-        send_response("\x1b[?62;22;4c"); // 4 = Sixel graphics (xterm primary DA)
+        // VT220 + ANSI color only. Image support is advertised via Kitty queries.
+        send_response("\x1b[?62;22c");
     } else if (!is_private_ && final == 't' && get_param(0, 0) == 18) {
         reply = util::format_to_buffer(reply_buffer, "\x1b[8;{};{}t",
             engine_.rows(), engine_.cols());

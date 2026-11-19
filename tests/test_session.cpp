@@ -126,7 +126,7 @@ TEST_CASE("foot synchronized updates watchdog releases a frame without an end ma
     const int frames = output->frames;
     for (int i = 0; i < 100 && !events->timer; ++i) events->pump();
     REQUIRE(session.engine().synchronized_updates());
-    CHECK(events->timer_delay == 1000);
+    CHECK(events->timer_delay == 16);
     CHECK(output->frames == frames);
     auto timeout = std::move(events->timer);
     REQUIRE(static_cast<bool>(timeout));
@@ -134,6 +134,59 @@ TEST_CASE("foot synchronized updates watchdog releases a frame without an end ma
     CHECK_FALSE(session.engine().synchronized_updates());
     CHECK(output->frames == frames + 1);
     CHECK(session.engine().grid().cell(0, 0).codepoint == U'S');
+}
+
+TEST_CASE("DECSET 2026 suppresses commits until ESU then flushes one full frame") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.shell = "/bin/sh";
+    config.args = {"-c",
+        "printf '\\033[?2026hSTART'; sleep 0.2; printf 'MID\\033[?2026lEND'; read line"};
+    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+    const int frames = output->frames;
+    for (int i = 0; i < 200 && session.engine().grid().cell(4, 0).codepoint != U'T'; ++i)
+        events->pump();
+    REQUIRE(session.engine().synchronized_updates());
+    CHECK(static_cast<bool>(events->timer));
+    CHECK(output->frames == frames); // BSU: no half-updated frame on the surface.
+
+    for (int i = 0; i < 300 && session.engine().synchronized_updates(); ++i)
+        events->pump();
+    CHECK_FALSE(session.engine().synchronized_updates());
+    CHECK_FALSE(static_cast<bool>(events->timer)); // ESU cancels the safety timer.
+    CHECK(output->frames == frames + 1);
+    CHECK(session.engine().grid().cell(0, 0).codepoint == U'S');
+    CHECK(session.engine().grid().cell(5, 0).codepoint == U'M');
+    CHECK(session.engine().grid().cell(8, 0).codepoint == U'E');
+}
+
+TEST_CASE("RIS releases a synchronized update and repaints atomically") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "printf '\\033[?2026hBROKEN\\033cRESET'; read line"};
+    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+    const int frames = output->frames;
+    for (int i = 0; i < 200 && session.engine().grid().cell(0, 0).codepoint != U'R'; ++i)
+        events->pump();
+    CHECK_FALSE(session.engine().synchronized_updates());
+    CHECK_FALSE(static_cast<bool>(events->timer));
+    CHECK(output->frames > frames);
+    CHECK(session.engine().grid().cell(0, 0).codepoint == U'R');
 }
 
 TEST_CASE("TerminalSession enables surface transparency from the actual rendered background") {
@@ -495,95 +548,6 @@ TEST_CASE("Kitty graphics APC is parsed, acknowledged and rendered") {
     const int cw = output->width / config.cols;
     const int ch = output->height / config.rows;
     CHECK(output->pixels.data()[(ch / 2) * stride + cw / 2] == 0xFFFF0000u);
-}
-
-TEST_CASE("Sixel DCS is decoded and placed below the text") {
-    const auto font = session_test_font();
-    if (font.empty()) { WARN("No test font found"); return; }
-    auto surface = std::make_unique<TestSurface>();
-    auto* output = surface.get();
-    auto loop = std::make_unique<TestLoop>();
-    auto* events = loop.get();
-    core::SessionConfig config;
-    config.font_path = font;
-    config.cols = 8;
-    config.rows = 3;
-    config.shell = "/bin/sh";
-    config.args = {"-c", "printf '\\033Pq#1;2;100;0;0#1~~\\033\\\\'; sleep 1"};
-    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
-    REQUIRE(session.start());
-
-    for (int i = 0; i < 200 && session.engine().images().empty(); ++i) {
-        events->pump();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    REQUIRE(session.engine().images().size() == 1);
-    const auto& image = session.engine().images().front();
-    CHECK(image.image.width() >= 2);
-    CHECK(image.image.height() >= 6);
-    CHECK(image.z_index == -1); // Sixel sits behind the text.
-    CHECK(image.cols == 1);
-    CHECK(image.rows == 1);
-
-    session.engine().set_cursor_visible(false);
-    session.engine().set_cursor_visible(false);
-    session.render_frame(true);
-    const int stride = output->pixels.stride() / 4;
-    const int cw = output->width / config.cols;
-    const int ch = output->height / config.rows;
-    const uint32_t pixel = output->pixels.data()[(ch / 2) * stride + cw / 2];
-    CHECK(pixel == 0xFFFF0000u);
-}
-
-TEST_CASE("Sixel placement scrolls a tall image through the margin") {
-    auto surface = std::make_unique<TestSurface>();
-    auto loop = std::make_unique<TestLoop>();
-    auto* events = loop.get();
-    core::SessionConfig config;
-    config.font_path = session_test_font();
-    config.cols = 20;
-    config.rows = 10;
-    config.shell = "/bin/sh";
-    std::string sixel;
-    for (int i = 0; i < 8; ++i) {
-        sixel += '?';
-        if (i < 7) sixel += "\\055";
-    }
-    config.args = {"-c",
-        "printf '\\033[1;4r\\033[4;1H\\033P0;1;0;0q" + sixel + "\\033\\134'; sleep 1"};
-    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
-    REQUIRE(session.start());
-    for (int i = 0; i < 100 && session.engine().images().empty(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        events->pump();
-    }
-    REQUIRE(session.engine().images().size() == 1);
-    const auto placed_rows = session.engine().images()[0].rows;
-    REQUIRE(placed_rows > 1);
-    CHECK(session.engine().images()[0].row == 3 - placed_rows); // One scroll per image row.
-    CHECK(session.engine().cursor_row() == 3);
-    CHECK(session.engine().cursor_col() == 0);
-}
-
-TEST_CASE("Sixel placement advances cursor below the image") {
-    auto surface = std::make_unique<TestSurface>();
-    auto loop = std::make_unique<TestLoop>();
-    auto* events = loop.get();
-    core::SessionConfig config;
-    config.font_path = session_test_font();
-    config.cols = 20;
-    config.rows = 10;
-    config.shell = "/bin/sh";
-    config.args = {"-c", "printf '\\033P0;1;0;0q?\\033\\134'; sleep 1"};
-    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
-    REQUIRE(session.start());
-    for (int i = 0; i < 100 && session.engine().images().empty(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        events->pump();
-    }
-    REQUIRE(session.engine().images().size() == 1);
-    CHECK(session.engine().cursor_col() == 0);
-    CHECK(session.engine().cursor_row() == 1);
 }
 
 TEST_CASE("Small paced PTY output bypasses the coalescing timer") {

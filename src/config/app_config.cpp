@@ -77,6 +77,24 @@ std::unexpected<std::string> invalid(std::string_view key, std::string_view valu
 
 } // namespace
 
+std::optional<Osc52Mode> parse_osc52_mode(std::string_view value) noexcept {
+    const auto text = trim(value);
+    auto equals = [text](std::string_view expected) noexcept {
+        if (text.size() != expected.size()) return false;
+        for (size_t i = 0; i < text.size(); ++i) {
+            const char c = text[i];
+            const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+            if (lowered != expected[i]) return false;
+        }
+        return true;
+    };
+    if (equals("disabled")) return Osc52Mode::Disabled;
+    if (equals("copy-only") || equals("copyonly")) return Osc52Mode::CopyOnly;
+    if (equals("paste-only") || equals("pasteonly")) return Osc52Mode::PasteOnly;
+    if (equals("enabled")) return Osc52Mode::Enabled;
+    return std::nullopt;
+}
+
 std::optional<platform::WindowDecorations> parse_window_decorations(
     std::string_view value
 ) noexcept {
@@ -118,9 +136,16 @@ std::expected<void, std::string> AppConfig::apply_override(
     if (lowered == "font.family") { font.family = value; return {}; }
 
     bool flag = false;
+    if (lowered == "main.osc52") {
+        const auto mode = parse_osc52_mode(value);
+        if (!mode) return invalid(key, value);
+        main.osc52 = *mode;
+        return {};
+    }
     if (lowered == "main.osc52_read") {
+        // Legacy boolean spelling: true enables both directions.
         if (!parse_bool(value, flag)) return invalid(key, value);
-        main.osc52_read = flag;
+        main.osc52 = flag ? Osc52Mode::Enabled : Osc52Mode::CopyOnly;
         return {};
     }
 

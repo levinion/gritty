@@ -653,27 +653,9 @@ void TerminalEngine::place_image(PlacedImage placement) {
     placement.cols = std::max(1, placement.cols);
     placement.rows = std::max(1, placement.rows);
 
-    // Sixel images are not capped by the Kitty image store; bound the total
-    // render-side bitmap memory the same way (oldest image is evicted first).
-    if (placement.image_id == 0) {
-        constexpr size_t max_sixel_bytes = size_t{32} << 20;
-        const size_t incoming = static_cast<size_t>(placement.image.stride()) * placement.image.height();
-        auto bytes_of = [](const PlacedImage& image) {
-            return static_cast<size_t>(image.image.stride()) * image.image.height();
-        };
-        while (true) {
-            size_t total = 0;
-            for (const auto& image : images_)
-                if (image.image_id == 0) total += bytes_of(image);
-            if (total + incoming <= max_sixel_bytes) break;
-            auto oldest = std::find_if(images_.begin(), images_.end(),
-                [](const PlacedImage& image) { return image.image_id == 0; });
-            if (oldest == images_.end()) break;
-            damage_image_rows(oldest->row, oldest->rows);
-            images_.erase(oldest);
-        }
-    }
-
+    // Bitmap memory is bounded by KittyGraphicsEngine's LRU before a
+    // placement reaches this list; placements only share those refcounted
+    // bitmaps, so no second budget is needed here.
     damage_image_rows(placement.row, placement.rows);
     images_.push_back(std::move(placement));
 }

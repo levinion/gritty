@@ -144,8 +144,13 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         if (const auto value = as_string(find_key(table, "shell"))) cfg.main.shell = *value;
         if (const auto value = as_string(find_key(table, "term"))) cfg.main.term = *value;
         if (const auto value = as_string(find_key(table, "title"))) cfg.main.title = *value;
+        if (const auto value = as_string(find_key(table, "osc52"))) {
+            if (const auto mode = parse_osc52_mode(*value)) cfg.main.osc52 = *mode;
+        }
+        // Legacy boolean spelling: true enables both directions.
         bool osc52_read = false;
-        if (as_bool(find_key(table, "osc52_read"), osc52_read)) cfg.main.osc52_read = osc52_read;
+        if (as_bool(find_key(table, "osc52_read"), osc52_read))
+            cfg.main.osc52 = osc52_read ? Osc52Mode::Enabled : Osc52Mode::CopyOnly;
         return;
     }
     if (section == "font") {

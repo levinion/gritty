@@ -27,8 +27,8 @@ struct SessionConfig {
     render::AntialiasMode antialias{render::AntialiasMode::Grayscale};
     render::RenderConfig render_config;
     std::array<uint32_t, 256> palette{kDefaultPalette};
-    // Mirrors config::MainConfig::osc52_read.
-    bool osc52_read{false};
+    // Mirrors config::MainConfig::osc52.
+    config::Osc52Mode osc52{config::Osc52Mode::CopyOnly};
     bool hold_on_exit{false};
 };
 
@@ -76,6 +76,7 @@ public:
     void on_window_focus(bool focused);
 
 private:
+    void finish_synchronized_update();
     void render_pending_frame();
     void handle_pty_read();
     void flush_pty_write();
@@ -100,6 +101,8 @@ private:
     size_t write_offset_{0};
     bool watching_write_{false};
     bool full_redraw_pending_{false};
+    bool parsing_pty_{false};
+    bool sync_flush_pending_{false};
     bool coalesce_frames_{true};
     bool coalesce_pending_{false};
     std::chrono::steady_clock::time_point last_immediate_commit_{};

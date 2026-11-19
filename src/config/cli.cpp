@@ -1,5 +1,7 @@
 #include "config/cli.hpp"
 
+#include "util/version.hpp"
+
 #include <charconv>
 #include <cmath>
 #include <cstring>
@@ -12,7 +14,7 @@ namespace gritty::config {
 
 namespace {
 
-constexpr size_t kMaxGeometry = 1000;
+constexpr int kMaxGeometry = 1000;
 constexpr double kMinFontSize = 1.0;
 constexpr double kMaxFontSize = 200.0;
 
@@ -219,7 +221,7 @@ std::string format_cli_help(std::string_view prog) {
 }
 
 std::string format_cli_version() {
-    return "Gritty 0.1.0 (foot parity + Kitty protocols)\n";
+    return "Gritty " + std::string(util::kVersion) + " (foot parity + Kitty protocols)\n";
 }
 
 } // namespace gritty::config

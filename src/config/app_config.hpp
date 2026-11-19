@@ -14,13 +14,24 @@
 
 namespace gritty::config {
 
+// foot-compatible OSC 52 security policy. Copy-only is the default: a child
+// may write/clear the clipboard, but read queries are silently ignored.
+enum class Osc52Mode : uint8_t {
+    Disabled = 0,
+    CopyOnly = 1,
+    PasteOnly = 2,
+    Enabled = 3,
+};
+
+// Case-insensitive parser shared by TOML and CLI overrides.
+[[nodiscard]] std::optional<Osc52Mode> parse_osc52_mode(std::string_view value) noexcept;
+
 struct MainConfig {
     std::string shell;
     std::string term{"xterm-256color"};
     std::string title{"Gritty"};
     std::string app_id{"gritty"};
-    // Opt-in: let a child answer OSC 52 clipboard read queries.
-    bool osc52_read{false};
+    Osc52Mode osc52{Osc52Mode::CopyOnly};
 };
 
 struct FontConfig {

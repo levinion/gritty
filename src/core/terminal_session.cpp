@@ -1,14 +1,16 @@
 #include "core/terminal_session.hpp"
-#include "core/sixel_decoder.hpp"
 #include "input/input_mapper.hpp"
 #include <algorithm>
-#include <cctype>
 #include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 
 namespace gritty::core {
+
+namespace {
+// Safety net for a child that enables DECSET 2026 but never sends ESU.
+constexpr int kSyncTimeoutMs = 16;
+} // namespace
 
 TerminalSession::TerminalSession(
     const SessionConfig& config,
@@ -29,13 +31,12 @@ TerminalSession::TerminalSession(
                                      config.render_config.default_bg,
                                      config.render_config.cursor_color);
     parser_.set_sync_handler([this](bool enabled) {
-        if (!loop_) return;
-        // foot terminal.c arms a one-second watchdog for DECSET 2026.
-        if (enabled) loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 1000, [this] {
-            engine_.set_synchronized_updates(false);
-            render_frame();
-        });
-        else loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 0, {});
+        if (enabled) {
+            if (loop_) loop_->add_timer(platform::IEventLoop::TimerId::SyncWatchdog,
+                                       kSyncTimeoutMs, [this] { finish_synchronized_update(); });
+        } else {
+            finish_synchronized_update();
+        }
     });
     parser_.set_default_colors(config.render_config.default_fg, config.render_config.default_bg,
                                config.render_config.cursor_color);
@@ -63,7 +64,7 @@ TerminalSession::TerminalSession(
     parser_.set_clipboard_handler([this](std::string_view text) {
         if (clipboard_) clipboard_->copy_text(text);
     });
-    parser_.set_osc52_read_enabled(config.osc52_read);
+    parser_.set_osc52_mode(config.osc52);
     parser_.set_clipboard_read_handler([this] {
         return clipboard_ ? clipboard_->paste_text() : std::string{};
     });
@@ -118,61 +119,12 @@ TerminalSession::TerminalSession(
     engine_.kitty_graphics().set_placement_delete_handler([this](const KittyPlacement& placement) {
         engine_.remove_images_by_placement(placement.image_id, placement.placement_id);
     });
-    // Sixel: DCS q... payload; place at the cursor cell, below the text.
-    parser_.set_dcs_handler([this](std::string_view payload) {
-        const auto q = payload.find('q');
-        if (q == std::string_view::npos || q > 16) return;
-        // Sixel header is "P1;P2;P3;P4 q"; anything else (e.g. tmux passthrough)
-        // is not a sixel image.
-        for (size_t i = 0; i < q; ++i)
-            if (!std::isdigit(static_cast<unsigned char>(payload[i])) && payload[i] != ';') return;
-        // DCS header is P1;P2;P3;P4 q. P2=1 selects a transparent background;
-        // otherwise Sixel palette[0] fills pixels the image never touches.
-        int p2 = 0;
-        {
-            const auto header = payload.substr(0, q);
-            size_t begin = 0;
-            size_t end = header.find(';');
-            if (end != std::string_view::npos) begin = end + 1;
-            if (begin < header.size()) {
-                end = header.find(';', begin);
-                const auto value = header.substr(begin, end == std::string_view::npos
-                    ? std::string_view::npos : end - begin);
-                std::from_chars(value.data(), value.data() + value.size(), p2);
-            }
-        }
-        auto decoded = SixelDecoder::decode(payload.substr(q), p2 == 1);
-        if (!decoded) return;
-        const auto& metrics = font_engine_.metrics();
-        if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
-        const int cols = std::max(1, (decoded->width() + metrics.cell_width - 1) / metrics.cell_width);
-        const int rows = std::max(1, (decoded->height() + metrics.cell_height - 1) / metrics.cell_height);
-        PlacedImage placed;
-        placed.image = std::move(*decoded);
-        placed.col = engine_.cursor_col();
-        placed.row = engine_.cursor_row();
-        placed.cols = cols;
-        placed.rows = rows;
-        placed.z_index = -1; // Sixel images sit behind the text.
-        engine_.place_image(std::move(placed));
-        // Keep the shell prompt from overwriting the image: move below it and
-        // return to column zero. Feed one line at a time so a placement that
-        // crosses margin_bottom scrolls the image into the visible region.
-        const int placement_row = engine_.cursor_row();
-        if (placement_row >= engine_.margin_top() && placement_row <= engine_.margin_bottom() &&
-            placement_row + rows > engine_.margin_bottom()) {
-            for (int i = 0; i < rows; ++i) engine_.line_feed();
-        } else {
-            engine_.move_cursor_down(rows);
-        }
-        engine_.set_cursor_col(0);
-    });
 }
 
 TerminalSession::~TerminalSession() {
     if (loop_) {
-        loop_->set_timer(platform::IEventLoop::TimerId::SyncWatchdog, 0, {});
-        loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 0, {});
+        loop_->cancel_timer(platform::IEventLoop::TimerId::SyncWatchdog);
+        loop_->cancel_timer(platform::IEventLoop::TimerId::FrameCoalesce);
     }
     if (surface_) {
         surface_->set_key_callback({});
@@ -319,6 +271,7 @@ void TerminalSession::handle_pty_read() {
     std::chrono::steady_clock::time_point started{};
     bool timing_active = false;
     size_t budget = kByteBudget;
+    parsing_pty_ = true;
 
     // Small interactive reads avoid all clock queries. Large flows start the
     // 2 ms budget only after 64 KiB so a continuously writing process cannot
@@ -363,7 +316,13 @@ void TerminalSession::handle_pty_read() {
         }
     }
 
-    if (got_data) {
+    parsing_pty_ = false;
+    if (sync_flush_pending_) {
+        // ESU/RIS arrived mid-read: flush once, after the whole VT chunk has
+        // been parsed, so the submitted frame is never a half-updated grid.
+        sync_flush_pending_ = false;
+        render_frame(true);
+    } else if (got_data) {
         if (coalesce_frames_ && loop_ && surface_ && surface_->supports_frame_pacing()) {
             if (surface_->frame_in_flight()) {
                 // Keep parsing; the frame clock will render the accumulated state.
@@ -467,6 +426,16 @@ void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
     // same. Update PTY pixel dimensions and repaint the entire new buffer.
     if (new_cols > 0 && new_rows > 0) pty_.resize(new_cols, new_rows, px_w, px_h);
     render_frame(true);
+}
+
+void TerminalSession::finish_synchronized_update() {
+    if (loop_) loop_->cancel_timer(platform::IEventLoop::TimerId::SyncWatchdog);
+    // ESU, RIS and the safety timeout all converge here: release the guard and
+    // repaint the whole frame so no partially updated grid is ever presented.
+    engine_.set_synchronized_updates(false);
+    full_redraw_pending_ = true;
+    if (parsing_pty_) sync_flush_pending_ = true;
+    else render_frame(true);
 }
 
 void TerminalSession::render_frame(bool full_redraw) {

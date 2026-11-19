@@ -158,6 +158,12 @@ public:
     // One-shot timers. A nonpositive delay or empty callback cancels `id`.
     // The int overload is retained for headless/backward-compatible loops and
     // maps to TimerId::Default.
+    // Timer names used by the session. add_timer/cancel_timer are the canonical
+    // one-shot API; backends may implement them through set_timer for now.
+    virtual void add_timer(TimerId id, int delay_ms, std::function<void()> callback) {
+        set_timer(id, delay_ms, std::move(callback));
+    }
+    virtual void cancel_timer(TimerId id) { set_timer(id, 0, {}); }
     virtual void set_timer(TimerId id, int delay_ms, std::function<void()> callback) {
         (void)id;
         set_timer(delay_ms, std::move(callback));

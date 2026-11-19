@@ -10,7 +10,7 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
         [main]
         term = "foot"
         title = "My Term"
-        osc52_read = true
+        osc52 = "enabled"
 
         [font]
         family = "CustomFont"
@@ -35,7 +35,7 @@ TEST_CASE("TomlLoader parse basic config and hex colors") {
 
     CHECK(cfg->main.term == "foot");
     CHECK(cfg->main.title == "My Term");
-    CHECK(cfg->main.osc52_read);
+    CHECK(cfg->main.osc52 == Osc52Mode::Enabled);
     CHECK(cfg->font.family == "CustomFont");
     CHECK(cfg->font.size == 15.5);
     CHECK(cfg->font.dpi == 144);
@@ -144,4 +144,40 @@ TEST_CASE("TomlLoader parses window decorations") {
     REQUIRE(overridden.has_value());
     CHECK(cfg.window.decorations == WindowDecorations::Transparent);
     CHECK_FALSE(cfg.apply_override("window.decorations=invalid").has_value());
+}
+
+TEST_CASE("OSC 52 modes parse case-insensitively from TOML and overrides") {
+    CHECK(parse_osc52_mode("DISABLED") == Osc52Mode::Disabled);
+    CHECK(parse_osc52_mode("Copy-Only") == Osc52Mode::CopyOnly);
+    CHECK(parse_osc52_mode("PASTE-ONLY") == Osc52Mode::PasteOnly);
+    CHECK(parse_osc52_mode("Enabled") == Osc52Mode::Enabled);
+    CHECK_FALSE(parse_osc52_mode("read").has_value());
+    CHECK(AppConfig{}.main.osc52 == Osc52Mode::CopyOnly);
+
+    for (const auto pair : {
+        std::pair<const char*, Osc52Mode>{"disabled", Osc52Mode::Disabled},
+        {"COPY-ONLY", Osc52Mode::CopyOnly},
+        {"paste-only", Osc52Mode::PasteOnly},
+        {"ENABLED", Osc52Mode::Enabled},
+    }) {
+        const auto result = TomlLoader::load_from_string(
+            std::string("[main]\nosc52 = \"") + pair.first + "\"\n");
+        REQUIRE(result.has_value());
+        CHECK((*result)->main.osc52 == pair.second);
+
+        AppConfig cfg;
+        const auto overridden = cfg.apply_override(
+            std::string("main.osc52=") + pair.first);
+        REQUIRE(overridden.has_value());
+        CHECK(cfg.main.osc52 == pair.second);
+    }
+
+    // Legacy boolean key maps to the closest four-state behaviour.
+    const auto legacy = TomlLoader::load_from_string("[main]\nosc52_read = true\n");
+    REQUIRE(legacy.has_value());
+    CHECK((*legacy)->main.osc52 == Osc52Mode::Enabled);
+    AppConfig cfg;
+    REQUIRE(cfg.apply_override("main.osc52_read=false").has_value());
+    CHECK(cfg.main.osc52 == Osc52Mode::CopyOnly);
+    CHECK_FALSE(cfg.apply_override("main.osc52=third-party").has_value());
 }

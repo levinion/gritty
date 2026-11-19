@@ -121,7 +121,7 @@ int main(int argc, char* argv[]) {
             .cursor_color = cfg->cursor.color
         },
         .palette = cfg->colors.palette,
-        .osc52_read = cfg->main.osc52_read,
+        .osc52 = cfg->main.osc52,
         .hold_on_exit = cli.hold,
     };
 

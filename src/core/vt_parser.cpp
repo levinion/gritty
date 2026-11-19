@@ -280,8 +280,8 @@ int VtParser::get_param(int idx, int fallback) const noexcept {
 
 void VtParser::append_string(uint8_t byte) {
     // OSC stays bounded: it is used for titles/hyperlinks/clipboard and has no
-    // large-payload use case. DCS/APC carry Sixel and Kitty images, so allow the
-    // same 32 MiB working budget as the renderer's image cache.
+    // large-payload use case. APC carries Kitty image transfers (and tmux DCS
+    // passthrough), so allow the same 32 MiB budget as the image cache.
     const size_t limit = string_type_ == StringType::Osc
         ? 65536 : 32u * 1024u * 1024u;
     if (string_buffer_.size() < limit) string_buffer_.push_back(static_cast<char>(byte));

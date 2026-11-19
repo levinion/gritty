@@ -275,13 +275,14 @@ TEST_CASE("XTGETTCAP reports the capabilities tmux negotiates") {
     std::string responses;
     parser.set_response_callback([&](std::string_view resp) { responses.append(resp); });
 
-    // RGB, Ms, Sync, Smulx, Setulc and an unknown capability "ZZ".
-    parser.feed("\x1bP+q524742;4d73;53796e63;536d756c78;536574756c63;5a5a\x1b\\");
+    // RGB, Ms, Sync, Smulx, Setulc, an unsupported Sxl and an unknown "ZZ".
+    parser.feed("\x1bP+q524742;4d73;53796e63;536d756c78;536574756c63;53786c;5a5a\x1b\\");
     CHECK(responses.find("\x1bP1+r524742\x1b\\") != std::string::npos);              // Boolean.
     CHECK(responses.find("\x1bP1+r4d73=1b5d35323b") != std::string::npos);              // Ms -> OSC 52.
     CHECK(responses.find("\x1bP1+r53796e63\x1b\\") != std::string::npos);             // Sync.
     CHECK(responses.find("\x1bP1+r536d756c78=1b5b343a") != std::string::npos);          // Smulx.
     CHECK(responses.find("\x1bP1+r536574756c63=1b5b35383a") != std::string::npos);      // Setulc.
+    CHECK(responses.find("\x1bP0+r53786c\x1b\\") != std::string::npos);               // Sxl: unsupported.
     CHECK(responses.find("\x1bP0+r5a5a\x1b\\") != std::string::npos);                 // Unknown.
 }
 
@@ -294,7 +295,15 @@ TEST_CASE("DSR and DA1 responses are emitted") {
     CHECK(responses == "\x1b[1;1R");
     responses.clear();
     parser.feed("\x1b[c");
-    CHECK(responses == "\x1b[?62;22;4c"); // Sixel bit (DA1 parameter 4).
+    CHECK(responses == "\x1b[?62;22c"); // No DA1 parameter 4: Kitty only.
+
+    // Unknown DCS strings are consumed to ST without corrupting Ground state.
+    responses.clear();
+    parser.feed("\x1bP1;2$qUNKNOWN;image\x1b\\READY");
+    CHECK(responses.empty());
+    CHECK(engine.grid().cell(0, 0).codepoint == U'R');
+    CHECK(engine.grid().cell(4, 0).codepoint == U'Y');
+    CHECK(engine.cursor_col() == 5);
 }
 
 TEST_CASE("Placed images follow scroll, erase and the active screen") {
@@ -609,29 +618,47 @@ TEST_CASE("OSC 777 notifications keep semicolons in the body") {
     CHECK(calls == 1);
 }
 
-TEST_CASE("OSC 52 read replies are off by default and opt-in otherwise") {
-    TerminalEngine engine(10, 2);
-    VtParser parser(engine);
-    std::string replies, written = "stale";
-    int writes = 0;
-    parser.set_response_callback([&](std::string_view reply) { replies.append(reply); });
-    parser.set_clipboard_handler([&](std::string_view text) {
-        written.assign(text);
-        ++writes;
-    });
-    parser.feed("\x1b]52;c;!\x07"); // Explicit clear must reach the clipboard.
-    CHECK(writes == 1);
-    CHECK(written.empty());
-    parser.feed("\x1b]52;c;?\x07");
-    CHECK(replies.empty());
+TEST_CASE("OSC 52 four-state policy gates writes, clears and reads independently") {
+    using gritty::config::Osc52Mode;
+    struct Case {
+        Osc52Mode mode;
+        bool write_allowed;
+        bool clear_allowed;
+        bool read_allowed;
+    };
+    const Case cases[] = {
+        {Osc52Mode::Disabled, false, false, false},
+        {Osc52Mode::CopyOnly, true, true, false},
+        {Osc52Mode::PasteOnly, false, false, true},
+        {Osc52Mode::Enabled, true, true, true},
+    };
+    for (const auto& test : cases) {
+        TerminalEngine engine(10, 2);
+        VtParser parser(engine);
+        parser.set_osc52_mode(test.mode);
+        std::string replies, written = "stale";
+        int writes = 0, clears = 0, reads = 0;
+        parser.set_response_callback([&](std::string_view reply) { replies.append(reply); });
+        parser.set_clipboard_handler([&](std::string_view text) {
+            if (text.empty()) ++clears;
+            else { written.assign(text); ++writes; }
+        });
+        parser.set_clipboard_read_handler([&] { ++reads; return std::string("secret"); });
 
-    parser.set_osc52_read_enabled(true);
-    parser.set_clipboard_read_handler([] { return std::string("secret"); });
-    parser.feed("\x1b]52;c;?\x07");
-    CHECK(replies == "\x1b]52;c;c2VjcmV0\x07");
-    replies.clear();
-    parser.feed("\x1b]52;c;?\x1b\\");
-    CHECK(replies == "\x1b]52;c;c2VjcmV0\x1b\\");
+        parser.feed("\x1b]52;c;aGVsbG8\x07");       // "hello"
+        parser.feed("\x1b]52;c;!\x07");             // Explicit clear.
+        parser.feed("\x1b]52;;?\x07");             // Empty target => "c".
+        CHECK(writes == (test.write_allowed ? 1 : 0));
+        CHECK(clears == (test.clear_allowed ? 1 : 0));
+        CHECK(reads == (test.read_allowed ? 1 : 0));
+        if (test.write_allowed) CHECK(written == "hello");
+        CHECK(replies == (test.read_allowed ? "\x1b]52;c;c2VjcmV0\x07" : ""));
+
+        // The reply terminator mirrors the request; denials stay silent.
+        replies.clear();
+        parser.feed("\x1b]52;p;?\x1b\\");
+        CHECK(replies == (test.read_allowed ? "\x1b]52;p;c2VjcmV0\x1b\\" : ""));
+    }
 }
 
 TEST_CASE("Unknown and oversized OSC payloads are consumed without grid output") {

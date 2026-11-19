@@ -48,7 +48,7 @@ constexpr TermcapEntry kTermcaps[] = {
     {"RGB", ""},        // Direct colour (SGR 38;2 / 48;2)
     {"Tc", ""},         // True colour, alternate name
     {"Sync", ""},       // DECSET 2026 synchronized updates
-    {"Sxl", ""},        // Sixel graphics (tmux enables its image cache for this).
+    // Sxl is deliberately absent: only Kitty graphics is advertised.
     {"Ms", "1b5d35323b25703125733b257032257307"},                       // OSC 52 ; Pc ; data BEL
     {"Smulx", "1b5b343a25703125646d"},                                  // CSI 4 : Ps m (extended underline)
     {"Setulc", "1b5b35383a323a3a25703125643a25703325646d"}, // CSI 58:2::r:g:b m
@@ -330,17 +330,22 @@ void VtParser::handle_osc() {
             break;
         }
         case 52: {
-            // OSC 52 ; target ; payload. Writes and clear remain available;
-            // reads are opt-in via main.osc52_read.
+            // OSC 52 ; target ; payload. Policy denials are silent: never emit
+            // a diagnostic back to the PTY (foot osc.c behaviour).
             const auto target_end = payload.find(';');
             if (target_end == std::string_view::npos) break;
             const auto target = payload.substr(0, target_end);
             const auto data = payload.substr(target_end + 1);
+            const bool allow_write = osc52_mode_ == config::Osc52Mode::CopyOnly ||
+                osc52_mode_ == config::Osc52Mode::Enabled;
+            const bool allow_read = osc52_mode_ == config::Osc52Mode::PasteOnly ||
+                osc52_mode_ == config::Osc52Mode::Enabled;
             if (data == "?") {
-                if (!osc52_read_enabled_ || !clipboard_read_handler_) break;
+                if (!allow_read || !clipboard_read_handler_) break;
                 std::string reply = "\x1b]52;";
-                reply.append(target.empty() ? "c" : target.data(),
-                    target.empty() ? size_t{1} : target.size());
+                // An empty target selector defaults to the system clipboard.
+                const auto reply_target = target.empty() ? std::string_view("c") : target;
+                reply.append(reply_target);
                 reply.push_back(';');
                 reply += util::encode_base64(clipboard_read_handler_());
                 if (osc_reply_with_st_) reply += "\x1b\\";
@@ -349,10 +354,10 @@ void VtParser::handle_osc() {
                 break;
             }
             if (data == "!") { // Explicit clipboard clear.
-                if (clipboard_handler_) clipboard_handler_("");
+                if (allow_write && clipboard_handler_) clipboard_handler_("");
                 break;
             }
-            if (data.empty() || !clipboard_handler_) break;
+            if (data.empty() || !allow_write || !clipboard_handler_) break;
             if (auto decoded = decode_osc52_base64(data, 1024 * 1024)) {
                 if (!decoded->empty()) clipboard_handler_(*decoded);
             }
@@ -387,7 +392,7 @@ void VtParser::handle_dcs() {
     const std::string_view data = string_buffer_;
     if (data.starts_with("tmux;")) {
         // tmux doubles ESC inside a DCS passthrough. Feed the unwrapped inner
-        // stream to a bounded nested parser so APC G and DCS q dispatches are
+        // stream to a bounded nested parser so APC G and DCS queries are
         // identical to their non-passthrough forms.
         if (passthrough_depth_ < 2) {
             VtParser inner(engine_);
@@ -402,7 +407,7 @@ void VtParser::handle_dcs() {
             inner.response_cb_ = response_cb_;
             inner.clipboard_handler_ = clipboard_handler_;
             inner.clipboard_read_handler_ = clipboard_read_handler_;
-            inner.osc52_read_enabled_ = osc52_read_enabled_;
+            inner.osc52_mode_ = osc52_mode_;
             inner.notification_handler_ = notification_handler_;
             inner.cursor_color_handler_ = cursor_color_handler_;
             inner.mouse_cursor_shape_handler_ = mouse_cursor_shape_handler_;

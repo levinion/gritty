@@ -273,7 +273,7 @@ void CpuRenderer::apply_pending_scrolls(
         scroll_scratch_.clear();
     };
 
-    // Pixel memmove cannot move Kitty/Sixel layers consistently: an image's
+    // Pixel memmove cannot move Kitty image layers consistently: an image's
     // bitmap is not part of the grid rows and virtual placeholders are scaled
     // from their full rectangle. Repaint instead of risking torn image layers.
     if (!engine.images().empty() || !engine.kitty_graphics().virtual_placements().empty()) {

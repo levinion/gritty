@@ -8,6 +8,12 @@ project('gritty', ['cpp', 'c'],
   ]
 )
 
+# Single source of truth for the CLI, PTY environment and XTVERSION reply.
+add_project_arguments(
+  '-DGRITTY_VERSION="' + meson.project_version() + '"',
+  language: 'cpp',
+)
+
 cpp = meson.get_compiler('cpp')
 host_os = host_machine.system()
 
