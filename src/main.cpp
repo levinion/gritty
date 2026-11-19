@@ -50,9 +50,10 @@ std::string find_default_config() {
     return "";
 }
 
-// libc++ marks floating-point std::from_chars unavailable with the project's
-// macOS deployment target. Parse the decimal digits with integer from_chars
-// instead: no exceptions, no locale, and no intermediate std::string copy.
+// The libc++ headers come from an SDK-27 derivation, but availability is
+// gated by the effective deployment target (14.0 in this devShell), where
+// floating-point std::from_chars is unavailable. Parse decimal digits with
+// integer from_chars instead: no exceptions, no locale, and no string copy.
 bool parse_font_size(std::string_view text, double& out) noexcept {
     if (text.empty()) return false;
 
