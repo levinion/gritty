@@ -50,66 +50,15 @@ std::string find_default_config() {
     return "";
 }
 
-// The libc++ headers come from an SDK-27 derivation, but availability is
-// gated by the effective deployment target (14.0 in this devShell), where
-// floating-point std::from_chars is unavailable. Parse decimal digits with
-// integer from_chars instead: no exceptions, no locale, and no string copy.
+// std::from_chars does not accept a leading '+'; keep accepting it for CLI
+// compatibility without reintroducing locale-dependent string conversion.
 bool parse_font_size(std::string_view text, double& out) noexcept {
-    if (text.empty()) return false;
-
-    size_t pos = 0;
-    if (text[pos] == '+') ++pos;
-    if (pos == text.size()) return false;
-
-    const auto digit = [](char c, int& value) noexcept {
-        if (c < '0' || c > '9') return false;
-        return std::from_chars(&c, &c + 1, value).ec == std::errc{};
-    };
-
-    double value = 0.0;
-    bool any_digit = false;
-    int d = 0;
-    while (pos < text.size() && digit(text[pos], d)) {
-        value = value * 10.0 + static_cast<double>(d);
-        if (value > 1.0e9) return false;
-        any_digit = true;
-        ++pos;
-    }
-    if (pos < text.size() && text[pos] == '.') {
-        ++pos;
-        double scale = 0.1;
-        while (pos < text.size() && digit(text[pos], d)) {
-            value += static_cast<double>(d) * scale;
-            scale *= 0.1;
-            any_digit = true;
-            ++pos;
-        }
-    }
-    if (!any_digit) return false;
-
-    if (pos < text.size() && (text[pos] == 'e' || text[pos] == 'E')) {
-        ++pos;
-        bool negative = false;
-        if (pos < text.size() && (text[pos] == '+' || text[pos] == '-')) {
-            negative = text[pos] == '-';
-            ++pos;
-        }
-        uint32_t exponent = 0;
-        bool any_exponent = false;
-        while (pos < text.size() && digit(text[pos], d)) {
-            exponent = exponent * 10u + static_cast<uint32_t>(d);
-            if (exponent > 1000) return false;
-            any_exponent = true;
-            ++pos;
-        }
-        if (!any_exponent) return false;
-        value *= std::pow(10.0, negative ? -static_cast<double>(exponent)
-                                         : static_cast<double>(exponent));
-    }
-    if (pos != text.size()) return false;
-
-    out = value;
-    return std::isfinite(out) && out >= 1.0 && out <= 200.0;
+    const char* first = text.data();
+    const char* last = text.data() + text.size();
+    if (first != last && *first == '+') ++first;
+    const auto [ptr, ec] = std::from_chars(first, last, out);
+    return ec == std::errc{} && ptr == last &&
+           std::isfinite(out) && out >= 1.0 && out <= 200.0;
 }
 
 bool parse_geometry_value(std::string_view text, size_t& out) noexcept {

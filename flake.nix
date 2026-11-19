@@ -17,12 +17,29 @@
         inherit system;
         config = { };
       }));
+      # macOS 26 is the minimum deployment target: libc++ gates
+      # floating-point std::from_chars at macOS 26, and the pinned nixpkgs
+      # provides the matching SDK 27 derivation.
+      darwinSdk = pkgs: pkgs.apple-sdk_27 or
+        (throw "gritty requires a nixpkgs providing apple-sdk_27");
+      darwinDeploymentTarget = "26.0";
+      # stdenv's Darwin preHook re-exports hostPlatform.darwinMinVersion, so
+      # overriding only the derivation environment is not sufficient.
+      stdenvFor = pkgs:
+        if !pkgs.stdenv.hostPlatform.isDarwin then pkgs.stdenv else
+        pkgs.stdenv.override {
+          hostPlatform = pkgs.stdenv.hostPlatform // {
+            darwinMinVersion = darwinDeploymentTarget;
+            darwinSdkVersion = "27.0";
+          };
+        };
     in
     {
       devShells = forAllSystems (pkgs:
         let
-          base = pkgs.mkShell {
-          nativeBuildInputs = [
+          base = (pkgs.mkShell.override { stdenv = stdenvFor pkgs; }) {
+            MACOSX_DEPLOYMENT_TARGET = darwinDeploymentTarget;
+            nativeBuildInputs = [
             pkgs.meson
             pkgs.ninja
             pkgs.pkg-config
@@ -47,7 +64,7 @@
             pkgs.libxkbcommon
             pkgs.fontconfig
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
-            (pkgs.apple-sdk or pkgs.apple-sdk_14 or pkgs.apple-sdk_15)
+            (darwinSdk pkgs)
           ];
           };
           # External acceptance tools are opt-in; never linked into gritty and
@@ -85,7 +102,9 @@
             runtimeInputs = pkgs.lib.optionals (available pkgs.jdk) [ pkgs.jdk ];
             text = ''exec java -jar ${typometerJar}/typometer.jar "$@"'';
           };
-          extraShell = packages: attrs: pkgs.mkShell ({
+          extraShell = packages: attrs: (pkgs.mkShell.override {
+            stdenv = stdenvFor pkgs;
+          }) ({
             inputsFrom = [ base ];
             packages = [ pkgs.python3 ] ++ packages;
           } // attrs);
@@ -102,11 +121,23 @@
           latency = extraShell [ typometer ] {};
         });
 
-      packages = forAllSystems (pkgs: {
-        default = pkgs.stdenv.mkDerivation {
+      packages = forAllSystems (pkgs:
+        let
+          # Nix's generated Meson cross-file does not declare objcpp; merge a
+          # minimal supplement so add_languages('objcpp') can use clang++.
+          objcppCrossFile = pkgs.writeText "gritty-objcpp-cross-file.conf" ''
+            [binaries]
+            objcpp = 'clang++'
+          '';
+        in {
+        default = (stdenvFor pkgs).mkDerivation {
           pname = "gritty";
           version = "0.1.0";
           src = ./.;
+          MACOSX_DEPLOYMENT_TARGET = darwinDeploymentTarget;
+          mesonFlags = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+            "--cross-file=${objcppCrossFile}"
+          ];
 
           nativeBuildInputs = [
             pkgs.meson
@@ -132,7 +163,7 @@
             pkgs.libxkbcommon
             pkgs.fontconfig
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
-            (pkgs.apple-sdk or pkgs.apple-sdk_14 or pkgs.apple-sdk_15)
+            (darwinSdk pkgs)
           ];
         };
       });

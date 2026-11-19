@@ -13,7 +13,8 @@ host_os = host_machine.system()
 if host_os == 'linux'
   add_project_arguments('-DPLATFORM_LINUX=1', language: 'cpp')
 elif host_os == 'darwin'
-  if host_machine.cpu_family() != 'aarch64'
+  # Meson reports aarch64 for native builds and arm64 for some Nix cross builds.
+  if host_machine.cpu_family() != 'aarch64' and host_machine.cpu_family() != 'arm64'
     error('macOS requires Apple Silicon (arm64); Intel macOS is not supported')
   endif
   add_languages('objcpp', native: false)
