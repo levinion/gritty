@@ -3,7 +3,7 @@
 #import <QuartzCore/QuartzCore.h>
 #include <mach/mach.h>
 #include <algorithm>
-#include "config/toml_loader.hpp"
+#include "config/ini_loader.hpp"
 #include "core/terminal_session.hpp"
 #include "platform/macos/cocoa_surface.hpp"
 #include "platform/macos/ct_discovery.hpp"
@@ -21,7 +21,7 @@ uint64_t footprint() {
 TEST_CASE("Resize storm keeps native example-config memory bounded") {
     @autoreleasepool {
         using namespace gritty;
-        const auto loaded = config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
+        const auto loaded = config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
         REQUIRE(loaded.has_value());
         const auto& cfg = **loaded;
         platform::macos::CoreTextFinder discovery;

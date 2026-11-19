@@ -54,7 +54,6 @@
             pkgs.freetype
             pkgs.harfbuzz
             pkgs.utf8proc
-            pkgs.tomlplusplus
             pkgs.doctest
             pkgs.libpng
             pkgs.zlib
@@ -153,7 +152,6 @@
             pkgs.freetype
             pkgs.harfbuzz
             pkgs.utf8proc
-            pkgs.tomlplusplus
             pkgs.doctest
             pkgs.libpng
             pkgs.zlib

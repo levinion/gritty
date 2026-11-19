@@ -1,9 +1,9 @@
 #include <doctest/doctest.h>
-#include "config/toml_loader.hpp"
+#include "config/ini_loader.hpp"
 #include "core/terminal_engine.hpp"
 
 TEST_CASE("Custom ANSI colors preserve the xterm color cube and grayscale ramp") {
-    const auto loaded = gritty::config::TomlLoader::load_from_string("[colors]\nregular1 = '#123456'\n");
+    const auto loaded = gritty::config::IniLoader::load_from_string("[colors]\nregular1 = #123456\n");
     REQUIRE(loaded.has_value());
     const auto& palette = (*loaded)->colors.palette;
     CHECK(palette[1] == 0x123456);

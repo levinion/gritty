@@ -17,7 +17,7 @@ endif
 
 core_sources = files(
   'config/app_config.cpp',
-  'config/toml_loader.cpp',
+  'config/ini_loader.cpp',
   'core/screen_grid.cpp',
   'core/combining_store.cpp',
   'core/cell_extra_store.cpp',
@@ -42,48 +42,21 @@ core_sources = files(
 ) + platform_sources
 
 # Exceptions are treated as programming errors, not control flow. Tests keep
-# exceptions enabled for doctest; TOML++ uses its error-result ABI everywhere.
-no_exception_args = [
-  '-fno-exceptions',
-  '-DTOML_EXCEPTIONS=0',
-]
-
-# nixpkgs builds libtomlplusplus with exceptions; compile one noex
-# implementation into a static library instead of linking its ex ABI or
-# header-only-inlining the parser into every target.
-no_toml_dylib_args = [
-  '-UTOML_HEADER_ONLY',
-  '-DTOML_HEADER_ONLY=0',
-  '-UTOML_SHARED_LIB',
-  '-DTOML_SHARED_LIB=0',
-  '-DTOML_ENABLE_FORMATTERS=0',
-]
-
-toml_noex_lib = static_library('gritty_toml_noex',
-  files('config/toml_noexcept.cpp'),
-  include_directories: inc_dir,
-  dependencies: [tomlplusplus_dep],
-  cpp_args: no_exception_args + no_toml_dylib_args,
-)
-
-toml_noex_dep = declare_dependency(
-  link_with: toml_noex_lib,
-  include_directories: inc_dir,
-  dependencies: [tomlplusplus_dep],
-)
+# exceptions enabled for doctest.
+no_exception_args = ['-fno-exceptions']
 
 gritty_core_lib = static_library('gritty_core',
   core_sources,
   include_directories: inc_dir,
-  dependencies: [common_deps, platform_deps, toml_noex_dep],
-  cpp_args: no_exception_args + no_toml_dylib_args,
+  dependencies: [common_deps, platform_deps],
+  cpp_args: no_exception_args,
   objcpp_args: no_exception_args,
 )
 
 gritty_core_dep = declare_dependency(
   link_with: gritty_core_lib,
   include_directories: inc_dir,
-  dependencies: [common_deps, platform_deps, toml_noex_dep],
+  dependencies: [common_deps, platform_deps],
 )
 
 gritty_sources = files(

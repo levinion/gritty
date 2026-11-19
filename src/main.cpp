@@ -8,7 +8,7 @@
 #include <charconv>
 #include <system_error>
 
-#include "config/toml_loader.hpp"
+#include "config/ini_loader.hpp"
 #include "core/terminal_session.hpp"
 
 #if defined(PLATFORM_MACOS)
@@ -25,7 +25,7 @@ namespace {
 void print_help(const char* prog) {
     std::cout << "Usage: " << prog << " [options] [command [args...]]\n\n"
               << "Options:\n"
-              << "  -c, --config <path>    Path to config.toml\n"
+              << "  -c, --config <path>    Path to gritty.ini\n"
               << "  -f, --font <family>    Font family name\n"
               << "  -s, --size <pt>        Font size in points\n"
               << "  -t, --title <title>    Window title\n"
@@ -39,13 +39,19 @@ void print_help(const char* prog) {
 std::string find_default_config() {
     const char* xdg = std::getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) {
-        std::string p = std::string(xdg) + "/gritty/config.toml";
-        if (std::filesystem::exists(p)) return p;
+        const std::string dir = std::string(xdg) + "/gritty/";
+        for (const char* name : {"gritty.ini", "config.ini"}) {
+            const std::string p = dir + name;
+            if (std::filesystem::exists(p)) return p;
+        }
     }
     const char* home = std::getenv("HOME");
     if (home && *home) {
-        std::string p = std::string(home) + "/.config/gritty/config.toml";
-        if (std::filesystem::exists(p)) return p;
+        const std::string dir = std::string(home) + "/.config/gritty/";
+        for (const char* name : {"gritty.ini", "config.ini"}) {
+            const std::string p = dir + name;
+            if (std::filesystem::exists(p)) return p;
+        }
     }
     return "";
 }
@@ -146,7 +152,7 @@ int main(int argc, char* argv[]) {
 
     std::shared_ptr<config::AppConfig> cfg;
     if (!config_path.empty()) {
-        auto res = config::TomlLoader::load_from_file(config_path);
+        auto res = config::IniLoader::load_from_file(config_path);
         if (res) {
             cfg = *res;
         } else {

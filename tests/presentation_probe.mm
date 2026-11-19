@@ -4,7 +4,7 @@
 #include <mach/mach.h>
 #include <cstdio>
 #include <cstdlib>
-#include "config/toml_loader.hpp"
+#include "config/ini_loader.hpp"
 #include "core/terminal_session.hpp"
 #include "platform/macos/cocoa_surface.hpp"
 #include "platform/macos/ct_discovery.hpp"
@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
         if (width <= 0 || height <= 0 || width > 4096 || height > 4096) return 2;
         if (argc > 3 && std::string_view(argv[3]) == "window-only") return empty_window(width, height);
         const bool idle = argc > 3 && std::string_view(argv[3]) == "idle";
-        const auto loaded = gritty::config::TomlLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/config.toml");
+        const auto loaded = gritty::config::IniLoader::load_from_file(GRITTY_TEST_SOURCE_DIR "/examples/gritty.ini");
         if (!loaded) return 3;
         const auto& config = **loaded;
         gritty::platform::macos::CoreTextFinder finder;

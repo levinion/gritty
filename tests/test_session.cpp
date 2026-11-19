@@ -5,7 +5,7 @@
 #include <thread>
 #include <poll.h>
 #include "core/terminal_session.hpp"
-#include "config/toml_loader.hpp"
+#include "config/ini_loader.hpp"
 #include <unistd.h>
 
 namespace {
@@ -190,7 +190,7 @@ TEST_CASE("OSC default color changes repaint real pixels without removing config
 TEST_CASE("Session preserves configured ANSI colors and all 256 prompt colors through RIS") {
     const auto font = session_test_font();
     if (font.empty()) { WARN("No test font found"); return; }
-    const auto loaded = config::TomlLoader::load_from_string("[colors]\nregular1 = '#123456'\n");
+    const auto loaded = config::IniLoader::load_from_string("[colors]\nregular1 = #123456\n");
     REQUIRE(loaded.has_value());
     auto surface = std::make_unique<TestSurface>();
     auto* output = surface.get();
