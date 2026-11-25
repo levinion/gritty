@@ -16,9 +16,11 @@ namespace gritty::platform::macos { class CocoaLayerSurface; }
     NSRange _markedRange;
     NSRange _selectedRange;
     BOOL _imeHandled;
+    CGFloat _scrollAccumY;
 }
 - (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface;
 - (void)detachSurface;
+- (void)rebuildDisplayLink;
 - (BOOL)requestFrame;
 - (void)stopFrames;
 - (void)sendKeyCode:(gritty::input::KeyCode)key;

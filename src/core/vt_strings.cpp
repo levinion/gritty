@@ -51,7 +51,7 @@ constexpr TermcapEntry kTermcaps[] = {
     // Sxl is deliberately absent: only Kitty graphics is advertised.
     {"Ms", "1b5d35323b25703125733b257032257307"},                       // OSC 52 ; Pc ; data BEL
     {"Smulx", "1b5b343a25703125646d"},                                  // CSI 4 : Ps m (extended underline)
-    {"Setulc", "1b5b35383a323a3a25703125643a25703325646d"}, // CSI 58:2::r:g:b m
+    {"Setulc", "1b5b35383a323a3a257031257b36353533367d252f25643a257031257b3235367d252f257b3235357d252625643a257031257b3235357d252625646d"}, // CSI 58:2::r:g:b m
 };
 
 [[nodiscard]] bool equals_ignore_case(std::string_view text, std::string_view expected) noexcept {
@@ -416,6 +416,9 @@ void VtParser::handle_dcs() {
             inner.sync_handler_ = sync_handler_;
             inner.default_color_handler_ = default_color_handler_;
             inner.feed(data.substr(5));
+            default_fg_ = inner.default_fg_;
+            default_bg_ = inner.default_bg_;
+            cursor_color_ = inner.cursor_color_;
         }
         return;
     }

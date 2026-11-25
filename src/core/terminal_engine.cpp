@@ -84,6 +84,7 @@ void TerminalEngine::resize(int cols, int rows) {
 }
 
 void TerminalEngine::set_alt_screen(bool enable, int mode) {
+    kitty_graphics_.set_alt_screen(enable);
     if (enable == is_alt_screen_) return;
     // foot csi.c: 47/1047 switch grids; only 1049 saves/restores the cursor.
     if (enable && mode == 1049) save_cursor();
@@ -209,11 +210,11 @@ void TerminalEngine::print_char(char32_t cp) {
         constexpr std::u32string_view graphics = U"◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
         cp = graphics[cp - 0x60];
     }
-    int width = common_wide_char(cp) ? 2 : utf8proc_charwidth(cp);
+    int width = (cp >= 0x20 && cp <= 0x7e) ? 1 : (common_wide_char(cp) ? 2 : utf8proc_charwidth(cp));
     if (width <= 0) {
-        // Combining character: append to previous cell
-        if (width == 0 && cursor_.col > 0) {
-            int target_col = cursor_.col - 1;
+        // Combining character: append to previous cell (or final cell when wrap_next_ is pending).
+        if (width == 0 && (wrap_next_ || cursor_.col > 0)) {
+            int target_col = wrap_next_ ? cursor_.col : (cursor_.col - 1);
             if (active_grid_->cell(target_col, cursor_.row).attrs.width == 0 && target_col > 0) {
                 target_col--; // If this was continuation cell, find leading cell
             }
@@ -221,7 +222,9 @@ void TerminalEngine::print_char(char32_t cp) {
             CellExtra extra = active_grid_->get_cell_extra(prev_cell.extra_idx);
             extra.combining_idx = active_grid_->append_combining_codepoint(extra.combining_idx, cp);
             prev_cell.extra_idx = active_grid_->intern_cell_extra(extra);
-            active_grid_->row(cursor_.row).mark_dirty(target_col);
+            auto& row = active_grid_->row(cursor_.row);
+            row.mark_dirty(target_col);
+            row.note_written(target_col);
         }
         return;
     }
@@ -258,12 +261,17 @@ void TerminalEngine::print_char(char32_t cp) {
     c.bg = current_bg_;
     c.attrs = current_attrs_;
     c.attrs.width = static_cast<uint16_t>(width);
-    const CellExtra extra{
-        .combining_idx = 0,
-        .underline_color = current_underline_color_,
-        .hyperlink_id = current_hyperlink_id_,
-    };
-    active_grid_->set_cell_with_extra(cursor_.col, cursor_.row, c, extra);
+    if (current_underline_color_.is_default() && current_hyperlink_id_ == 0) {
+        c.extra_idx = 0;
+        active_grid_->set_cell(cursor_.col, cursor_.row, c);
+    } else {
+        const CellExtra extra{
+            .combining_idx = 0,
+            .underline_color = current_underline_color_,
+            .hyperlink_id = current_hyperlink_id_,
+        };
+        active_grid_->set_cell_with_extra(cursor_.col, cursor_.row, c, extra);
+    }
 
     if (width == 2 && cursor_.col + 1 < cols_) {
         Cell cont;
@@ -281,6 +289,56 @@ void TerminalEngine::print_char(char32_t cp) {
         if (auto_wrap_) {
             wrap_next_ = true;
         }
+    }
+}
+
+void TerminalEngine::print_ascii_char(uint8_t ch) {
+    if (graphic_charsets_[selected_charset_] || insert_mode_) {
+        print_char(static_cast<char32_t>(ch));
+        return;
+    }
+    if (wrap_next_) {
+        if (auto_wrap_) {
+            active_grid_->row(cursor_.row).wrapped = true;
+            cursor_.col = 0;
+            line_feed();
+        } else {
+            cursor_.col = cols_ - 1;
+        }
+        wrap_next_ = false;
+    }
+
+    const int col = cursor_.col;
+    auto& r = active_grid_->row(cursor_.row);
+    auto& target = r.cells[col];
+    if (target.attrs.width != 1) {
+        active_grid_->repair_wide_span(col, col, cursor_.row);
+    }
+
+    Cell c;
+    c.codepoint = static_cast<char32_t>(ch);
+    c.fg = current_fg_;
+    c.bg = current_bg_;
+    c.attrs = current_attrs_;
+    c.attrs.width = 1;
+    c.extra_idx = (current_underline_color_.is_default() && current_hyperlink_id_ == 0)
+        ? 0
+        : active_grid_->intern_cell_extra(CellExtra{
+            .combining_idx = 0,
+            .underline_color = current_underline_color_,
+            .hyperlink_id = current_hyperlink_id_,
+        });
+    if (target != c) {
+        target = c;
+        r.mark_dirty(col);
+        r.note_written(col);
+    }
+    last_printed_ = c.codepoint;
+    if (col + 1 >= cols_) {
+        cursor_.col = cols_ - 1;
+        if (auto_wrap_) wrap_next_ = true;
+    } else {
+        cursor_.col = col + 1;
     }
 }
 
@@ -317,18 +375,23 @@ void TerminalEngine::print_ascii_run(std::string_view ascii) {
         }
 
         const size_t chunk = std::min(avail, static_cast<int>(ascii.size() - offset));
-        const uint16_t extra_idx = active_grid_->intern_cell_extra(CellExtra{
-            .combining_idx = 0,
-            .underline_color = current_underline_color_,
-            .hyperlink_id = current_hyperlink_id_,
-        });
+        auto& row = active_grid_->row(cursor_.row);
+        if (start < row.clean_from) {
+            active_grid_->repair_wide_span(start, start + static_cast<int>(chunk) - 1, cursor_.row);
+        }
+        const uint16_t extra_idx = (current_underline_color_.is_default() && current_hyperlink_id_ == 0)
+            ? 0
+            : active_grid_->intern_cell_extra(CellExtra{
+                .combining_idx = 0,
+                .underline_color = current_underline_color_,
+                .hyperlink_id = current_hyperlink_id_,
+            });
         Cell base;
         base.fg = current_fg_;
         base.bg = current_bg_;
         base.attrs = current_attrs_;
         base.attrs.width = 1;
         base.extra_idx = extra_idx;
-        auto& row = active_grid_->row(cursor_.row);
         auto* cells = row.cells.data();
         int dirty_min = cols_, dirty_max = -1;
         size_t i = 0;
@@ -365,7 +428,10 @@ void TerminalEngine::print_ascii_run(std::string_view ascii) {
             dirty_min = std::min(dirty_min, col);
             dirty_max = std::max(dirty_max, col);
         }
-        if (dirty_max >= dirty_min) row.mark_dirty_range(dirty_min, dirty_max);
+        if (dirty_max >= dirty_min) {
+            row.mark_dirty_range(dirty_min, dirty_max);
+            row.note_written(dirty_max);
+        }
         offset += chunk;
         last_printed_ = static_cast<char32_t>(static_cast<unsigned char>(ascii[offset - 1]));
         cursor_.col += static_cast<int>(chunk);
@@ -383,11 +449,29 @@ void TerminalEngine::print_wide_run(std::span<const char32_t> cps) {
         return;
     }
 
-    const uint16_t extra_idx = active_grid_->intern_cell_extra(CellExtra{
-        .combining_idx = 0,
-        .underline_color = current_underline_color_,
-        .hyperlink_id = current_hyperlink_id_,
-    });
+    const uint16_t extra_idx = (current_underline_color_.is_default() && current_hyperlink_id_ == 0)
+        ? 0
+        : active_grid_->intern_cell_extra(CellExtra{
+            .combining_idx = 0,
+            .underline_color = current_underline_color_,
+            .hyperlink_id = current_hyperlink_id_,
+        });
+
+    CellAttributes leader_attrs = current_attrs_;
+    leader_attrs.width = 2;
+    Cell leader;
+    leader.fg = current_fg_;
+    leader.bg = current_bg_;
+    leader.attrs = leader_attrs;
+    leader.extra_idx = extra_idx;
+
+    CellAttributes cont_attrs = current_attrs_;
+    cont_attrs.width = 0;
+    Cell cont;
+    cont.codepoint = 0;
+    cont.fg = current_fg_;
+    cont.bg = current_bg_;
+    cont.attrs = cont_attrs;
 
     size_t i = 0;
     while (i < cps.size()) {
@@ -416,40 +500,48 @@ void TerminalEngine::print_wide_run(std::span<const char32_t> cps) {
 
         auto& row = active_grid_->row(cursor_.row);
         auto* cells = row.cells.data();
-        int dirty_min = cols_, dirty_max = -1;
         const int slots = remaining / 2;
+        const size_t pair_count = std::min(static_cast<size_t>(slots), cps.size() - i);
         size_t written = 0;
-        for (; written < static_cast<size_t>(slots) && i < cps.size(); ++written, ++i) {
-            const int col = cursor_.col + static_cast<int>(written) * 2;
-            CellAttributes leader_attrs = current_attrs_;
-            leader_attrs.width = 2;
-            Cell leader;
-            leader.codepoint = cps[i];
-            leader.fg = current_fg_;
-            leader.bg = current_bg_;
-            leader.attrs = leader_attrs;
-            leader.extra_idx = extra_idx;
-            if (cells[col] != leader) {
+        if (pair_count > 0 && cursor_.col >= row.clean_from) {
+            // Fast path on blank tails: skip wide repair and per-cell equality checks.
+            const int start_col = cursor_.col;
+            for (; written < pair_count; ++written, ++i) {
+                const int col = start_col + static_cast<int>(written) * 2;
+                leader.codepoint = cps[i];
                 cells[col] = leader;
-                dirty_min = std::min(dirty_min, col);
-                dirty_max = std::max(dirty_max, col);
-            }
-
-            CellAttributes cont_attrs = current_attrs_;
-            cont_attrs.width = 0;
-            Cell cont;
-            cont.codepoint = 0;
-            cont.fg = current_fg_;
-            cont.bg = current_bg_;
-            cont.attrs = cont_attrs;
-            if (cells[col + 1] != cont) {
                 cells[col + 1] = cont;
-                dirty_min = std::min(dirty_min, col + 1);
-                dirty_max = std::max(dirty_max, col + 1);
             }
-            last_printed_ = cps[i];
+            last_printed_ = cps[i - 1];
+            const int end_col = start_col + static_cast<int>(written) * 2 - 1;
+            row.mark_dirty_range(start_col, end_col);
+            row.note_written(end_col);
+        } else {
+            int dirty_min = cols_, dirty_max = -1;
+            if (pair_count > 0) {
+                active_grid_->repair_wide_span(
+                    cursor_.col, cursor_.col + static_cast<int>(pair_count) * 2 - 1, cursor_.row);
+            }
+            for (; written < pair_count; ++written, ++i) {
+                const int col = cursor_.col + static_cast<int>(written) * 2;
+                leader.codepoint = cps[i];
+                if (cells[col] != leader) {
+                    cells[col] = leader;
+                    dirty_min = std::min(dirty_min, col);
+                    dirty_max = std::max(dirty_max, col);
+                }
+                if (cells[col + 1] != cont) {
+                    cells[col + 1] = cont;
+                    dirty_min = std::min(dirty_min, col + 1);
+                    dirty_max = std::max(dirty_max, col + 1);
+                }
+            }
+            if (written > 0) last_printed_ = cps[i - 1];
+            if (dirty_max >= dirty_min) {
+                row.mark_dirty_range(dirty_min, dirty_max);
+                row.note_written(dirty_max);
+            }
         }
-        if (dirty_max >= dirty_min) row.mark_dirty_range(dirty_min, dirty_max);
 
         cursor_.col += static_cast<int>(written) * 2;
         if (cursor_.col >= cols_) {
@@ -464,6 +556,7 @@ void TerminalEngine::print_wide_run(std::span<const char32_t> cps) {
         // the next row instead (two columns never fit in one cell).
         const int col = cols_ - 1;
         if (!auto_wrap_) {
+            active_grid_->repair_wide_span(col, col, cursor_.row);
             CellAttributes attrs = current_attrs_;
             attrs.width = 2;
             Cell leader;
@@ -498,6 +591,7 @@ void TerminalEngine::print_wide_run(std::span<const char32_t> cps) {
             if (narrow_row.cells[0] != leader) {
                 narrow_row.cells[0] = leader;
                 narrow_row.mark_dirty(0);
+                narrow_row.note_written(0);
             }
             last_printed_ = cps[i++];
             cursor_.col = 0;
@@ -563,16 +657,16 @@ void TerminalEngine::erase_in_display(int mode) {
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->erase_in_display(cursor_.col, cursor_.row, mode, empty_cell);
-    switch (mode) {
-        case 2:
-            images_.erase(std::remove_if(images_.begin(), images_.end(),
-                [this](const PlacedImage& image) { return image.alt_screen == is_alt_screen_; }),
-                images_.end());
-            break;
-        case 0: erase_images(cursor_.col, cursor_.row, cols_ - 1, rows_ - 1); break;
-        case 1: erase_images(0, 0, cursor_.col, cursor_.row); break;
-        case 3: break; // DECSED 3 is a no-op with no local history; keep images.
-        default: break;
+    // Per Kitty graphics protocol, ED 2 clears placements on the active screen;
+    // partial clears (ED 0/1) leave placements intact for split-pane TUIs.
+    if (mode == 2) {
+        kitty_graphics_.clear_placements_for_screen(is_alt_screen_);
+        const bool had = std::any_of(images_.begin(), images_.end(),
+            [this](const PlacedImage& image) { return image.alt_screen == is_alt_screen_; });
+        if (had) active_grid_->mark_all_dirty();
+        images_.erase(std::remove_if(images_.begin(), images_.end(),
+            [this](const PlacedImage& image) { return image.alt_screen == is_alt_screen_; }),
+            images_.end());
     }
 }
 
@@ -581,12 +675,6 @@ void TerminalEngine::erase_in_line(int mode) {
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->erase_in_line(cursor_.col, cursor_.row, mode, empty_cell);
-    switch (mode) {
-        case 0: erase_images(cursor_.col, cursor_.row, cols_ - 1, cursor_.row); break;
-        case 1: erase_images(0, cursor_.row, cursor_.col, cursor_.row); break;
-        case 2: erase_images(0, cursor_.row, cols_ - 1, cursor_.row); break;
-        default: break;
-    }
 }
 
 void TerminalEngine::insert_lines(int count) {
@@ -665,6 +753,14 @@ void TerminalEngine::clear_images() noexcept {
     images_.clear();
 }
 
+void TerminalEngine::remove_image_by_uid(uint64_t uid) noexcept {
+    if (uid == 0) return;
+    const bool found = std::any_of(images_.begin(), images_.end(),
+        [uid](const PlacedImage& image) { return image.uid == uid; });
+    if (found) active_grid_->mark_all_dirty();
+    std::erase_if(images_, [uid](const PlacedImage& image) { return image.uid == uid; });
+}
+
 void TerminalEngine::remove_images_by_id(uint32_t image_id) noexcept {
     const bool found = std::any_of(images_.begin(), images_.end(),
         [image_id](const PlacedImage& image) { return image.image_id == image_id; });
@@ -690,47 +786,12 @@ void TerminalEngine::remove_images_by_placement(uint32_t image_id, uint32_t plac
     });
 }
 
-void TerminalEngine::remove_images_at(int col, int row) noexcept {
-    const bool found = std::any_of(images_.begin(), images_.end(), [&](const PlacedImage& image) {
-        return image.alt_screen == is_alt_screen_ && col >= image.col &&
-            col < image.col + image.cols && row >= image.row && row < image.row + image.rows;
-    });
-    if (found) active_grid_->mark_all_dirty();
-    std::erase_if(images_, [&](const PlacedImage& image) {
-        return image.alt_screen == is_alt_screen_ && col >= image.col &&
-            col < image.col + image.cols && row >= image.row && row < image.row + image.rows;
-    });
-}
-
-void TerminalEngine::remove_images_by_z(int z_index) noexcept {
-    const bool found = std::any_of(images_.begin(), images_.end(),
-        [z_index](const PlacedImage& image) { return image.z_index == z_index; });
-    if (found) active_grid_->mark_all_dirty();
-    std::erase_if(images_, [z_index](const PlacedImage& image) { return image.z_index == z_index; });
-}
-
-void TerminalEngine::erase_images(int col1, int row1, int col2, int row2) noexcept {
-    if (col1 > col2) std::swap(col1, col2);
-    if (row1 > row2) std::swap(row1, row2);
-    const bool found = std::any_of(images_.begin(), images_.end(), [&](const PlacedImage& image) {
-        if (image.alt_screen != is_alt_screen_) return false;
-        const int c1 = image.col, c2 = image.col + image.cols - 1;
-        const int r1 = image.row, r2 = image.row + image.rows - 1;
-        return c1 <= col2 && c2 >= col1 && r1 <= row2 && r2 >= row1;
-    });
-    if (found) active_grid_->mark_all_dirty();
-    std::erase_if(images_, [&](const PlacedImage& image) {
-        if (image.alt_screen != is_alt_screen_) return false;
-        const int c1 = image.col, c2 = image.col + image.cols - 1;
-        const int r1 = image.row, r2 = image.row + image.rows - 1;
-        return c1 <= col2 && c2 >= col1 && r1 <= row2 && r2 >= row1;
-    });
-}
-
 void TerminalEngine::scroll_images(int top, int bottom, int rows) noexcept {
-    if (rows == 0) return;
+    if (images_.empty() || rows == 0) return;
     // Images overlapping the scrolled region move with it and disappear once
-    // fully outside; images in other panes stay put.
+    // fully outside; images in other panes stay put. Partially scrolled images
+    // stay clipped inside [top, bottom] so they never overlap headers/footers.
+    bool scrolled_any = false;
     std::vector<PlacedImage> kept;
     kept.reserve(images_.size());
     for (auto& image : images_) {
@@ -738,14 +799,19 @@ void TerminalEngine::scroll_images(int top, int bottom, int rows) noexcept {
             kept.push_back(std::move(image));
             continue;
         }
+        scrolled_any = true;
         damage_image_rows(image.row, image.rows); // Old position needs a repaint.
         image.row -= rows;
+        image.clip_top_row = std::max(image.clip_top_row, top);
+        image.clip_bottom_row = image.clip_bottom_row < 0
+            ? bottom : std::min(image.clip_bottom_row, bottom);
         if (image.row + image.rows > top && image.row <= bottom) {
             damage_image_rows(image.row, image.rows); // New position too.
             kept.push_back(std::move(image));
         }
     }
     images_ = std::move(kept);
+    if (scrolled_any) kitty_graphics_.scroll_placements(top, bottom, rows, is_alt_screen_);
 }
 
 } // namespace gritty::core

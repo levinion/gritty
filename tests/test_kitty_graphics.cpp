@@ -2,10 +2,12 @@
 #include "core/kitty_graphics.hpp"
 #include "core/vt_parser.hpp"
 #include "core/terminal_session.hpp"
+#include <png.h>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using namespace gritty::core;
 namespace {
@@ -252,4 +254,241 @@ TEST_CASE("Kitty graphics accumulates chunked transmissions") {
     CHECK(graphics.virtual_placements()[0].image_id == 90);
     CHECK(graphics.virtual_placements()[0].cols == 4);
     CHECK(graphics.virtual_placements()[0].rows == 2);
+}
+
+TEST_CASE("Kitty graphics bounds oversized dimensions/chunks, replaces same id and notifies LRU eviction") {
+    KittyGraphicsEngine small(64);
+    // Oversized dimensions rejected before allocation.
+    CHECK(small.process_apc_sequence("Ga=t,i=1,f=32,s=100000,v=100000;/wAA/w==", 0, 0)
+              .find("ENOENT") != std::string::npos);
+
+    // Oversized chunked transfer rejected cleanly.
+    const std::string big_chunk(8192, 'A');
+    CHECK(small.process_apc_sequence("Ga=t,i=2,f=32,s=1,v=1,m=1;" + big_chunk, 0, 0)
+              .find("EFBIG") != std::string::npos);
+
+    // Same-ID replacement updates pixels instead of keeping stale image.
+    KittyGraphicsEngine engine(8);
+    std::vector<uint32_t> deleted_ids;
+    engine.set_delete_handler([&](uint32_t id) { deleted_ids.push_back(id); });
+    REQUIRE(engine.process_apc_sequence("Ga=T,i=10,f=32,s=1,v=1;/wAA/w==", 0, 0).find("OK") != std::string::npos);
+    REQUIRE(engine.get_image(10) != nullptr);
+    CHECK(engine.get_image(10)->image.data()[0] == 0xFFFF0000u);
+    REQUIRE(engine.process_apc_sequence("Ga=T,i=10,f=32,s=1,v=1;AP8A/w==", 0, 0).find("OK") != std::string::npos);
+    REQUIRE(engine.get_image(10) != nullptr);
+    CHECK(engine.get_image(10)->image.data()[0] == 0xFF00FF00u);
+
+    // LRU eviction deletes oldest image and notifies delete_handler_.
+    REQUIRE(engine.process_apc_sequence("Ga=T,i=11,f=32,s=1,v=1;/wAA/w==", 0, 0).find("OK") != std::string::npos);
+    REQUIRE(engine.process_apc_sequence("Ga=T,i=12,f=32,s=1,v=1;/wAA/w==", 0, 0).find("OK") != std::string::npos);
+    CHECK(engine.get_image(10) == nullptr);
+    CHECK(engine.get_image(11) != nullptr);
+    CHECK(engine.get_image(12) != nullptr);
+    REQUIRE(deleted_ids.size() == 1);
+    CHECK(deleted_ids[0] == 10);
+}
+
+TEST_CASE("Kitty image.nvim workflow: d=i keeps image cache, d=I drops, S/O slicing, X/Y offsets, >INT32 ID") {
+    KittyGraphicsEngine graphics;
+    // Omitted action defaults to Transmit ('t'), not TransmitAndDisplay.
+    const uint32_t high_id = 3000000000u;
+    CHECK(graphics.process_apc_sequence(
+              "Gi=" + std::to_string(high_id) + ",f=32,s=1,v=1;/wAA/w==", 0, 0) ==
+          "\x1b_Gi=" + std::to_string(high_id) + ";OK\x1b\\");
+    REQUIRE(graphics.get_image(high_id) != nullptr);
+    CHECK(graphics.placements().empty());
+
+    // Place with p=1 and X/Y pixel offsets.
+    CHECK(graphics.process_apc_sequence(
+              "Ga=p,i=" + std::to_string(high_id) + ",p=1,X=3,Y=4,c=2,r=2;", 1, 2) ==
+          "\x1b_Gi=" + std::to_string(high_id) + ";OK\x1b\\");
+    REQUIRE(graphics.placements().size() == 1);
+    CHECK(graphics.placements()[0].x_offset == 3);
+    CHECK(graphics.placements()[0].y_offset == 4);
+
+    // Re-placing same (image_id, placement_id) replaces instead of duplicating.
+    CHECK(graphics.process_apc_sequence(
+              "Ga=p,i=" + std::to_string(high_id) + ",p=1,X=5,Y=6,c=2,r=2;", 2, 3) ==
+          "\x1b_Gi=" + std::to_string(high_id) + ";OK\x1b\\");
+    REQUIRE(graphics.placements().size() == 1);
+    CHECK(graphics.placements()[0].col == 2);
+    CHECK(graphics.placements()[0].x_offset == 5);
+
+    // Lowercase d=i removes placement(s) while retaining cached image for a=p reuse.
+    CHECK(graphics.process_apc_sequence(
+              "Ga=d,d=i,i=" + std::to_string(high_id) + ",q=2;", 0, 0).empty());
+    CHECK(graphics.placements().empty());
+    REQUIRE(graphics.get_image(high_id) != nullptr);
+
+    // Subsequent a=p succeeds immediately without retransmission.
+    CHECK(graphics.process_apc_sequence(
+              "Ga=p,i=" + std::to_string(high_id) + ",p=2;", 0, 0) ==
+          "\x1b_Gi=" + std::to_string(high_id) + ";OK\x1b\\");
+    REQUIRE(graphics.placements().size() == 1);
+
+    // Uppercase d=I deletes placement AND image data once no placements remain.
+    CHECK(graphics.process_apc_sequence(
+              "Ga=d,d=I,i=" + std::to_string(high_id) + ",p=2;", 0, 0) ==
+          "\x1b_Gi=" + std::to_string(high_id) + ";OK\x1b\\");
+    CHECK(graphics.placements().empty());
+    CHECK(graphics.get_image(high_id) == nullptr);
+
+    // File transmission with O= offset and S= size reads the requested byte slice.
+    const auto dir = std::filesystem::temp_directory_path() / "gritty-kitty-slice-test";
+    std::filesystem::create_directories(dir);
+    const auto slice_path = dir / "slice.bin";
+    {
+        std::ofstream out(slice_path, std::ios::binary);
+        out.write("HDR!", 4);
+        out.write("\x00\x00\xff\xff", 4); // RGBA(0, 0, 255, 255) -> 0xFF0000FF
+        out.write("TAIL", 4);
+    }
+    CHECK(graphics.process_apc_sequence(
+              "Ga=t,t=f,f=32,s=1,v=1,O=4,S=4,i=95;" + base64_encode(slice_path.string()), 0, 0) ==
+          "\x1b_Gi=95;OK\x1b\\");
+    REQUIRE(graphics.get_image(95) != nullptr);
+    CHECK(graphics.get_image(95)->image.data()[0] == 0xFF0000FFu);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Kitty virtual_placement_change_handler fires and targeted delete selectors work") {
+    KittyGraphicsEngine graphics;
+    int virtual_changes = 0;
+    graphics.set_virtual_placement_change_handler([&]() { ++virtual_changes; });
+
+    CHECK(graphics.process_apc_sequence(
+              "Ga=T,U=1,i=101,c=2,r=2,x=1,y=2,w=3,h=4,f=32,s=4,v=4;" +
+              base64_encode(std::string(64, '\xff')), 0, 0) == "\x1b_Gi=101;OK\x1b\\");
+    CHECK(virtual_changes == 1);
+    const auto* vp = graphics.find_virtual_placement(101, 0);
+    REQUIRE(vp != nullptr);
+    CHECK(vp->src_x == 1);
+    CHECK(vp->src_y == 2);
+    CHECK(vp->src_w == 3);
+    CHECK(vp->src_h == 4);
+
+    // Deleting the virtual placement triggers change handler too.
+    CHECK(graphics.process_apc_sequence("Ga=d,d=i,i=101;", 0, 0) == "\x1b_Gi=101;OK\x1b\\");
+    CHECK(virtual_changes == 2);
+
+    // Direct placements: test d=p (by cell), d=x (by col), d=y (by row), d=r (by id range).
+    graphics.process_apc_sequence("Ga=T,i=201,c=2,r=2,f=32,s=1,v=1;/wAA/w==", 1, 1);
+    graphics.process_apc_sequence("Ga=T,i=202,c=2,r=2,f=32,s=1,v=1;/wAA/w==", 5, 1);
+    graphics.process_apc_sequence("Ga=T,i=203,c=2,r=2,f=32,s=1,v=1;/wAA/w==", 9, 5);
+    REQUIRE(graphics.placements().size() == 3);
+
+    // d=p at 1-based cell (2,2) hits only placement at (1,1) spanning [1..2,1..2].
+    graphics.process_apc_sequence("Ga=d,d=p,x=2,y=2;", 0, 0);
+    REQUIRE(graphics.placements().size() == 2);
+    CHECK(graphics.placements()[0].image_id == 202);
+
+    // d=x at 1-based col 6 hits only placement at (5,1) spanning cols [5..6].
+    graphics.process_apc_sequence("Ga=d,d=x,x=6;", 0, 0);
+    REQUIRE(graphics.placements().size() == 1);
+    CHECK(graphics.placements()[0].image_id == 203);
+
+    // d=r range [203..205] deletes placement and leaves other cached images intact.
+    graphics.process_apc_sequence("Ga=d,d=r,x=203,y=205;", 0, 0);
+    CHECK(graphics.placements().empty());
+    CHECK(graphics.get_image(201) != nullptr);
+    CHECK(graphics.get_image(203) != nullptr);
+}
+
+TEST_CASE("Kitty PNG decoder handles Grayscale, Gray+Alpha, and opaque Palette PNGs") {
+    auto encode_png = [](int color_type, const std::vector<uint8_t>& row,
+                         const std::vector<png_color>& palette = {}) -> std::string {
+        std::string out;
+        png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+        png_infop info = png_create_info_struct(png);
+        REQUIRE(png != nullptr);
+        REQUIRE(info != nullptr);
+        png_set_write_fn(png, &out,
+            [](png_structp p, png_bytep data, png_size_t len) {
+                static_cast<std::string*>(png_get_io_ptr(p))->append(
+                    reinterpret_cast<const char*>(data), len);
+            },
+            [](png_structp) {});
+        png_set_IHDR(png, info, 1, 1, 8, color_type, PNG_INTERLACE_NONE,
+                     PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+        if (!palette.empty()) {
+            png_set_PLTE(png, info, palette.data(), static_cast<int>(palette.size()));
+        }
+        png_write_info(png, info);
+        png_bytep row_ptr = const_cast<png_bytep>(row.data());
+        png_write_image(png, &row_ptr);
+        png_write_end(png, nullptr);
+        png_destroy_write_struct(&png, &info);
+        return out;
+    };
+
+    KittyGraphicsEngine graphics;
+    // Grayscale (color_type=0): pixel 0x40 -> 0xFF404040
+    const auto gray_png = encode_png(PNG_COLOR_TYPE_GRAY, {0x40});
+    CHECK(graphics.process_apc_sequence("Ga=t,f=100,i=301;" + base64_encode(gray_png), 0, 0) ==
+          "\x1b_Gi=301;OK\x1b\\");
+    REQUIRE(graphics.get_image(301) != nullptr);
+    CHECK(graphics.get_image(301)->image.data()[0] == 0xFF404040u);
+
+    // Gray+Alpha (color_type=4): pixel (0x80, 0xFF) -> 0xFF808080
+    const auto ga_png = encode_png(PNG_COLOR_TYPE_GRAY_ALPHA, {0x80, 0xFF});
+    CHECK(graphics.process_apc_sequence("Ga=t,f=100,i=302;" + base64_encode(ga_png), 0, 0) ==
+          "\x1b_Gi=302;OK\x1b\\");
+    REQUIRE(graphics.get_image(302) != nullptr);
+    CHECK(graphics.get_image(302)->image.data()[0] == 0xFF808080u);
+
+    // Opaque Palette without tRNS (color_type=3): RGB(0x12, 0x34, 0x56) -> 0xFF123456
+    const auto pal_png = encode_png(PNG_COLOR_TYPE_PALETTE, {0x00}, {{0x12, 0x34, 0x56}});
+    CHECK(graphics.process_apc_sequence("Ga=t,f=100,i=303;" + base64_encode(pal_png), 0, 0) ==
+          "\x1b_Gi=303;OK\x1b\\");
+    REQUIRE(graphics.get_image(303) != nullptr);
+    CHECK(graphics.get_image(303)->image.data()[0] == 0xFF123456u);
+}
+
+TEST_CASE("Kitty d=P/d=Z preserve still-referenced images and distinguish anonymous placements") {
+    TerminalEngine engine(20, 10);
+    auto& gfx = engine.kitty_graphics();
+    uint64_t next_uid = 1;
+    (void)next_uid;
+    gfx.set_placement_handler([&](KittyPlacement& placement, pixman_image_t* image) {
+        if (!image) return;
+        placement.cols = placement.cols > 0 ? placement.cols : 1;
+        placement.rows = placement.rows > 0 ? placement.rows : 1;
+        PlacedImage placed;
+        placed.image.reset(pixman_image_ref(image));
+        placed.uid = placement.uid;
+        placed.image_id = placement.image_id;
+        placed.placement_id = placement.placement_id;
+        placed.col = placement.col;
+        placed.row = placement.row;
+        placed.cols = placement.cols;
+        placed.rows = placement.rows;
+        placed.z_index = placement.z_index;
+        engine.place_image(std::move(placed));
+    });
+    gfx.set_delete_handler([&](uint32_t image_id) { engine.remove_images_by_id(image_id); });
+    gfx.set_placement_delete_handler([&](const KittyPlacement& placement) {
+        engine.remove_image_by_uid(placement.uid);
+    });
+
+    // Two anonymous (p=0) placements of image 401 at different cells.
+    CHECK(gfx.process_apc_sequence("Ga=T,i=401,c=2,r=2,f=32,s=1,v=1;/wAA/w==", 0, 0) ==
+          "\x1b_Gi=401;OK\x1b\\");
+    CHECK(gfx.process_apc_sequence("Ga=p,i=401,c=2,r=2;", 6, 0) == "\x1b_Gi=401;OK\x1b\\");
+    REQUIRE(gfx.placements().size() == 2);
+    REQUIRE(engine.images().size() == 2);
+
+    // d=P at (1,1) deletes only the first placement and keeps image 401 alive because (6,0) remains!
+    CHECK(gfx.process_apc_sequence("Ga=d,d=P,x=1,y=1;", 0, 0) == "\x1b_Gi=0;OK\x1b\\");
+    REQUIRE(gfx.placements().size() == 1);
+    REQUIRE(engine.images().size() == 1);
+    CHECK(engine.images()[0].col == 6);
+    CHECK(gfx.get_image(401) != nullptr);
+
+    // Virtual placement on z=-5 freed by d=Z even without direct placements.
+    CHECK(gfx.process_apc_sequence("Ga=T,U=1,i=402,c=2,r=2,z=-5,f=32,s=1,v=1;/wAA/w==", 0, 0) ==
+          "\x1b_Gi=402;OK\x1b\\");
+    REQUIRE(gfx.get_image(402) != nullptr);
+    gfx.process_apc_sequence("Ga=d,d=Z,z=-5;", 0, 0);
+    CHECK(gfx.virtual_placements().empty());
+    CHECK(gfx.get_image(402) == nullptr);
 }

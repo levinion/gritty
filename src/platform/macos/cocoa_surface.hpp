@@ -26,6 +26,8 @@ public:
 
     void resize(int pixel_width, int pixel_height, double scale) override;
     pixman_image_t* get_back_buffer() override;
+    pixman_image_t* get_back_buffer_for_frame(bool full_redraw) override;
+    [[nodiscard]] bool is_ready() const noexcept override { return native_view_ != nullptr; }
     void present(const util::PixmanRegion& damage) override;
     bool request_frame() override;
     [[nodiscard]] bool supports_frame_pacing() const noexcept override { return true; }

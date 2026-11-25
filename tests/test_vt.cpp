@@ -3,6 +3,7 @@
 #include <utility>
 #include "core/terminal_engine.hpp"
 #include "core/vt_parser.hpp"
+#include "util/base64.hpp"
 
 using namespace gritty::core;
 
@@ -304,6 +305,12 @@ TEST_CASE("DSR and DA1 responses are emitted") {
     CHECK(engine.grid().cell(0, 0).codepoint == U'R');
     CHECK(engine.grid().cell(4, 0).codepoint == U'Y');
     CHECK(engine.cursor_col() == 5);
+
+    // XTWINOPS 14t / 16t / 18t pixel and cell geometry queries.
+    engine.set_cell_size(10, 20);
+    responses.clear();
+    parser.feed("\x1b[14t\x1b[16t\x1b[18t");
+    CHECK(responses == "\x1b[4;40;100t\x1b[6;20;10t\x1b[8;2;10t");
 }
 
 TEST_CASE("Placed images follow scroll, erase and the active screen") {
@@ -325,7 +332,9 @@ TEST_CASE("Placed images follow scroll, erase and the active screen") {
     CHECK(engine.images()[0].row == 1);
 
     engine.set_cursor_pos(0, 1);
-    engine.erase_in_line(2); // Erasing the row removes images anchored on it.
+    engine.erase_in_line(2); // Kitty placements survive line clears in neighbouring splits.
+    CHECK(engine.images().size() == 1);
+    engine.erase_in_display(2); // ED 2 clears placements on the active screen.
     CHECK(engine.images().empty());
 
     // Alt-screen images are tagged and survive a switch back untouched.
@@ -673,4 +682,86 @@ TEST_CASE("Unknown and oversized OSC payloads are consumed without grid output")
     CHECK(engine.grid().cell(0, 0).codepoint == U'O');
     CHECK(engine.grid().cell(1, 0).codepoint == U'K');
     CHECK(engine.cursor_col() == 2);
+}
+
+TEST_CASE("XTGETTCAP Setulc unpacks 24-bit RGB and OSC 52 supports >64 KiB payloads") {
+    TerminalEngine engine(10, 2);
+    VtParser parser(engine);
+    std::string replies;
+    std::string clipboard;
+    parser.set_response_callback([&](std::string_view r) { replies.append(r); });
+    parser.set_clipboard_handler([&](std::string_view text) { clipboard.assign(text); });
+
+    // Query Setulc ("536574756c63").
+    parser.feed("\x1bP+q536574756c63\x1b\\");
+    // Expected terminfo string: \x1b[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm
+    const std::string expected_hex =
+        "1b5b35383a323a3a257031257b36353533367d252f25643a"
+        "257031257b3235367d252f257b3235357d252625643a"
+        "257031257b3235357d252625646d";
+    CHECK(replies == "\x1bP1+r536574756c63=" + expected_hex + "\x1b\\");
+
+    // 96 KiB raw -> 128 KiB base64 (> 64 KiB ordinary OSC limit).
+    const std::string raw(96 * 1024, 'A');
+    const std::string b64 = gritty::util::encode_base64(raw);
+    REQUIRE(b64.size() > 65536);
+    parser.feed("\x1b]52;c;" + b64 + "\x07");
+    CHECK(clipboard == raw);
+
+    // tmux DCS passthrough OSC 10 color update synchronizes back to outer parser.
+    replies.clear();
+    parser.feed("\x1bPtmux;\x1b\x1b]10;#112233\x07\x1b\\");
+    parser.feed("\x1b]10;?\x07");
+    CHECK(replies == "\x1b]10;rgb:1111/2222/3333\x07");
+}
+
+TEST_CASE("Combining mark at rightmost column attaches to last cell and SGR 58:2:cs parses") {
+    TerminalEngine engine(4, 2);
+    VtParser parser(engine);
+    // Print 4 cells across row 0 -> cursor stays at col=3 with wrap_next_=true,
+    // then emit combining diacritic U+0305 and explicit colorspace 58:2:1:0:0:9.
+    parser.feed("\x1b[58:2:1:0:0:9mABC\xf4\x8e\xbb\xae\xcc\x85\xcc\x8d");
+    const auto& last = engine.grid().cell(3, 0);
+    const auto extra = engine.grid().get_cell_extra(last.extra_idx);
+    CHECK(last.codepoint == 0x10EEEE);
+    CHECK(extra.underline_color.is_rgb());
+    CHECK(extra.underline_color.b() == 9);
+    const auto marks = engine.grid().get_combining_codepoints(extra.combining_idx);
+    REQUIRE(marks.size() == 2);
+    CHECK(marks[0] == 0x0305);
+    CHECK(marks[1] == 0x030D);
+    // Cell at col 2 ('C') must NOT have received the combining marks.
+    CHECK(engine.grid().get_cell_extra(engine.grid().cell(2, 0).extra_idx).combining_idx == 0);
+}
+
+TEST_CASE("ScreenGrid::insert_cells preserves wide leaders and clears orphaned continuations") {
+    TerminalEngine engine(8, 2);
+    VtParser parser(engine);
+    // Print wide char at cols 0..1 ('中') followed by 'A' at col 2.
+    parser.feed("\xe4\xb8\xad" "A");
+    REQUIRE(engine.grid().cell(0, 0).attrs.width == 2);
+    REQUIRE(engine.grid().cell(1, 0).attrs.width == 0);
+    REQUIRE(engine.grid().cell(2, 0).codepoint == U'A');
+
+    // Insert 1 cell at col 0 (on wide leader): leader+continuation must shift intact to 1..2.
+    Cell blank;
+    engine.grid().insert_cells(0, 0, 1, blank);
+    CHECK(engine.grid().cell(0, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(0, 0).attrs.width == 1);
+    CHECK(engine.grid().cell(1, 0).codepoint == 0x4E2D);
+    CHECK(engine.grid().cell(1, 0).attrs.width == 2);
+    CHECK(engine.grid().cell(2, 0).attrs.width == 0);
+    CHECK(engine.grid().cell(3, 0).codepoint == U'A');
+
+    // Now insert 1 cell at col 2 (directly on wide continuation):
+    // wide leader at col 1 is cleared to space, continuation at col 2 is cleared BEFORE shifting,
+    // so col 3 does NOT end up with an orphaned width=0 cell.
+    engine.grid().insert_cells(2, 0, 1, blank);
+    CHECK(engine.grid().cell(1, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(1, 0).attrs.width == 1);
+    CHECK(engine.grid().cell(2, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(2, 0).attrs.width == 1);
+    CHECK(engine.grid().cell(3, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(3, 0).attrs.width == 1);
+    CHECK(engine.grid().cell(4, 0).codepoint == U'A');
 }

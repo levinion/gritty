@@ -103,6 +103,8 @@ uint32_t CombiningStore::intern(std::span<const char32_t> text) {
 
 uint32_t CombiningStore::append(uint32_t prefix, char32_t cp) {
     const auto text = get(prefix);
+    constexpr size_t kMaxCombiningMarks = 8192;
+    if (text.size() >= kMaxCombiningMarks) return prefix;
     const auto hash = extend_hash(text.empty() ? hash_seed : entries_[prefix - 1].hash, cp);
     if (const auto id = find(hash, text, cp, true)) return id;
     std::vector<char32_t> extended;

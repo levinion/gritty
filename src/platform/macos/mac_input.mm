@@ -16,7 +16,14 @@ input::Modifiers MacInput::translate_modifiers(unsigned long flags) {
 input::KeyEvent MacInput::translate_key_event(NSEvent* event) {
     input::KeyEvent ev;
     ev.mods = translate_modifiers([event modifierFlags]);
-    ev.action = [event isARepeat] ? input::KeyAction::Repeat : input::KeyAction::Press;
+    const NSEventType type = [event type];
+    if (type == NSEventTypeKeyUp) {
+        ev.action = input::KeyAction::Release;
+    } else if (type == NSEventTypeKeyDown && [event isARepeat]) {
+        ev.action = input::KeyAction::Repeat;
+    } else {
+        ev.action = input::KeyAction::Press;
+    }
 
     unsigned short key_code = [event keyCode];
     switch (key_code) {
@@ -122,8 +129,13 @@ input::MouseEvent MacInput::translate_mouse_event(NSEvent* event, int cell_w, in
             break;
         case NSEventTypeScrollWheel: {
             CGFloat dy = [event scrollingDeltaY];
-            ev.button = (dy > 0) ? input::MouseButton::WheelUp : input::MouseButton::WheelDown;
-            ev.action = input::MouseAction::Press;
+            if (dy > 0) {
+                ev.button = input::MouseButton::WheelUp;
+                ev.action = input::MouseAction::Press;
+            } else if (dy < 0) {
+                ev.button = input::MouseButton::WheelDown;
+                ev.action = input::MouseAction::Press;
+            }
             break;
         }
         default:

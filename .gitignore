@@ -9,7 +9,6 @@ compile_commands.json
 result
 /benchmark/results/*
 !/benchmark/results/.gitkeep
-/benchmark/workloads/.cache/
 /AGENTS.md
 /docs/
 /benchmark/README.md

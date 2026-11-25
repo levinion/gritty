@@ -80,8 +80,8 @@ void VtParser::handle_sgr() {
                     if (type == 5 && p.subparam_count >= 2 && p.subparams[1] >= 0) {
                         apply_color(Color::make_indexed(static_cast<uint8_t>(p.subparams[1])));
                     } else if (type == 2) {
-                        if (p.subparam_count >= 5 && p.subparams[1] <= 0) {
-                            // Format: 38:2::r:g:b or 38:2:cs:r:g:b
+                        if (p.subparam_count >= 5) {
+                            // Format: 38:2::r:g:b or 38:2:cs:r:g:b (58:2:... shares this layout)
                             int r = p.subparams[2];
                             int g = p.subparams[3];
                             int b = p.subparams[4];

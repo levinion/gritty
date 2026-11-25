@@ -14,6 +14,7 @@ struct PtySpawnOptions {
     std::vector<std::string> args;
     std::string cwd;
     std::vector<std::string> env; // NAME=value sets, bare NAME unsets.
+    std::string term{"xterm-256color"};
     int cols{80};
     int rows{24};
     int pixel_width{640};

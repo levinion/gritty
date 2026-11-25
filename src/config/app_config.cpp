@@ -103,7 +103,7 @@ std::optional<platform::WindowDecorations> parse_window_decorations(
 
 AppConfig::AppConfig() {
 #if defined(PLATFORM_MACOS)
-    font.family = "Monaco";
+    font.family = "Menlo";
 #else
     font.family = "monospace";
 #endif
@@ -211,7 +211,10 @@ std::expected<void, std::string> AppConfig::apply_override(
         if (!color) return invalid(key, value);
         if (lowered == "colors.foreground") colors.foreground = *color;
         else if (lowered == "colors.background") colors.background = *color;
-        else colors.cursor = *color;
+        else {
+            colors.cursor = *color;
+            cursor.color = *color;
+        }
         return {};
     }
     if (lowered.starts_with("colors.regular") || lowered.starts_with("colors.bright")) {

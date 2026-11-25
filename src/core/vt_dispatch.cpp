@@ -170,9 +170,19 @@ void VtParser::handle_query(uint8_t final) {
     } else if (!is_private_ && final == 'c' && get_param(0, 0) == 0) {
         // VT220 + ANSI color only. Image support is advertised via Kitty queries.
         send_response("\x1b[?62;22c");
-    } else if (!is_private_ && final == 't' && get_param(0, 0) == 18) {
-        reply = util::format_to_buffer(reply_buffer, "\x1b[8;{};{}t",
-            engine_.rows(), engine_.cols());
+    } else if (!is_private_ && final == 't') {
+        const int op = get_param(0, 0);
+        if (op == 14 && engine_.cell_width() > 0 && engine_.cell_height() > 0) {
+            reply = util::format_to_buffer(reply_buffer, "\x1b[4;{};{}t",
+                engine_.rows() * engine_.cell_height(),
+                engine_.cols() * engine_.cell_width());
+        } else if (op == 16 && engine_.cell_width() > 0 && engine_.cell_height() > 0) {
+            reply = util::format_to_buffer(reply_buffer, "\x1b[6;{};{}t",
+                engine_.cell_height(), engine_.cell_width());
+        } else if (op == 18) {
+            reply = util::format_to_buffer(reply_buffer, "\x1b[8;{};{}t",
+                engine_.rows(), engine_.cols());
+        }
     }
     if (!reply.empty()) send_response(reply);
 }

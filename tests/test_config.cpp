@@ -233,4 +233,46 @@ TEST_CASE("Window padding parses scalar, table and override forms") {
     CHECK_FALSE(cfg.apply_override("window.padding=-1").has_value());
     CHECK_FALSE(cfg.apply_override("window.padding.x=513").has_value());
     CHECK_FALSE(TomlLoader::load_from_string("[window]\npadding = -2\n").has_value());
+
+    // Partial table keeps the other axis's default/base value.
+    result = TomlLoader::load_from_string("[window]\npadding = { x = 12 }\n");
+    REQUIRE(result.has_value());
+    CHECK((*result)->window.padding.x == 12);
+    CHECK((*result)->window.padding.y == 0);
+}
+
+TEST_CASE("colors.cursor sets cursor.color unless cursor.color is explicit, and validation catches errors") {
+    auto res = TomlLoader::load_from_string("[colors]\ncursor = '#112233'\n");
+    REQUIRE(res.has_value());
+    CHECK((*res)->colors.cursor == 0xFF112233);
+    CHECK((*res)->cursor.color == 0xFF112233);
+
+    res = TomlLoader::load_from_string("[cursor]\ncolor = '#445566'\n[colors]\ncursor = '#112233'\n");
+    REQUIRE(res.has_value());
+    CHECK((*res)->cursor.color == 0xFF445566);
+
+    CHECK_FALSE(TomlLoader::load_from_string("[font]\nsize = 0\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[font]\nantialias = 'bogus'\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[cursor]\nstyle = 'triangle'\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[main]\nosc52 = 'bogus'\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\ndecorations = false\n").has_value());
+}
+
+TEST_CASE("Default AppConfig matches Alacritty font and window defaults") {
+    const AppConfig cfg;
+    CHECK(cfg.font.size == 11.25);
+#if defined(PLATFORM_MACOS)
+    CHECK(cfg.font.family == "Menlo");
+    CHECK(cfg.font.dpi == 72);
+#else
+    CHECK(cfg.font.family == "monospace");
+    CHECK(cfg.font.dpi == 96);
+#endif
+    CHECK(cfg.window.decorations == gritty::platform::WindowDecorations::Full);
+    CHECK(cfg.window.padding.x == 0);
+    CHECK(cfg.window.padding.y == 0);
+    CHECK(cfg.colors.alpha == 1.0);
+    CHECK(cfg.cursor.style == gritty::core::CursorShape::Block);
+    CHECK(cfg.cursor.blink == false);
+    CHECK(cfg.main.osc52 == Osc52Mode::CopyOnly);
 }

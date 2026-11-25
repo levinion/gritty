@@ -243,3 +243,40 @@ TEST_CASE("Three-buffer burst reuses surfaces instead of churning full frames") 
     }
     CHECK(pool.allocation_count() == allocations);
 }
+
+TEST_CASE("Non-aligned full-width damage repair copies every row and skip_baseline_copy skips work") {
+    IOSurfaceFramePool pool;
+    // 65 pixels wide = 260 bytes/row; IOSurface aligns bytes-per-row above 260.
+    pool.resize(65, 10);
+    auto* a = pool.get_back_buffer();
+    REQUIRE(a != nullptr);
+    const int stride_px = pixman_image_get_stride(a) / 4;
+    REQUIRE(stride_px > 65);
+    for (int y = 0; y < 10; ++y)
+        pixman_image_get_data(a)[y * stride_px + 64] = 0xff111111u;
+    REQUIRE(pool.prepare_present() != nullptr);
+    pool.did_present();
+
+    auto* b = pool.get_back_buffer();
+    REQUIRE(b != nullptr);
+    for (int y = 0; y < 10; ++y)
+        pixman_image_get_data(b)[y * stride_px + 64] = 0xff222222u;
+    gritty::util::PixmanRegion full_band(0, 0, 65, 10);
+    auto* second = pool.prepare_present();
+    REQUIRE(second != nullptr);
+    pool.did_present(&full_band);
+    Pin hold(second);
+
+    auto* reused_a = pool.get_back_buffer();
+    REQUIRE(reused_a == a);
+    for (int y = 0; y < 10; ++y)
+        CHECK(pixman_image_get_data(reused_a)[y * stride_px + 64] == 0xff222222u);
+    REQUIRE(pool.prepare_present() != nullptr);
+    pool.did_present(&full_band);
+    hold.release();
+
+    const size_t before_skip = pool.copied_bytes();
+    auto* skipped = pool.get_back_buffer(true);
+    REQUIRE(skipped != nullptr);
+    CHECK(pool.copied_bytes() == before_skip);
+}

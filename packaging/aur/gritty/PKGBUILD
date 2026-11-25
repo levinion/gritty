@@ -23,12 +23,12 @@ makedepends=(
   'pkgconf'
   'wayland-protocols'
 )
-checkdepends=('doctest')
+checkdepends=('doctest' 'tmux' 'ttf-dejavu')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  arch-meson "${pkgname}-${pkgver}" build -Dtests=true -Dbenchmarks=false
+  arch-meson "${pkgname}-${pkgver}" build -Dtests=true
   meson compile -C build
 }
 

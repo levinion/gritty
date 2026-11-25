@@ -36,8 +36,12 @@ struct MainConfig {
 
 struct FontConfig {
     std::string family;
-    double size{13.0};
+    double size{11.25};
+#if defined(PLATFORM_MACOS)
+    unsigned int dpi{72};
+#else
     unsigned int dpi{96};
+#endif
     render::AntialiasMode antialias{render::AntialiasMode::Grayscale};
 };
 

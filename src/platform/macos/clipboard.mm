@@ -7,9 +7,9 @@ void PasteboardClipboard::copy_text(std::string_view text) {
     @autoreleasepool {
         NSPasteboard* pb = [NSPasteboard generalPasteboard];
         [pb clearContents];
-        NSString* str = [[NSString alloc] initWithBytes:text.data()
-                                                 length:text.size()
-                                               encoding:NSUTF8StringEncoding];
+        NSString* str = [[[NSString alloc] initWithBytes:text.data()
+                                                  length:text.size()
+                                                encoding:NSUTF8StringEncoding] autorelease];
         if (str) {
             [pb setString:str forType:NSPasteboardTypeString];
         }

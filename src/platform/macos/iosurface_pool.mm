@@ -165,7 +165,7 @@ bool IOSurfaceFramePool::valid() const noexcept {
 }
 const util::PixmanImage& IOSurfaceFramePool::image() const noexcept { return impl_->current->pixels; }
 
-pixman_image_t* IOSurfaceFramePool::get_back_buffer() {
+pixman_image_t* IOSurfaceFramePool::get_back_buffer(bool skip_baseline_copy) {
     auto& p = *impl_;
     p.prune();
     if (p.drawing && valid()) return p.current->pixels.get();
@@ -182,22 +182,33 @@ pixman_image_t* IOSurfaceFramePool::get_back_buffer() {
     // presented baseline BEFORE CpuRenderer applies any scroll memmoves. Each
     // buffer accumulates all missed damage, not only the previous commit, so
     // a delayed third buffer cannot resurrect old cursor/text/image pixels.
-    if (p.displayed && p.displayed->matches(p.width, p.height)) {
+    if (!skip_baseline_copy && p.displayed && p.displayed->matches(p.width, p.height)) {
+        IOSurfaceRef displayed_surface = p.displayed->storage->surface;
+        const bool need_read_lock = !p.displayed->storage->locked;
+        if (need_read_lock &&
+            IOSurfaceLock(displayed_surface, kIOSurfaceLockReadOnly, nullptr) != kIOReturnSuccess) {
+            next->storage->unlock();
+            ++p.blocked;
+            return nullptr;
+        }
         int count = 0;
         const auto* boxes = pixman_region32_rectangles(next->stale.get(), &count);
         for (int i = 0; i < count; ++i) {
             const auto& box = boxes[i];
+            if (box.y2 <= box.y1 || box.x2 <= box.x1) continue;
             if (box.x1 == 0 && box.x2 == p.width &&
                 next->pixels.stride() == p.displayed->pixels.stride()) {
                 // Full-width rectangles have no inter-row padding to preserve:
-                // copy the whole band in one call.
-                const size_t bytes = static_cast<size_t>(box.x2 - box.x1) * 4;
+                // copy the whole band in one call (stride * (rows - 1) + row_bytes).
+                const size_t stride = static_cast<size_t>(next->pixels.stride());
+                const size_t row_bytes = static_cast<size_t>(box.x2 - box.x1) * 4;
                 const size_t rows = static_cast<size_t>(box.y2 - box.y1);
-                const size_t offset = static_cast<size_t>(box.y1) * next->pixels.stride();
+                const size_t span_bytes = (rows - 1) * stride + row_bytes;
+                const size_t offset = static_cast<size_t>(box.y1) * stride;
                 auto* dst = reinterpret_cast<uint8_t*>(next->pixels.data()) + offset;
                 const auto* src = reinterpret_cast<const uint8_t*>(p.displayed->pixels.data()) + offset;
-                std::memcpy(dst, src, bytes * rows);
-                p.copied += bytes * rows;
+                std::memcpy(dst, src, span_bytes);
+                p.copied += span_bytes;
                 continue;
             }
             const size_t bytes = static_cast<size_t>(box.x2 - box.x1) * 4;
@@ -210,6 +221,7 @@ pixman_image_t* IOSurfaceFramePool::get_back_buffer() {
                 p.copied += bytes;
             }
         }
+        if (need_read_lock) IOSurfaceUnlock(displayed_surface, kIOSurfaceLockReadOnly, nullptr);
     }
     next->stale.clear();
     p.current = std::move(next);

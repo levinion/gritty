@@ -28,6 +28,7 @@ struct FontMetrics {
     int cell_height{16};
     int ascent{12};
     int descent{4};
+    int cap_height{9};
     int underline_pos{2};
     int underline_thickness{1};
 };
@@ -41,7 +42,7 @@ struct ShapedGlyph {
 };
 
 struct ShapedCluster {
-    uint8_t face_idx{0};
+    uint16_t face_idx{0};
     std::vector<ShapedGlyph> glyphs;
 };
 
@@ -63,7 +64,7 @@ struct CachedGlyph {
 
 struct GlyphKey {
     uint32_t glyph_index{0};
-    uint8_t face_idx{0};
+    uint16_t face_idx{0};
     bool bold{false};
     bool italic{false};
 
@@ -78,16 +79,16 @@ struct GlyphKey {
 struct GlyphKeyHash {
     size_t operator()(const GlyphKey& k) const noexcept {
         size_t h = k.glyph_index;
-        h ^= (static_cast<size_t>(k.face_idx) << 24);
-        h ^= (k.bold ? 0x1000000 : 0);
-        h ^= (k.italic ? 0x2000000 : 0);
+        h ^= (static_cast<size_t>(k.face_idx) << 20);
+        h ^= (k.bold ? 0x10000000u : 0u);
+        h ^= (k.italic ? 0x20000000u : 0u);
         return h;
     }
 };
 
 struct GlyphCacheLimits {
-    size_t max_bitmap_bytes{16 * 1024 * 1024}; // Cached stride * height, excluding one oversized transient.
-    size_t max_entries{8192}; // Zero disables caching (including empty glyphs).
+    size_t max_bitmap_bytes{48 * 1024 * 1024}; // Cached stride * height, excluding one oversized transient.
+    size_t max_entries{65536}; // Zero disables caching (including empty glyphs).
 };
 
 struct GlyphCacheStats {
@@ -104,11 +105,17 @@ public:
     FontEngine& operator=(const FontEngine&) = delete;
 
     // Load primary font from file path
-    bool load_font(std::string_view font_path, double pt_size, unsigned int dpi = 96);
+    bool load_font(std::string_view font_path, double pt_size, unsigned int dpi = 96,
+                   std::string_view postscript_name = {});
+    // Update DPI without clearing registered fallback or style faces.
+    bool set_dpi(unsigned int dpi);
+    // Register a lazy style face (bold / italic / bold-italic).
+    bool set_style_font(bool bold, bool italic, std::string_view font_path,
+                        std::string_view postscript_name = {});
 
     // Register a fallback path; FreeType/HarfBuzz are opened only on a primary
     // coverage miss. Success means registration, not validation of the file.
-    bool add_fallback_font(std::string_view font_path);
+    bool add_fallback_font(std::string_view font_path, std::string_view postscript_name = {});
     [[nodiscard]] size_t loaded_face_count() const noexcept;
     [[nodiscard]] size_t face_load_attempt_count() const noexcept { return face_load_attempts_; }
 
@@ -128,7 +135,7 @@ public:
     const CachedGlyph* get_glyph(char32_t cp, bool bold, bool italic);
     // Glyph by index, used for shaped clusters where the codepoint mapping has
     // already been resolved by HarfBuzz.
-    const CachedGlyph* glyph_for_index(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic);
+    const CachedGlyph* glyph_for_index(uint16_t face_idx, uint32_t glyph_index, bool bold, bool italic);
     // Shape a grapheme cluster (base + combining marks / ZWJ sequences) with
     // HarfBuzz so marks land on their anchors instead of being dropped. Cached
     // per cluster text and style; cleared with the glyph cache.
@@ -145,6 +152,7 @@ private:
         util::FtFace face;
         util::HbFont hb_font;
         std::string path;
+        std::string postscript_name;
         bool attempted{false};
     };
 
@@ -152,19 +160,26 @@ private:
         CachedGlyph glyph;
         std::list<GlyphKey>::iterator recency;
         size_t bitmap_bytes{0};
+        uint8_t l1_kind{0}; // 0 = none, 1 = ascii, 2 = non_ascii, 3 = multiple
+        uint8_t l1_style{0};
+        uint16_t l1_slot{0};
     };
 
     struct CharIndex {
-        uint8_t face_idx{0};
+        uint16_t face_idx{0};
         uint32_t glyph_index{0};
         bool resolved{false}; // Present but not found in any face (cached miss).
     };
-    const CachedGlyph* cache_glyph(const GlyphKey& key, CachedGlyph glyph);
-    [[nodiscard]] CharIndex resolve_char(char32_t cp);
-    const CachedGlyph* cached_or_rasterize(const GlyphKey& key);
+    static constexpr uint16_t kStyleFaceOffset = 256;
+    const CachedGlyph* cache_glyph(const GlyphKey& key, CachedGlyph glyph, GlyphCacheEntry** entry_out = nullptr);
+    [[nodiscard]] CharIndex resolve_char(char32_t cp, bool bold = false, bool italic = false);
+    const CachedGlyph* cached_or_rasterize(const GlyphKey& key, GlyphCacheEntry** entry_out = nullptr,
+                                             bool constrain_icon = false);
+    LoadedFace* face_for_idx(uint16_t face_idx) noexcept;
     bool open_fallback(LoadedFace& face);
     void compute_metrics();
-    const CachedGlyph* rasterize_glyph(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic);
+    const CachedGlyph* rasterize_glyph(uint16_t face_idx, uint32_t glyph_index, bool bold, bool italic,
+                                       GlyphCacheEntry** entry_out = nullptr, bool constrain_icon = false);
 
     util::FtLibrary ft_lib_;
     AntialiasMode antialias_mode_{AntialiasMode::Grayscale};
@@ -175,13 +190,14 @@ private:
 
     size_t face_load_attempts_{0};
     std::vector<LoadedFace> faces_;
+    std::array<LoadedFace, 3> style_faces_{}; // 0: bold, 1: italic, 2: bold+italic
     GlyphCacheLimits cache_limits_;
     size_t cache_bitmap_bytes_{0}, cache_hits_{0}, cache_misses_{0}, cache_evictions_{0};
     size_t transient_bitmap_bytes_{0};
-    // Codepoint to (face, glyph index) memo. FreeType cmap lookups otherwise run
-    // for every cell of every frame before the glyph bitmap cache is consulted;
-    // foot's fcft indexes its cache directly by codepoint.
-    std::unordered_map<char32_t, CharIndex> char_index_cache_;
+    // Codepoint to (face, glyph index) memo per style. FreeType cmap lookups
+    // otherwise run for every cell of every frame before the glyph bitmap cache
+    // is consulted; foot's fcft indexes its cache directly by codepoint.
+    std::array<std::unordered_map<char32_t, CharIndex>, 4> char_index_cache_;
     // Fixed-size key: cluster lookups happen per combined cell per frame and
     // must not allocate (project rule for per-frame cell rendering).
     struct ShapedClusterKey {
@@ -215,8 +231,7 @@ private:
     std::unordered_map<GlyphKey, GlyphCacheEntry, GlyphKeyHash> glyph_cache_;
     // L1 lookup for printable ASCII: [bold * 2 + italic][cp - 0x20].
     struct AsciiGlyphSlot {
-        const CachedGlyph* glyph{nullptr};
-        GlyphKey key{};
+        GlyphCacheEntry* entry{nullptr};
     };
     mutable AsciiGlyphSlot ascii_glyph_table_[4][95]{};
     // 4096-slot direct-mapped L1 for non-ASCII codepoints. The folded index can

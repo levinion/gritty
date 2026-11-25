@@ -107,10 +107,12 @@ void CpuRenderer::render(
 
     if (full_redraw) {
         ++stats_.full_redraws;
-        const auto bg = to_pixman_color(config_.default_bg);
-        const pixman_rectangle16_t rect{0, 0,
-            static_cast<uint16_t>(target_w), static_cast<uint16_t>(target_h)};
-        pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &bg, 1, &rect);
+        if (grid.rows() <= 0 || grid.cols() <= 0 || cell_w <= 0 || cell_h <= 0) {
+            const auto bg = to_pixman_color(config_.default_bg);
+            const pixman_rectangle16_t rect{0, 0,
+                static_cast<uint16_t>(target_w), static_cast<uint16_t>(target_h)};
+            pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &bg, 1, &rect);
+        }
         grid.mark_all_dirty();
         if (damage_out) {
             damage_out->clear();
@@ -206,7 +208,8 @@ void CpuRenderer::render(
             if (cell.attrs.width == 0 || cell.attrs.invisible) continue;
             const char32_t cp = cell.codepoint;
             const bool has_glyph = cp != ' ' && cp != 0;
-            if (!has_glyph && cell.attrs.underline_style == 0 && !cell.attrs.strikethrough) continue;
+            if (!has_glyph && cell.attrs.underline_style == 0 &&
+                !cell.attrs.strikethrough && extra.hyperlink_id == 0) continue;
 
             const bool plain_glyph = glyph_batching_ && has_glyph && cell.extra_idx == 0 &&
                 cp != 0x10EEEE &&
@@ -217,7 +220,9 @@ void CpuRenderer::render(
                 if (glyph && glyph->mask.valid() && glyph->width > 0 && glyph->height > 0 &&
                     pixman_image_get_format(glyph->mask.get()) == PIXMAN_a8) {
                     const uint32_t fg = resolve_foreground(cell, engine);
-                    if (glyph_batch_.empty() || fg != glyph_batch_color_) {
+                    const bool atlas_reset = glyph_atlas_ && atlas_entries_ >= 8192 &&
+                        (glyph->atlas_generation != atlas_generation_ || !glyph->atlas_handle);
+                    if (glyph_batch_.empty() || fg != glyph_batch_color_ || atlas_reset) {
                         flush_glyph_batch(target);
                         glyph_batch_color_ = fg;
                         glyph_batch_x0_ = glyph_batch_y0_ = std::numeric_limits<int>::max();
@@ -227,7 +232,7 @@ void CpuRenderer::render(
                         const int gx = x * cell_w + glyph->bearing_x;
                         const int gy = y * cell_h + metrics.ascent - glyph->bearing_y;
                         glyph_batch_.push_back(BatchGlyph{gx, gy, glyph->width, glyph->height,
-                            y, handle, glyph->mask.get()});
+                            y, handle, util::PixmanImage(pixman_image_ref(glyph->mask.get()))});
                         glyph_batch_x0_ = std::min(glyph_batch_x0_, gx);
                         glyph_batch_y0_ = std::min(glyph_batch_y0_, gy);
                         glyph_batch_x1_ = std::max(glyph_batch_x1_, gx + glyph->width);
@@ -256,7 +261,15 @@ void CpuRenderer::render(
     if (draw_cursor) {
         render_cursor(engine, cell_w, cell_h, target);
         if (damage_out) {
-            damage_out->union_rect(engine.cursor_col() * cell_w, engine.cursor_row() * cell_h, cell_w, cell_h);
+            int cursor_col = engine.cursor_col();
+            const int cursor_row = engine.cursor_row();
+            int cursor_span_w = cell_w;
+            if (cursor_col >= 0 && cursor_col < cols && cursor_row >= 0 && cursor_row < rows) {
+                if (grid.cell(cursor_col, cursor_row).attrs.width == 0 && cursor_col > 0) --cursor_col;
+                const int w = grid.cell(cursor_col, cursor_row).attrs.width;
+                if (w == 2 && cursor_col + 1 < cols) cursor_span_w = cell_w * 2;
+            }
+            damage_out->union_rect(cursor_col * cell_w, cursor_row * cell_h, cursor_span_w, cell_h);
         }
     }
 }
@@ -311,8 +324,10 @@ void CpuRenderer::apply_pending_scrolls(
     const int stride = pixman_image_get_stride(target);
     const int target_height = pixman_image_get_height(target);
     const int target_width = pixman_image_get_width(target);
+    const int bpp = std::max(1, static_cast<int>(PIXMAN_FORMAT_BPP(pixman_image_get_format(target)) / 8));
+    const size_t row_bytes = static_cast<size_t>(grid.cols() * cell_w) * static_cast<size_t>(bpp);
     if (scroll_mode_ == ScrollMode::Repaint || !base || stride <= 0 ||
-        grid.cols() * cell_w > target_width) {
+        grid.cols() * cell_w > target_width || row_bytes > static_cast<size_t>(stride)) {
         repaint_all();
         return;
     }
@@ -328,7 +343,7 @@ void CpuRenderer::apply_pending_scrolls(
         const int shift = std::abs(op.rows);
         const int moved_rows = op.region_rows() - shift;
         if (!op.valid() || op.top < 0 || op.bottom >= grid.rows() ||
-            shift <= 0 || moved_rows <= 0 || op.region_rows() * cell_h > target_height) {
+            shift <= 0 || moved_rows <= 0 || (op.bottom + 1) * cell_h > target_height) {
             repaint_all();
             return;
         }
@@ -339,6 +354,7 @@ void CpuRenderer::apply_pending_scrolls(
             destinations_covered = row.dirty && row.damage_start == 0 && row.damage_end >= grid.cols() - 1;
         }
         if (destinations_covered) {
+            ++stats_.scroll_skips;
             repaint_all();
             return;
         }
@@ -362,15 +378,33 @@ void CpuRenderer::apply_pending_scrolls(
 
     for (const auto& move : moves) {
         const core::ScrollOp& op = *move.op;
-        const size_t bytes = static_cast<size_t>(move.moved_px) * static_cast<size_t>(stride);
-        if (op.rows > 0) {
-            std::memmove(base + static_cast<size_t>(op.top * cell_h) * stride,
-                         base + static_cast<size_t>((op.top + move.shift) * cell_h) * stride,
-                         bytes);
+        if (row_bytes == static_cast<size_t>(stride)) {
+            const size_t bytes = static_cast<size_t>(move.moved_px) * static_cast<size_t>(stride);
+            if (op.rows > 0) {
+                std::memmove(base + static_cast<size_t>(op.top * cell_h) * stride,
+                             base + static_cast<size_t>((op.top + move.shift) * cell_h) * stride,
+                             bytes);
+            } else {
+                std::memmove(base + static_cast<size_t>((op.top + move.shift) * cell_h) * stride,
+                             base + static_cast<size_t>(op.top * cell_h) * stride,
+                             bytes);
+            }
+        } else if (op.rows > 0) {
+            const int dst_y0 = op.top * cell_h;
+            const int src_y0 = (op.top + move.shift) * cell_h;
+            for (int y = 0; y < move.moved_px; ++y) {
+                std::memmove(base + static_cast<size_t>(dst_y0 + y) * stride,
+                             base + static_cast<size_t>(src_y0 + y) * stride,
+                             row_bytes);
+            }
         } else {
-            std::memmove(base + static_cast<size_t>((op.top + move.shift) * cell_h) * stride,
-                         base + static_cast<size_t>(op.top * cell_h) * stride,
-                         bytes);
+            const int dst_y0 = (op.top + move.shift) * cell_h;
+            const int src_y0 = op.top * cell_h;
+            for (int y = move.moved_px - 1; y >= 0; --y) {
+                std::memmove(base + static_cast<size_t>(dst_y0 + y) * stride,
+                             base + static_cast<size_t>(src_y0 + y) * stride,
+                             row_bytes);
+            }
         }
 
         // The cursor's previous pixels moved with its row; repaint the row that
@@ -487,6 +521,16 @@ uint32_t CpuRenderer::resolve_foreground(
 }
 
 pixman_image_t* CpuRenderer::get_solid_fill(uint32_t argb) {
+    if ((argb >> 24) == 0xff) {
+        if (!opaque_solid_src_.valid()) {
+            opaque_solid_src_.reset(pixman_image_create_bits_no_clear(
+                PIXMAN_x8r8g8b8, 1, 1, &opaque_solid_pixel_, 4));
+            if (!opaque_solid_src_.valid()) return nullptr;
+            pixman_image_set_repeat(opaque_solid_src_.get(), PIXMAN_REPEAT_NORMAL);
+        }
+        opaque_solid_pixel_ = argb;
+        return opaque_solid_src_.get();
+    }
     if (!dynamic_solid_src_.valid()) {
         dynamic_solid_src_.reset(pixman_image_create_bits_no_clear(
             PIXMAN_a8r8g8b8, 1, 1, &dynamic_solid_pixel_, 4));
@@ -514,7 +558,8 @@ const void* CpuRenderer::glyph_atlas_handle(const CachedGlyph& glyph) {
     if (glyph.atlas_generation == atlas_generation_ && glyph.atlas_handle)
         return glyph.atlas_handle;
     if (atlas_entries_ >= 8192) {
-        // Bounded: rebuild and invalidate all embedded handles by generation.
+        // Pixman's internal glyph cache evicts and frees entries above 8192 on thaw;
+        // rebuild and invalidate all embedded handles by generation before hitting it.
         pixman_glyph_cache_destroy(glyph_atlas_);
         glyph_atlas_ = pixman_glyph_cache_create();
         if (!glyph_atlas_) return nullptr;
@@ -573,7 +618,7 @@ void CpuRenderer::flush_glyph_batch(pixman_image_t* target) {
         }
     } else if (batch_solid) {
         for (const auto& glyph : glyph_batch_) {
-            pixman_image_composite32(PIXMAN_OP_OVER, batch_solid, glyph.mask, target,
+            pixman_image_composite32(PIXMAN_OP_OVER, batch_solid, glyph.mask.get(), target,
                 0, 0, 0, 0, glyph.x, glyph.y, glyph.width, glyph.height);
         }
     }
@@ -710,19 +755,10 @@ void CpuRenderer::draw_placeholders(
         }
         return root;
     };
-    auto merge_group = [](PlaceholderGroup& dst, const PlaceholderGroup& src) {
-        dst.min_grid_col = std::min(dst.min_grid_col, src.min_grid_col);
-        dst.max_grid_col = std::max(dst.max_grid_col, src.max_grid_col);
-        dst.min_grid_row = std::min(dst.min_grid_row, src.min_grid_row);
-        dst.max_grid_row = std::max(dst.max_grid_row, src.max_grid_row);
-        dst.min_img_col = std::min(dst.min_img_col, src.min_img_col);
-        dst.min_img_row = std::min(dst.min_img_row, src.min_img_row);
-    };
     auto unite_roots = [&](int ra, int rb) {
         if (ra == rb) return ra;
         placeholder_parent_[static_cast<size_t>(rb)] = ra;
-        merge_group(placeholder_groups_[static_cast<size_t>(placeholder_group_of_[static_cast<size_t>(ra)])],
-            placeholder_groups_[static_cast<size_t>(placeholder_group_of_[static_cast<size_t>(rb)])]);
+        placeholder_groups_[static_cast<size_t>(placeholder_group_of_[static_cast<size_t>(rb)])].active = false;
         return ra;
     };
     auto compatible = [](const PlaceholderCell& a, const PlaceholderCell& b, bool horizontal) {
@@ -807,56 +843,82 @@ void CpuRenderer::draw_placeholders(
                 root = static_cast<int>(at);
                 placeholder_parent_[at] = root;
                 placeholder_group_of_[at] = static_cast<int>(placeholder_groups_.size());
-                placeholder_groups_.push_back(PlaceholderGroup{image_id, placement_id, col, col, row, row, image_col, image_row});
+                placeholder_groups_.push_back(PlaceholderGroup{
+                    true, image_id, placement_id, col - image_col, row - image_row});
             } else {
                 placeholder_parent_[at] = root;
-                auto& group = placeholder_groups_[static_cast<size_t>(placeholder_group_of_[static_cast<size_t>(root)])];
-                group.min_grid_col = std::min(group.min_grid_col, col);
-                group.max_grid_col = std::max(group.max_grid_col, col);
-                group.min_grid_row = std::min(group.min_grid_row, row);
-                group.max_grid_row = std::max(group.max_grid_row, row);
-                group.min_img_col = std::min(group.min_img_col, image_col);
-                group.min_img_row = std::min(group.min_img_row, image_row);
             }
         }
     }
 
-    for (const auto& group : placeholder_groups_) {
+    placeholder_boxes_.resize(placeholder_groups_.size());
+    for (auto& boxes : placeholder_boxes_) boxes.clear();
+    for (int row = 0; row < rows; ++row) {
+        int run_group = -1;
+        int run_start = 0;
+        for (int col = 0; col <= cols; ++col) {
+            int g = -1;
+            if (col < cols) {
+                const auto at = index(row, col);
+                if (placeholder_cells_[at].valid) {
+                    g = placeholder_group_of_[static_cast<size_t>(find_root(static_cast<int>(at)))];
+                }
+            }
+            if (g != run_group) {
+                if (run_group >= 0) {
+                    placeholder_boxes_[static_cast<size_t>(run_group)].push_back(pixman_box32_t{
+                        run_start * cell_w, row * cell_h, col * cell_w, (row + 1) * cell_h});
+                }
+                run_group = g;
+                run_start = col;
+            }
+        }
+    }
+
+    for (size_t g = 0; g < placeholder_groups_.size(); ++g) {
+        const auto& group = placeholder_groups_[g];
+        if (!group.active || placeholder_boxes_[g].empty()) continue;
         const auto* image = engine.kitty_graphics().get_image(group.image_id);
         const auto* vp = engine.kitty_graphics().find_virtual_placement(group.image_id, group.placement_id);
         if (!image || !image->image.valid() || !vp) continue;
         const int image_w = image->image.width(), image_h = image->image.height();
         if (image_w <= 0 || image_h <= 0) continue;
-        const int vp_cols = vp->cols > 0 ? vp->cols : std::max(1, (image_w + cell_w - 1) / cell_w);
-        const int vp_rows = vp->rows > 0 ? vp->rows : std::max(1, (image_h + cell_h - 1) / cell_h);
-        const double fit = std::min(static_cast<double>(vp_cols * cell_w) / image_w,
-                                    static_cast<double>(vp_rows * cell_h) / image_h);
-        const int draw_w = std::max(1, static_cast<int>(image_w * fit));
-        const int draw_h = std::max(1, static_cast<int>(image_h * fit));
+        const int eff_x = std::clamp(vp->src_x, 0, std::max(0, image_w - 1));
+        const int eff_y = std::clamp(vp->src_y, 0, std::max(0, image_h - 1));
+        const int src_w = vp->src_w > 0 ? std::clamp(vp->src_w, 1, image_w - eff_x) : (image_w - eff_x);
+        const int src_h = vp->src_h > 0 ? std::clamp(vp->src_h, 1, image_h - eff_y) : (image_h - eff_y);
+        if (src_w <= 0 || src_h <= 0) continue;
+        const int vp_cols = vp->cols > 0 ? vp->cols : std::max(1, (src_w + cell_w - 1) / cell_w);
+        const int vp_rows = vp->rows > 0 ? vp->rows : std::max(1, (src_h + cell_h - 1) / cell_h);
+        const double fit = std::min(static_cast<double>(vp_cols * cell_w) / src_w,
+                                    static_cast<double>(vp_rows * cell_h) / src_h);
+        const int draw_w = std::max(1, static_cast<int>(src_w * fit));
+        const int draw_h = std::max(1, static_cast<int>(src_h * fit));
 
-        // Reconstruct the rectangle's origin from a visible cell and its
-        // absolute image-grid coordinate, so a scrolled top row still draws.
-        const int origin_x = (group.min_grid_col - group.min_img_col) * cell_w;
-        const int origin_y = (group.min_grid_row - group.min_img_row) * cell_h;
-        int x0 = std::max({0, group.min_grid_col * cell_w, origin_x});
-        int y0 = std::max({0, group.min_grid_row * cell_h, origin_y});
-        int x1 = std::min({target_w, (group.max_grid_col + 1) * cell_w, origin_x + draw_w});
-        int y1 = std::min({target_h, (group.max_grid_row + 1) * cell_h, origin_y + draw_h});
-        if (x1 <= x0 || y1 <= y0) continue;
+        const int origin_x = group.origin_col * cell_w;
+        const int origin_y = group.origin_row * cell_h;
+        const int bx0 = std::max(0, origin_x);
+        const int by0 = std::max(0, origin_y);
+        const int bx1 = std::min(target_w, origin_x + draw_w);
+        const int by1 = std::min(target_h, origin_y + draw_h);
+        if (bx1 <= bx0 || by1 <= by0) continue;
 
         pixman_region32_t render_clip;
-        pixman_region32_init_rect(&render_clip, x0, y0,
-            static_cast<unsigned>(x1 - x0), static_cast<unsigned>(y1 - y0));
+        pixman_region32_init_rects(&render_clip, placeholder_boxes_[g].data(),
+            static_cast<int>(placeholder_boxes_[g].size()));
+        pixman_region32_t bounds_clip;
+        pixman_region32_init_rect(&bounds_clip, bx0, by0,
+            static_cast<unsigned>(bx1 - bx0), static_cast<unsigned>(by1 - by0));
+        pixman_region32_intersect(&render_clip, &render_clip, &bounds_clip);
+        pixman_region32_fini(&bounds_clip);
         if (clip) {
             pixman_region32_intersect(&render_clip, &render_clip,
                 const_cast<pixman_region32_t*>(clip));
-            if (!pixman_region32_not_empty(&render_clip)) {
-                pixman_region32_fini(&render_clip);
-                continue;
-            }
         }
-        blit_image(target, image->image.get(), origin_x, origin_y, draw_w, draw_h,
-            &render_clip, damage_out);
+        if (pixman_region32_not_empty(&render_clip)) {
+            blit_image(target, image->image.get(), origin_x, origin_y, draw_w, draw_h,
+                &render_clip, damage_out, vp->src_x, vp->src_y, vp->src_w, vp->src_h);
+        }
         pixman_region32_fini(&render_clip);
     }
 }
@@ -884,14 +946,18 @@ void CpuRenderer::draw_images(
         if ((placed.z_index < 0) != below_text) continue;
         const int src_w = placed.image.width();
         const int src_h = placed.image.height();
-        const int dst_w = placed.cols * cell_w;
-        const int dst_h = placed.rows * cell_h;
+        const int dst_w = placed.draw_w > 0 ? placed.draw_w : placed.cols * cell_w;
+        const int dst_h = placed.draw_h > 0 ? placed.draw_h : placed.rows * cell_h;
         if (src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) continue;
 
-        const int dx = placed.col * cell_w;
-        const int dy = placed.row * cell_h;
-        const int x0 = std::max(0, dx), y0 = std::max(band_top, dy);
-        const int x1 = std::min(target_w, dx + dst_w), y1 = std::min(band_bottom, dy + dst_h);
+        const int dx = placed.col * cell_w + placed.x_offset;
+        const int dy = placed.row * cell_h + placed.y_offset;
+        int eff_top = std::max(band_top, placed.clip_top_row * cell_h);
+        int eff_bottom = placed.clip_bottom_row >= 0
+            ? std::min(band_bottom, (placed.clip_bottom_row + 1) * cell_h)
+            : band_bottom;
+        const int x0 = std::max(0, dx), y0 = std::max(eff_top, dy);
+        const int x1 = std::min(target_w, dx + dst_w), y1 = std::min(eff_bottom, dy + dst_h);
         if (x1 <= x0 || y1 <= y0) continue;
 
         pixman_region32_t image_clip;
@@ -1131,8 +1197,15 @@ void CpuRenderer::render_cursor(
             break;
         }
         case core::CursorShape::Underline: {
+            int col = engine.cursor_col();
+            const int row = engine.cursor_row();
+            if (col > 0 && engine.grid().cell(col, row).attrs.width == 0) --col;
+            const int w = engine.grid().cell(col, row).attrs.width;
+            const int span_w = cell_w * (w == 2 && col + 1 < engine.grid().cols() ? 2 : 1);
             int under_h = std::max(2, cell_h / 6);
-            pixman_rectangle16_t r = {static_cast<int16_t>(cx), static_cast<int16_t>(cy + cell_h - under_h), static_cast<uint16_t>(cell_w), static_cast<uint16_t>(under_h)};
+            pixman_rectangle16_t r = {static_cast<int16_t>(col * cell_w),
+                static_cast<int16_t>(cy + cell_h - under_h),
+                static_cast<uint16_t>(span_w), static_cast<uint16_t>(under_h)};
             pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &cursor_pcol, 1, &r);
             break;
         }

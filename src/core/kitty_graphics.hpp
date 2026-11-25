@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <functional>
+#include <list>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -35,6 +36,7 @@ enum class KittyFormat : uint8_t {
 };
 
 struct KittyPlacement {
+    uint64_t uid{0};
     uint32_t image_id{0};
     uint32_t placement_id{0};
     int col{0};
@@ -43,7 +45,9 @@ struct KittyPlacement {
     int rows{0};
     int z_index{0}; // z < 0 below text, z >= 0 above text
     int src_x{0}, src_y{0}, src_w{0}, src_h{0}; // Pixel-space crop; 0 size means full image.
+    int x_offset{0}, y_offset{0}; // Cell pixel offset (X, Y).
     int cursor_policy{1};
+    bool alt_screen{false};
 };
 
 // A virtual placement created with U=1: it has no screen position and only
@@ -54,12 +58,14 @@ struct KittyVirtualPlacement {
     int cols{0};
     int rows{0};
     int z_index{0};
+    int src_x{0}, src_y{0}, src_w{0}, src_h{0};
 };
 
 struct KittyImage {
     uint32_t id{0};
     util::PixmanImage image;
     size_t byte_size{0};
+    std::list<uint32_t>::iterator lru_it;
 };
 
 class KittyGraphicsEngine final {
@@ -82,19 +88,24 @@ public:
 
     // Let the terminal own the render-side copy of placements and image
     // deletions (keeps the grid's scroll/erase hooks authoritative).
-    using PlacementHandler = std::function<void(const KittyPlacement& placement, pixman_image_t* image)>;
+    using PlacementHandler = std::function<void(KittyPlacement& placement, pixman_image_t* image)>;
     using DeleteHandler = std::function<void(uint32_t image_id)>;
     using PlacementDeleteHandler = std::function<void(const KittyPlacement&)>;
     using ClearImagesHandler = std::function<void()>;
+    using VirtualPlacementChangeHandler = std::function<void()>;
     void set_placement_handler(PlacementHandler handler) { placement_handler_ = std::move(handler); }
     void set_delete_handler(DeleteHandler handler) { delete_handler_ = std::move(handler); }
     void set_placement_delete_handler(PlacementDeleteHandler handler) { placement_delete_handler_ = std::move(handler); }
     void set_clear_images_handler(ClearImagesHandler handler) { clear_images_handler_ = std::move(handler); }
+    void set_virtual_placement_change_handler(VirtualPlacementChangeHandler handler) {
+        virtual_placement_change_handler_ = std::move(handler);
+    }
 
-    void delete_placements_at(int col, int row);
+    void set_alt_screen(bool alt_screen) noexcept { active_alt_screen_ = alt_screen; }
     void delete_placements(const KittyPlacement& placement);
-    void delete_placements_by_z(int z_index);
+    void scroll_placements(int top, int bottom, int rows, bool alt_screen = false) noexcept;
     void clear_placements();
+    void clear_placements_for_screen(bool alt_screen);
     void delete_image(uint32_t image_id);
     void clear();
     // Idle cleanup: drop retained capacity from chunked base64 transfers and
@@ -113,11 +124,13 @@ private:
     size_t max_memory_{128 * 1024 * 1024};
     size_t current_memory_{0};
     uint32_t next_auto_id_{1};
+    uint64_t next_placement_uid_{1};
+    bool active_alt_screen_{false};
 
     struct PendingChunkTransmission {
         uint32_t image_id{0};
         uint32_t placement_id{0};
-        KittyAction action{KittyAction::TransmitAndDisplay};
+        KittyAction action{KittyAction::Transmit};
         KittyMedium medium{KittyMedium::Direct};
         KittyFormat format{KittyFormat::Rgba};
         bool compressed{false};
@@ -130,13 +143,16 @@ private:
         int quiet{0};
         int cursor_policy{1};
         char delete_target{'a'};
+        bool has_delete_target{false};
         int src_x{0}, src_y{0}, src_w{0}, src_h{0};
+        int x_offset{0}, y_offset{0};
+        int64_t file_size{0}, file_offset{0};
         std::string buffer;
         bool in_progress{false};
     } pending_chunk_;
 
     struct KittyRequest {
-        KittyAction action{KittyAction::TransmitAndDisplay};
+        KittyAction action{KittyAction::Transmit};
         KittyMedium medium{KittyMedium::Direct};
         KittyFormat format{KittyFormat::Rgba};
         bool compressed{false};
@@ -146,7 +162,10 @@ private:
         int width{0}, height{0}, cols{0}, rows{0};
         int z_index{0}, unicode_placeholder{0}, quiet{0}, cursor_policy{1};
         char delete_target{'a'};
+        bool has_delete_target{false};
         int src_x{0}, src_y{0}, src_w{0}, src_h{0};
+        int x_offset{0}, y_offset{0};
+        int64_t file_size{0}, file_offset{0};
         char feature{0};
         int more_data{0};
     };
@@ -163,7 +182,9 @@ private:
     DeleteHandler delete_handler_;
     PlacementDeleteHandler placement_delete_handler_;
     ClearImagesHandler clear_images_handler_;
+    VirtualPlacementChangeHandler virtual_placement_change_handler_;
     std::unordered_map<uint32_t, KittyImage> images_;
+    std::list<uint32_t> image_lru_;
     std::vector<KittyVirtualPlacement> virtual_placements_;
     std::vector<KittyPlacement> placements_;
 };

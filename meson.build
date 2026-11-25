@@ -69,6 +69,7 @@ if host_os == 'darwin'
   ])
   platform_deps += [apple_frameworks]
 elif host_os == 'linux'
+  add_project_arguments('-ffunction-sections', '-fdata-sections', language: ['cpp', 'c'])
   add_project_link_arguments('-Wl,--gc-sections', language: ['cpp', 'c'])
   wayland_client_dep = dependency('wayland-client')
   wayland_cursor_dep = dependency('wayland-cursor')
@@ -87,10 +88,6 @@ endif
 inc_dir = include_directories('src')
 
 subdir('src')
-
-if get_option('benchmarks')
-  subdir('benchmark')
-endif
 
 if get_option('tests')
   doctest_dep = dependency('doctest', fallback: ['doctest', 'doctest_dep'])

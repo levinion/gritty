@@ -152,3 +152,21 @@ TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
         [view release];
     }
 }
+
+TEST_CASE("Cocoa keyUp does not throw on isARepeat and bracketed IME text strips end marker") {
+    @autoreleasepool {
+        NSEvent* key_up = [NSEvent keyEventWithType:NSEventTypeKeyUp location:NSZeroPoint
+            modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"a"
+            charactersIgnoringModifiers:@"a" isARepeat:NO keyCode:0];
+        const auto ev = platform::macos::MacInput::translate_key_event(key_up);
+        CHECK(ev.action == input::KeyAction::Release);
+        CHECK(ev.codepoint == U'a');
+
+        auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);
+        std::string committed;
+        surface->set_text_commit_callback([&](std::string_view text) { committed.assign(text); });
+        surface->set_bracketed_paste_provider([] { return true; });
+        surface->commit_text("hi\x1b[201~there");
+        CHECK(committed == "\x1b[200~hithere\x1b[201~");
+    }
+}

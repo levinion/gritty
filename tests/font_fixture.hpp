@@ -11,7 +11,8 @@ inline std::string test_font_path() {
         return path;
     }
     for (const auto* path : {"/System/Library/Fonts/Monaco.ttf", "/System/Library/Fonts/Menlo.ttc",
-                            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"}) {
+                            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                            "/usr/share/fonts/TTF/DejaVuSansMono.ttf"}) {
         if (std::filesystem::is_regular_file(path)) return path;
     }
     return {};

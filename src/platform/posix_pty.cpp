@@ -42,6 +42,40 @@ PosixPty::~PosixPty() {
 
 bool PosixPty::spawn(const PtySpawnOptions& options) {
     if (master_fd_.valid() || child_pid_ > 0) return false;
+
+    // Pre-build child strings/argv in parent before forkpty() so the child
+    // never invokes C++ heap allocators after forking in a multi-threaded process.
+    const std::string term_val = options.term.empty() ? "xterm-256color" : options.term;
+    const std::string version_val(util::kVersion);
+    struct EnvOp {
+        std::string key;
+        std::string val;
+        bool unset;
+    };
+    std::vector<EnvOp> env_ops;
+    env_ops.reserve(options.env.size());
+    for (const auto& e : options.env) {
+        const size_t eq = e.find('=');
+        if (eq != std::string::npos) {
+            env_ops.push_back({e.substr(0, eq), e.substr(eq + 1), false});
+        } else {
+            env_ops.push_back({e, {}, true});
+        }
+    }
+    std::string shell_path = options.command;
+    if (shell_path.empty()) {
+        const char* env_shell = std::getenv("SHELL");
+        shell_path = (env_shell && *env_shell) ? env_shell : "/bin/sh";
+    }
+    std::vector<char*> argv;
+    argv.reserve(options.args.size() + 2);
+    argv.push_back(const_cast<char*>(shell_path.c_str()));
+    for (const auto& a : options.args) {
+        argv.push_back(const_cast<char*>(a.c_str()));
+    }
+    argv.push_back(nullptr);
+    const char* cwd_cstr = options.cwd.empty() ? nullptr : options.cwd.c_str();
+
     struct winsize ws{};
     ws.ws_col = static_cast<unsigned short>(options.cols);
     ws.ws_row = static_cast<unsigned short>(options.rows);
@@ -63,47 +97,20 @@ bool PosixPty::spawn(const PtySpawnOptions& options) {
         ::signal(SIGTERM, SIG_DFL);
         ::signal(SIGALRM, SIG_DFL);
 
-        // Change directory if requested
-        if (!options.cwd.empty()) {
-            if (::chdir(options.cwd.c_str()) != 0) {
+        if (cwd_cstr) {
+            if (::chdir(cwd_cstr) != 0) {
                 // Ignore failure
             }
         }
 
-        // Setup environment
-        ::setenv("TERM", "xterm-256color", 1);
+        ::setenv("TERM", term_val.c_str(), 1);
         ::setenv("COLORTERM", "truecolor", 1);
         ::setenv("TERM_PROGRAM", "gritty", 1);
-        ::setenv("TERM_PROGRAM_VERSION", std::string(util::kVersion).c_str(), 1);
+        ::setenv("TERM_PROGRAM_VERSION", version_val.c_str(), 1);
 
-        for (const auto& e : options.env) {
-            size_t eq = e.find('=');
-            if (eq != std::string::npos) {
-                std::string k = e.substr(0, eq);
-                std::string v = e.substr(eq + 1);
-                ::setenv(k.c_str(), v.c_str(), 1);
-            } else {
-                ::unsetenv(e.c_str());
-            }
-        }
-
-        // Determine executable
-        std::string shell_path = options.command;
-        if (shell_path.empty()) {
-            const char* env_shell = std::getenv("SHELL");
-            shell_path = (env_shell && *env_shell) ? env_shell : "/bin/sh";
-        }
-
-        std::vector<char*> argv;
-        if (!options.args.empty()) {
-            argv.push_back(const_cast<char*>(shell_path.c_str()));
-            for (const auto& a : options.args) {
-                argv.push_back(const_cast<char*>(a.c_str()));
-            }
-            argv.push_back(nullptr);
-        } else {
-            argv.push_back(const_cast<char*>(shell_path.c_str()));
-            argv.push_back(nullptr);
+        for (const auto& op : env_ops) {
+            if (op.unset) ::unsetenv(op.key.c_str());
+            else ::setenv(op.key.c_str(), op.val.c_str(), 1);
         }
 
         ::execvp(shell_path.c_str(), argv.data());
@@ -168,23 +175,24 @@ ssize_t PosixPty::write(std::string_view data) {
 void PosixPty::terminate() {
     // Reap/check first: an already-reaped PID may have been reused by the OS.
     if (is_alive()) {
-        ::kill(child_pid_, SIGHUP);
-        int status = 0;
-        pid_t res = ::waitpid(child_pid_, &status, WNOHANG);
-        if (res == 0) {
-            ::kill(child_pid_, SIGTERM);
-            // Non-blocking check
-            res = ::waitpid(child_pid_, &status, WNOHANG);
-            if (res == 0) {
-                ::kill(child_pid_, SIGKILL);
-                // A blocking wait can stall if the child is already exiting or
-                // the kernel has not completed process-group teardown. Poll for
-                // reap with a short bound instead of blocking application exit.
-                for (int attempt = 0; attempt < 1000; ++attempt) {
+        auto wait_briefly = [this](int max_ms) -> pid_t {
+            int status = 0;
+            pid_t res = 0;
+            for (int attempt = 0; attempt < max_ms; ++attempt) {
+                do {
                     res = ::waitpid(child_pid_, &status, WNOHANG);
-                    if (res != 0 || (res < 0 && errno != EINTR)) break;
-                    ::usleep(1000);
-                }
+                } while (res < 0 && errno == EINTR);
+                if (res != 0) return res;
+                ::usleep(1000);
+            }
+            return 0;
+        };
+        ::kill(child_pid_, SIGHUP);
+        if (wait_briefly(100) == 0) {
+            ::kill(child_pid_, SIGTERM);
+            if (wait_briefly(50) == 0) {
+                ::kill(child_pid_, SIGKILL);
+                wait_briefly(1000);
             }
         }
         child_pid_ = -1;

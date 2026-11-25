@@ -22,7 +22,7 @@ public:
     IOSurfaceFramePool& operator=(const IOSurfaceFramePool&) = delete;
 
     void resize(int width, int height);
-    pixman_image_t* get_back_buffer(); // nullptr = no usable surface for this geometry.
+    pixman_image_t* get_back_buffer(bool skip_baseline_copy = false); // nullptr = no usable surface for this geometry.
     IOSurfaceRef prepare_present();   // Unlocks CPU access; advances the IOSurface seed.
     void did_present(const util::PixmanRegion* damage = nullptr); // nullptr = full damage.
     void detach_displayed();          // Call after clearing the layer contents.

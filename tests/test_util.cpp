@@ -1,26 +1,7 @@
 #include <doctest/doctest.h>
 #include "util/raii.hpp"
-#include "util/arena.hpp"
 
 using namespace gritty::util;
-
-TEST_CASE("ScratchArena allocation") {
-    ScratchArena arena(1024);
-    int* p1 = arena.create<int>(42);
-    CHECK(*p1 == 42);
-
-    struct TestStruct {
-        double a;
-        int b;
-    };
-    TestStruct* s = arena.create<TestStruct>(3.14, 99);
-    CHECK(s->a == 3.14);
-    CHECK(s->b == 99);
-
-    CHECK(arena.used_bytes() > 0);
-    arena.reset();
-    CHECK(arena.used_bytes() == 0);
-}
 
 TEST_CASE("PixmanRegion RAII operations") {
     PixmanRegion r1(0, 0, 100, 100);

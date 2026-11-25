@@ -17,13 +17,19 @@ namespace gritty::core {
 
 struct SessionConfig {
     std::string font_path;
-    double font_size{13.0};
+    std::string font_postscript_name;
+    double font_size{11.25};
     int cols{80};
     int rows{24};
     std::string shell;
+    std::string term{"xterm-256color"};
     std::string cwd;
     std::vector<std::string> args;
+#if defined(PLATFORM_MACOS)
+    unsigned int font_dpi{72};
+#else
     unsigned int font_dpi{96};
+#endif
     // Logical points on both sides of the terminal grid.
     int padding_x{0};
     int padding_y{0};
@@ -57,7 +63,13 @@ public:
     [[nodiscard]] platform::IEventLoop& event_loop() noexcept { return *loop_; }
     [[nodiscard]] const render::FontEngine& font_engine() const noexcept { return font_engine_; }
     // Registers a fallback path only; FreeType opens the face on first miss.
-    void add_fallback_font(std::string_view path) { font_engine_.add_fallback_font(path); }
+    void add_fallback_font(std::string_view path, std::string_view postscript_name = {}) {
+        font_engine_.add_fallback_font(path, postscript_name);
+    }
+    bool set_style_font(bool bold, bool italic, std::string_view path,
+                        std::string_view postscript_name = {}) {
+        return font_engine_.set_style_font(bold, italic, path, postscript_name);
+    }
 
     void handle_key_event(const input::KeyEvent& ev);
     // Format clipboard text for the child (DECSET 2004) and write it to PTY.

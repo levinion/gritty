@@ -84,7 +84,11 @@ void CocoaLayerSurface::resize(int pixel_width, int pixel_height, double scale) 
 }
 
 pixman_image_t* CocoaLayerSurface::get_back_buffer() {
-    auto* buffer = buffers_.get_back_buffer();
+    return get_back_buffer_for_frame(false);
+}
+
+pixman_image_t* CocoaLayerSurface::get_back_buffer_for_frame(bool full_redraw) {
+    auto* buffer = buffers_.get_back_buffer(full_redraw);
     if (buffer) cancel_frame_retry_timer();
     else if (frame_ready_cb_) request_frame();
     return buffer;
@@ -264,7 +268,11 @@ void CocoaLayerSurface::commit_text(std::string_view utf8) {
     if (characters > 1 && input_wants_bracketed_paste()) {
         std::string wrapped = "\x1b[200~";
         wrapped.append(utf8);
-        wrapped += "\x1b[201~";
+        constexpr std::string_view end_marker = "\x1b[201~";
+        for (size_t at = 6; (at = wrapped.find(end_marker, at)) != std::string::npos;) {
+            wrapped.erase(at, end_marker.size());
+        }
+        wrapped += end_marker;
         if (text_commit_cb_) text_commit_cb_(wrapped);
         return;
     }
@@ -479,8 +487,8 @@ void CocoaLayerSurface::send_notification(std::string_view title, std::string_vi
 void CocoaLayerSurface::open_url(std::string_view url) {
     @autoreleasepool {
         if (url.empty()) return;
-        NSString* text = [[NSString alloc] initWithBytes:url.data() length:url.size()
-                                                encoding:NSUTF8StringEncoding];
+        NSString* text = [[[NSString alloc] initWithBytes:url.data() length:url.size()
+                                                 encoding:NSUTF8StringEncoding] autorelease];
         if (!text) return;
         NSURL* parsed = [NSURL URLWithString:text];
         if (parsed) [[NSWorkspace sharedWorkspace] openURL:parsed];

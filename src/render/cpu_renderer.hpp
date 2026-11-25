@@ -67,9 +67,10 @@ public:
         bool full_redraw = false
     );
 
+    [[nodiscard]] static pixman_color_t to_pixman_color(uint32_t argb) noexcept;
+
 private:
     uint32_t resolve_color(const core::Color& c, const core::TerminalEngine& engine, bool is_bg) const noexcept;
-    static pixman_color_t to_pixman_color(uint32_t argb) noexcept;
 
     void render_cell(
         const core::Cell& cell,
@@ -180,13 +181,15 @@ private:
     uint32_t atlas_generation_;
     size_t atlas_entries_{0};
 
+    uint32_t opaque_solid_pixel_{0xff000000};
+    util::PixmanImage opaque_solid_src_;
     uint32_t dynamic_solid_pixel_{0};
     util::PixmanImage dynamic_solid_src_;
     struct BatchGlyph {
         int x{0}, y{0}, width{0}, height{0};
         int row{0};
         const void* handle{nullptr};
-        pixman_image_t* mask{nullptr};
+        util::PixmanImage mask;
     };
     std::vector<BatchGlyph> glyph_batch_;
     std::vector<pixman_glyph_t> glyph_write_;
@@ -200,14 +203,15 @@ private:
         int image_row{0}, image_col{0};
     };
     struct PlaceholderGroup {
+        bool active{true};
         uint32_t image_id{0}, placement_id{0};
-        int min_grid_col{0}, max_grid_col{0}, min_grid_row{0}, max_grid_row{0};
-        int min_img_col{0}, min_img_row{0};
+        int origin_col{0}, origin_row{0}; // Constant grid_col - img_col, grid_row - img_row for the component.
     };
     std::vector<PlaceholderCell> placeholder_cells_;
     std::vector<PlaceholderGroup> placeholder_groups_;
     std::vector<int> placeholder_parent_;
     std::vector<int> placeholder_group_of_;
+    std::vector<std::vector<pixman_box32_t>> placeholder_boxes_;
     RenderStats stats_{};
 };
 

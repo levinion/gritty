@@ -1,22 +1,5 @@
 {
   "nodes": {
-    "esctest2-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1789330661,
-        "narHash": "sha256-gvPTj92nLrtOKDQyEfbzV+SDX/GTWCiZZIUGujWYr7I=",
-        "owner": "ThomasDickey",
-        "repo": "esctest2",
-        "rev": "2798f12149a19c3295e9b4853ab2da4b2eff1b2b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "ThomasDickey",
-        "repo": "esctest2",
-        "rev": "2798f12149a19c3295e9b4853ab2da4b2eff1b2b",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1794495034,
@@ -35,7 +18,6 @@
     },
     "root": {
       "inputs": {
-        "esctest2-src": "esctest2-src",
         "nixpkgs": "nixpkgs"
       }
     }

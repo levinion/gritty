@@ -63,6 +63,7 @@ struct CursorState {
 // cells they were placed over.
 struct PlacedImage {
     util::PixmanImage image;
+    uint64_t uid{0};           // Per-placement token distinguishing anonymous placements.
     uint32_t image_id{0};      // Kitty image id (0 for anonymous transfers).
     uint32_t placement_id{0};  // Kitty placement id.
     int col{0};
@@ -71,6 +72,10 @@ struct PlacedImage {
     int rows{1};
     int z_index{0};
     int src_x{0}, src_y{0}, src_w{0}, src_h{0}; // 0 size means the whole bitmap.
+    int x_offset{0}, y_offset{0};
+    int draw_w{0}, draw_h{0}; // Exact pixel target dimensions when non-zero; else cols*cell_w / rows*cell_h.
+    int clip_top_row{0};
+    int clip_bottom_row{-1}; // -1 means unclamped.
     int cursor_policy{1};
     bool alt_screen{false};
 
@@ -95,6 +100,9 @@ public:
 
     [[nodiscard]] int cols() const noexcept { return cols_; }
     [[nodiscard]] int rows() const noexcept { return rows_; }
+    void set_cell_size(int w, int h) noexcept { cell_width_ = w; cell_height_ = h; }
+    [[nodiscard]] int cell_width() const noexcept { return cell_width_; }
+    [[nodiscard]] int cell_height() const noexcept { return cell_height_; }
 
     [[nodiscard]] ScreenGrid& grid() noexcept { return *active_grid_; }
     [[nodiscard]] const ScreenGrid& grid() const noexcept { return *active_grid_; }
@@ -142,12 +150,10 @@ public:
     void place_image(PlacedImage placement);
     void clear_images() noexcept;
     void scroll_images(int top, int bottom, int rows) noexcept;
-    void erase_images(int col1, int row1, int col2, int row2) noexcept;
+    void remove_image_by_uid(uint64_t uid) noexcept;
     void remove_images_by_id(uint32_t image_id) noexcept;
     void remove_images_by_placement(uint32_t placement_id) noexcept;
     void remove_images_by_placement(uint32_t image_id, uint32_t placement_id) noexcept;
-    void remove_images_at(int col, int row) noexcept;
-    void remove_images_by_z(int z_index) noexcept;
     void move_cursor_up(int count);
     void move_cursor_down(int count);
     void move_cursor_forward(int count);
@@ -164,6 +170,7 @@ public:
 
     // Text output
     void print_char(char32_t cp);
+    void print_ascii_char(uint8_t ch);
     // Fast path for a run of printable single-width ASCII with no active
     // charset translation or insert mode. Falls back to print_char otherwise.
     void print_ascii_run(std::string_view ascii);
@@ -283,6 +290,8 @@ private:
 
     int cols_;
     int rows_;
+    int cell_width_{0};
+    int cell_height_{0};
     ScreenGrid primary_grid_;
     ScreenGrid alt_grid_;
     ScreenGrid* active_grid_;

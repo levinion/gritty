@@ -2,10 +2,12 @@
 #include "font_fixture.hpp"
 #include <png.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <filesystem>
 #include "core/terminal_engine.hpp"
+#include "core/kitty_placeholder.hpp"
 #include "core/vt_parser.hpp"
 #include "render/font_engine.hpp"
 #include "render/box_drawing.hpp"
@@ -1120,4 +1122,279 @@ TEST_CASE("Dynamic solid source keeps premultiplied alpha exact") {
     REQUIRE(y >= 0); REQUIRE(y < height);
     // Opaque target: alpha is 255 after OVER, RGB stays premultiplied (1,1,1).
     CHECK(target.data()[y * target.stride() / 4 + x] == 0xff010101u);
+}
+
+TEST_CASE("OSC 8 hyperlink underlines spaces as well as non-space cells") {
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(find_test_font(), 13.0, 96));
+    TerminalEngine engine(4, 1);
+    engine.set_cursor_visible(false);
+    const uint16_t id = engine.get_or_create_hyperlink_id("https://example.com");
+    Cell space;
+    space.codepoint = U' ';
+    engine.grid().set_cell_with_extra(1, 0, space, CellExtra{.hyperlink_id = id});
+
+    const int cw = fonts.metrics().cell_width;
+    const int ch = fonts.metrics().cell_height;
+    gritty::util::PixmanImage target(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, 4 * cw, ch, nullptr, 0));
+    RenderConfig cfg;
+    cfg.default_fg = 0xff00ff00;
+    cfg.default_bg = 0xff000000;
+    cfg.render_cursor = false;
+    CpuRenderer renderer(fonts, cfg);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    const int ul_y = fonts.metrics().ascent + fonts.metrics().underline_pos;
+    REQUIRE(ul_y >= 0);
+    REQUIRE(ul_y < ch);
+    CHECK(target.data()[ul_y * (target.stride() / 4) + cw + cw / 2] == 0xff00ff00u);
+    CHECK(target.data()[ul_y * (target.stride() / 4) + cw / 2] == 0xff000000u);
+}
+
+TEST_CASE("Overwriting or erasing half of a wide character clears its paired cell") {
+    TerminalEngine engine(6, 2);
+    engine.set_cursor_pos(0, 0);
+    engine.print_char(U'中');
+    REQUIRE(engine.grid().cell(0, 0).attrs.width == 2);
+    REQUIRE(engine.grid().cell(1, 0).attrs.width == 0);
+
+    // Overwrite continuation half with ASCII.
+    engine.set_cursor_pos(1, 0);
+    engine.print_char(U'a');
+    CHECK(engine.grid().cell(0, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(0, 0).attrs.width == 1);
+    CHECK(engine.grid().cell(1, 0).codepoint == U'a');
+
+    // Overwrite leader half with ASCII.
+    engine.set_cursor_pos(2, 0);
+    engine.print_char(U'文');
+    engine.set_cursor_pos(2, 0);
+    engine.print_ascii_run("b");
+    CHECK(engine.grid().cell(2, 0).codepoint == U'b');
+    CHECK(engine.grid().cell(3, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(3, 0).attrs.width == 1);
+
+    // Erase-in-line splitting a wide char clears its leader too.
+    engine.set_cursor_pos(4, 0);
+    engine.print_char(U'字');
+    engine.set_cursor_pos(5, 0);
+    engine.erase_in_line(0);
+    CHECK(engine.grid().cell(4, 0).codepoint == U' ');
+    CHECK(engine.grid().cell(4, 0).attrs.width == 1);
+}
+
+TEST_CASE("Glyph batching stays safe across small LRU eviction and atlas rebuilds") {
+    FontEngine limited(AntialiasMode::Grayscale, {1024 * 1024, 4});
+    REQUIRE(limited.load_font(find_test_font(), 13.0, 96));
+    TerminalEngine engine(20, 1);
+    engine.set_cursor_visible(false);
+    for (int i = 0; i < 20; ++i) {
+        Cell c;
+        c.codepoint = static_cast<char32_t>(U'A' + i);
+        engine.grid().set_cell(i, 0, c);
+    }
+    const int w = 20 * limited.metrics().cell_width;
+    const int h = limited.metrics().cell_height;
+    gritty::util::PixmanImage batched(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, 0));
+    gritty::util::PixmanImage unbatched(pixman_image_create_bits(PIXMAN_a8r8g8b8, w, h, nullptr, 0));
+    CpuRenderer r_batch(limited), r_plain(limited);
+    r_plain.set_glyph_batching(false);
+    r_batch.render(engine, batched.get(), nullptr, true);
+    r_plain.render(engine, unbatched.get(), nullptr, true);
+    for (int y = 0; y < h; ++y) {
+        const auto* a = batched.data() + y * (batched.stride() / 4);
+        const auto* b = unbatched.data() + y * (unbatched.stride() / 4);
+        for (int x = 0; x < w; ++x) REQUIRE(a[x] == b[x]);
+    }
+}
+
+TEST_CASE("Placed images respect x_offset/y_offset and exact draw_w/draw_h") {
+    FontEngine fonts;
+    TerminalEngine engine(4, 3);
+    engine.set_cursor_visible(false);
+    const int cw = fonts.metrics().cell_width;
+    const int ch = fonts.metrics().cell_height;
+
+    gritty::util::PixmanImage src(pixman_image_create_bits(PIXMAN_a8r8g8b8, 2, 2, nullptr, 0));
+    REQUIRE(src.valid());
+    std::fill(src.data(), src.data() + static_cast<size_t>(src.stride() / 4) * 2, 0xFF00FF00u);
+
+    PlacedImage placed;
+    placed.image = std::move(src);
+    placed.col = 1;
+    placed.row = 1;
+    placed.cols = 1;
+    placed.rows = 1;
+    placed.x_offset = 2;
+    placed.y_offset = 3;
+    placed.draw_w = std::max(2, cw - 3);
+    placed.draw_h = std::max(2, ch - 4);
+    engine.place_image(std::move(placed));
+
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 4 * cw, 3 * ch, nullptr, 0));
+    CpuRenderer renderer(fonts);
+    renderer.render(engine, target.get(), nullptr, true);
+    const int stride = target.stride() / 4;
+    CHECK(target.data()[ch * stride + cw] == 0xFF111111u);
+    CHECK(target.data()[(ch + 3) * stride + cw + 2] == 0xFF00FF00u);
+}
+
+#if defined(PLATFORM_MACOS)
+TEST_CASE("Oversized Nerd Font PUA icons are constrained within single-cell dimensions") {
+    const char* home = std::getenv("HOME");
+    if (!home) return;
+    const auto nf_path = std::filesystem::path(home) / "Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf";
+    if (!std::filesystem::exists(nf_path)) {
+        WARN("JetBrainsMonoNerdFont-Regular.ttf not installed, skipping Nerd Font icon test");
+        return;
+    }
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(nf_path.string(), 14.0, 192));
+    const auto& m = fonts.metrics();
+    for (const char32_t cp : {char32_t{0xF07B}, char32_t{0xE5FF}, char32_t{0xF15B},
+                              char32_t{0xF10C}, char32_t{0xEA87}}) {
+        const auto* g = fonts.get_glyph(cp, false, false);
+        REQUIRE(g != nullptr);
+        CHECK(g->width <= m.cell_width + 1);
+        CHECK(g->height <= m.cell_height);
+    }
+}
+#endif
+
+TEST_CASE("Unicode placeholders clip strictly to placeholder cells and never paint over floating windows") {
+    FontEngine fonts;
+    TerminalEngine engine(7, 5);
+    engine.set_cursor_visible(false);
+    auto& grid = engine.grid();
+
+    // Red 2x3 image scaled into a 4x3 virtual placeholder grid (32x48 px at default 8x16 cells).
+    REQUIRE(engine.kitty_graphics().process_apc_sequence(
+                "Ga=T,U=1,i=21,c=4,r=3,f=32,s=2,v=3;"
+                "/wAA//8AAP//AAD//wAA//8AAP//AAD/", 0, 0).find("OK") != std::string::npos);
+
+    auto place_cell = [&](int gx, int gy, int img_row, int img_col) {
+        Cell cell;
+        cell.codepoint = 0x10EEEE;
+        cell.fg = Color::make_indexed(21);
+        const std::vector<char32_t> marks{
+            kPlaceholderDiacritics[static_cast<size_t>(img_row)],
+            kPlaceholderDiacritics[static_cast<size_t>(img_col)]};
+        const auto extra_idx = grid.store_combining_codepoints(marks);
+        grid.set_cell_with_extra(gx, gy, cell, CellExtra{.combining_idx = extra_idx});
+    };
+    // Fill a 4x3 placeholder block at (1,1)..(4,3).
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+            place_cell(1 + c, 1 + r, r, c);
+
+    // Overwrite a top-middle notch (2,1) and (3,1) with a green popup ('P') -> inverted U-shape
+    // that tests both exact hole clipping AND Union-Find uniting left & right arms on row 2.
+    Cell popup;
+    popup.codepoint = U'P';
+    popup.bg = Color::make_rgb(0x00, 0xff, 0x00);
+    popup.fg = Color::make_rgb(0xff, 0xff, 0xff);
+    grid.set_cell(2, 1, popup);
+    grid.set_cell(3, 1, popup);
+
+    const int cw = fonts.metrics().cell_width, ch = fonts.metrics().cell_height;
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 7 * cw, 5 * ch, nullptr, 0));
+    CpuRenderer renderer(fonts);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    const int stride = target.stride() / 4;
+    auto at_tl = [&](int gx, int gy) { return target.data()[gy * ch * stride + gx * cw]; };
+    auto at_mid = [&](int gx, int gy) { return target.data()[(gy * ch + ch / 2) * stride + gx * cw + cw / 2]; };
+    // Popup cells must NOT be painted red by the placeholder bounding box.
+    CHECK(at_tl(2, 1) == 0xFF00FF00u);
+    CHECK(at_tl(3, 1) == 0xFF00FF00u);
+    // Remaining placeholder cells across both arms and bottom row show red image ink.
+    CHECK(at_mid(1, 1) == 0xFFFF0000u);
+    CHECK(at_mid(4, 1) == 0xFFFF0000u);
+    CHECK(at_mid(2, 2) == 0xFFFF0000u);
+    CHECK(at_mid(4, 3) == 0xFFFF0000u);
+
+    // Incremental update: overwriting one more cell (1,1) with popup preserves (4,1) and keeps (1,1) green.
+    grid.set_cell(1, 1, popup);
+    renderer.render(engine, target.get(), nullptr, false);
+    CHECK(at_tl(1, 1) == 0xFF00FF00u);
+    CHECK(at_tl(2, 1) == 0xFF00FF00u);
+    CHECK(at_mid(4, 1) == 0xFFFF0000u);
+}
+
+TEST_CASE("Partially scrolled-out direct placement stays clipped to scroll region top") {
+    FontEngine fonts;
+    TerminalEngine engine(6, 5);
+    engine.set_cursor_visible(false);
+    // Reserve row 0 as a header (tabline); scroll region is rows 1..4.
+    engine.set_margins(1, 4);
+    Cell header;
+    header.codepoint = U' ';
+    header.bg = Color::make_rgb(0x00, 0x00, 0xff);
+    for (int x = 0; x < 6; ++x) engine.grid().set_cell(x, 0, header);
+
+    gritty::util::PixmanImage src(pixman_image_create_bits(PIXMAN_a8r8g8b8, 2, 2, nullptr, 0));
+    std::fill(src.data(), src.data() + static_cast<size_t>(src.stride() / 4) * 2, 0xFFFF0000u);
+    PlacedImage placed;
+    placed.image = std::move(src);
+    placed.col = 1; placed.row = 1; placed.cols = 2; placed.rows = 3;
+    engine.place_image(std::move(placed));
+    engine.scroll_up(1); // Moves placed.row to 0, but clip_top_row stays 1!
+
+    const int cw = fonts.metrics().cell_width, ch = fonts.metrics().cell_height;
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 6 * cw, 5 * ch, nullptr, 0));
+    CpuRenderer renderer(fonts);
+    renderer.render(engine, target.get(), nullptr, true);
+    const int stride = target.stride() / 4;
+    CHECK(target.data()[(ch / 2) * stride + cw + cw / 2] == 0xFF0000FFu); // Header stays blue!
+    CHECK(target.data()[(ch + ch / 2) * stride + cw + cw / 2] == 0xFFFF0000u); // Visible part inside region!
+}
+
+TEST_CASE("apply_pending_scrolls rejects DECSTBM scroll when bottom exceeds clipped target height") {
+    FontEngine fonts;
+    TerminalEngine engine(10, 8);
+    engine.set_cursor_visible(false);
+    const int cw = fonts.metrics().cell_width, ch = fonts.metrics().cell_height;
+    // Target is only 6 rows tall (6 * ch), while the DECSTBM region reaches row 7 ((bottom+1)*ch = 8*ch).
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 10 * cw, 6 * ch, nullptr, 0));
+    CpuRenderer renderer(fonts);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    Cell marker;
+    marker.codepoint = U'X';
+    marker.bg = Color::make_rgb(0x20, 0x60, 0xa0);
+    engine.grid().set_cell(0, 4, marker);
+    renderer.render(engine, target.get(), nullptr, false);
+
+    // Scroll region [3..7] up by 1: region_rows() == 5 (<= 6), but (bottom + 1) == 8 (> 6).
+    Cell blank;
+    engine.grid().scroll_up(3, 7, 1, blank);
+    const auto skips_before = renderer.stats().scroll_skips;
+    renderer.render(engine, target.get(), nullptr, false);
+    // Must fall back safely without out-of-bounds memmove and render row 3 with marker's blue bg.
+    CHECK(renderer.stats().scroll_moves == 0);
+    (void)skips_before;
+    const int stride = target.stride() / 4;
+    CHECK(target.data()[(3 * ch) * stride] == 0xFF2060A0u);
+}
+
+TEST_CASE("FontEngine set_style_font and add_fallback_font invalidate L1 glyph caches") {
+    const auto path = find_test_font();
+    if (path.empty()) return;
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(path, 12.0));
+    // Populate L1 caches (ASCII + non-ASCII + shaped cluster).
+    REQUIRE(fonts.get_glyph(U'A', true, false) != nullptr);
+    REQUIRE(fonts.get_glyph(U'\u4e2d', false, false) != nullptr);
+    const auto misses_before = fonts.cache_stats().misses;
+    REQUIRE(fonts.set_style_font(true, false, path));
+    REQUIRE(fonts.get_glyph(U'A', true, false) != nullptr);
+    CHECK(fonts.cache_stats().misses > misses_before);
+    const auto misses_mid = fonts.cache_stats().misses;
+    const std::string fallback_path = "/System/Library/Fonts/Apple Symbols.ttf";
+    if (std::filesystem::exists(fallback_path)) {
+        REQUIRE(fonts.add_fallback_font(fallback_path));
+        REQUIRE(fonts.get_glyph(U'\u4e2d', false, false) != nullptr);
+        CHECK(fonts.cache_stats().misses > misses_mid);
+    }
 }

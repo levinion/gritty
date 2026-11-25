@@ -66,6 +66,11 @@ public:
     // its baseline. nullptr means compositor backpressure; keep pending damage.
     // A frame-clock tick alone never grants write access to an attached buffer.
     virtual pixman_image_t* get_back_buffer() = 0;
+    virtual pixman_image_t* get_back_buffer_for_frame(bool full_redraw) {
+        (void)full_redraw;
+        return get_back_buffer();
+    }
+    [[nodiscard]] virtual bool is_ready() const noexcept { return true; }
     virtual void present(const util::PixmanRegion& damage) = 0;
     virtual void set_title(const std::string& title) { (void)title; }
     virtual void set_transparent(bool transparent) { (void)transparent; }
@@ -184,6 +189,7 @@ struct FontPattern {
 struct FontMatch {
     std::string path;
     int face_index{0};
+    std::string postscript_name;
 };
 
 class IFontDiscovery {

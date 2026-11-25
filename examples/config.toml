@@ -9,9 +9,9 @@ title = "Gritty"
 osc52 = "copy-only"
 
 [font]
-family = "Monaco"
-size = 13.0
-dpi = 96
+family = "Menlo"
+size = 11.25
+dpi = 72 # 72 on macOS to match CoreText / Alacritty point scale; 96 on Linux
 antialias = "grayscale" # grayscale | subpixel | none
 
 [cursor]
@@ -61,4 +61,4 @@ font = { family = "JetBrainsMono Nerd Font", size = 14.0 }
 
 # Linux Platform Overrides (automatically deep-merged on Linux)
 [platform.linux]
-font = { family = "monospace", size = 11.0 }
+font = { family = "monospace", size = 11.25, dpi = 96 }

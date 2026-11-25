@@ -45,6 +45,7 @@ TerminalSession::TerminalSession(
         colors.default_fg = foreground;
         colors.default_bg = background;
         renderer_.set_config(colors); // Invalidate text and window margins together.
+        full_redraw_pending_ = true;
     });
     parser_.set_cursor_color_handler([this](uint32_t argb) {
         auto colors = renderer_.config();
@@ -76,10 +77,11 @@ TerminalSession::TerminalSession(
         if (!response.empty()) write_pty(response);
     });
     engine_.kitty_graphics().set_placement_handler(
-        [this](const KittyPlacement& placement, pixman_image_t* image) {
+        [this](KittyPlacement& placement, pixman_image_t* image) {
             if (!image) return;
             PlacedImage placed;
             placed.image.reset(pixman_image_ref(image));
+            placed.uid = placement.uid;
             placed.image_id = placement.image_id;
             placed.placement_id = placement.placement_id;
             placed.col = placement.col;
@@ -87,10 +89,44 @@ TerminalSession::TerminalSession(
             const auto& metrics = font_engine_.metrics();
             const int image_w = pixman_image_get_width(image);
             const int image_h = pixman_image_get_height(image);
-            placed.cols = placement.cols > 0 ? placement.cols
-                : std::max(1, (image_w + metrics.cell_width - 1) / metrics.cell_width);
-            placed.rows = placement.rows > 0 ? placement.rows
-                : std::max(1, (image_h + metrics.cell_height - 1) / metrics.cell_height);
+            const int eff_x = std::clamp(placement.src_x, 0, std::max(0, image_w - 1));
+            const int eff_y = std::clamp(placement.src_y, 0, std::max(0, image_h - 1));
+            const int eff_w = placement.src_w > 0
+                ? std::clamp(placement.src_w, 1, std::max(1, image_w - eff_x))
+                : std::max(1, image_w - eff_x);
+            const int eff_h = placement.src_h > 0
+                ? std::clamp(placement.src_h, 1, std::max(1, image_h - eff_y))
+                : std::max(1, image_h - eff_y);
+            placed.x_offset = std::max(0, placement.x_offset);
+            placed.y_offset = std::max(0, placement.y_offset);
+            const int cell_w = std::max(1, metrics.cell_width);
+            const int cell_h = std::max(1, metrics.cell_height);
+            if (placement.cols > 0 && placement.rows > 0) {
+                placed.cols = placement.cols;
+                placed.rows = placement.rows;
+                placed.draw_w = 0;
+                placed.draw_h = 0;
+            } else if (placement.cols > 0) {
+                placed.cols = placement.cols;
+                placed.draw_w = placement.cols * cell_w;
+                placed.draw_h = std::max(1, static_cast<int>(
+                    std::lround(static_cast<double>(placed.draw_w) * eff_h / std::max(1, eff_w))));
+                placed.rows = std::max(1, (placed.draw_h + cell_h - 1) / cell_h);
+            } else if (placement.rows > 0) {
+                placed.rows = placement.rows;
+                placed.draw_h = placement.rows * cell_h;
+                placed.draw_w = std::max(1, static_cast<int>(
+                    std::lround(static_cast<double>(placed.draw_h) * eff_w / std::max(1, eff_h))));
+                placed.cols = std::max(1, (placed.draw_w + cell_w - 1) / cell_w);
+            } else {
+                placed.draw_w = std::max(1, eff_w);
+                placed.draw_h = std::max(1, eff_h);
+                placed.cols = std::max(1, (placed.draw_w + placed.x_offset + cell_w - 1) / cell_w);
+                placed.rows = std::max(1, (placed.draw_h + placed.y_offset + cell_h - 1) / cell_h);
+            }
+            placement.cols = placed.cols;
+            placement.rows = placed.rows;
+            placement.alt_screen = engine_.is_alt_screen();
             placed.z_index = placement.z_index;
             placed.src_x = placement.src_x;
             placed.src_y = placement.src_y;
@@ -117,7 +153,11 @@ TerminalSession::TerminalSession(
         engine_.remove_images_by_id(image_id);
     });
     engine_.kitty_graphics().set_placement_delete_handler([this](const KittyPlacement& placement) {
-        engine_.remove_images_by_placement(placement.image_id, placement.placement_id);
+        if (placement.uid != 0) engine_.remove_image_by_uid(placement.uid);
+        else engine_.remove_images_by_placement(placement.image_id, placement.placement_id);
+    });
+    engine_.kitty_graphics().set_virtual_placement_change_handler([this]() {
+        engine_.grid().mark_all_dirty();
     });
 }
 
@@ -134,6 +174,9 @@ TerminalSession::~TerminalSession() {
         surface_->set_resize_callback({});
         surface_->set_close_callback({});
         surface_->set_frame_ready_callback({});
+        surface_->set_focus_callback({});
+        surface_->set_cursor_rect_provider({});
+        surface_->set_bracketed_paste_provider({});
         surface_->set_mouse_reporting_provider({});
     }
     if (loop_ && pty_.master_fd() >= 0) {
@@ -145,7 +188,8 @@ bool TerminalSession::start() {
     if (surface_) surface_->set_transparent((config_.render_config.default_bg >> 24) != 255);
     font_scale_ = surface_ ? surface_->scale() : 1.0;
     if (!font_engine_.load_font(config_.font_path, config_.font_size,
-            static_cast<unsigned int>(std::lround(config_.font_dpi * font_scale_)))) {
+            static_cast<unsigned int>(std::lround(config_.font_dpi * font_scale_)),
+            config_.font_postscript_name)) {
         return false;
     }
     update_padding_pixels();
@@ -153,16 +197,18 @@ bool TerminalSession::start() {
     const auto& metrics = font_engine_.metrics();
     int cell_w = metrics.cell_width;
     int cell_h = metrics.cell_height;
+    engine_.set_cell_size(cell_w, cell_h);
 
     platform::PtySpawnOptions pty_opts{
         .command = config_.shell,
         .args = config_.args,
         .cwd = config_.cwd,
         .env = {},
+        .term = config_.term,
         .cols = config_.cols,
         .rows = config_.rows,
-        .pixel_width = config_.cols * cell_w + 2 * padding_x_px_,
-        .pixel_height = config_.rows * cell_h + 2 * padding_y_px_
+        .pixel_width = config_.cols * cell_w,
+        .pixel_height = config_.rows * cell_h
     };
 
     if (!pty_.spawn(pty_opts)) {
@@ -323,7 +369,7 @@ void TerminalSession::handle_pty_read() {
         // ESU/RIS arrived mid-read: flush once, after the whole VT chunk has
         // been parsed, so the submitted frame is never a half-updated grid.
         sync_flush_pending_ = false;
-        render_frame(true);
+        render_frame(false);
     } else if (got_data) {
         if (coalesce_frames_ && loop_ && surface_ && surface_->supports_frame_pacing()) {
             if (surface_->frame_in_flight()) {
@@ -419,13 +465,14 @@ void TerminalSession::on_window_focus(bool focused) {
 void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
     if (px_w <= 0 || px_h <= 0 || scale <= 0) return;
     if (scale != font_scale_) {
-        if (!font_engine_.load_font(config_.font_path, config_.font_size,
+        if (!font_engine_.set_dpi(
                 static_cast<unsigned int>(std::lround(config_.font_dpi * scale)))) return;
         font_scale_ = scale;
     }
     update_padding_pixels();
     const auto& metrics = font_engine_.metrics();
     if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
+    engine_.set_cell_size(metrics.cell_width, metrics.cell_height);
     int new_cols = (px_w - 2 * padding_x_px_) / metrics.cell_width;
     int new_rows = (px_h - 2 * padding_y_px_) / metrics.cell_height;
 
@@ -434,7 +481,8 @@ void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
     }
     // The surface may have been reallocated even when its cell count is the
     // same. Update PTY pixel dimensions and repaint the entire new buffer.
-    if (new_cols > 0 && new_rows > 0) pty_.resize(new_cols, new_rows, px_w, px_h);
+    if (new_cols > 0 && new_rows > 0)
+        pty_.resize(new_cols, new_rows, new_cols * metrics.cell_width, new_rows * metrics.cell_height);
     render_frame(true);
 }
 
@@ -447,11 +495,10 @@ void TerminalSession::update_padding_pixels() noexcept {
 void TerminalSession::finish_synchronized_update() {
     if (loop_) loop_->cancel_timer(platform::IEventLoop::TimerId::SyncWatchdog);
     // ESU, RIS and the safety timeout all converge here: release the guard and
-    // repaint the whole frame so no partially updated grid is ever presented.
+    // commit the accumulated damage atomically.
     engine_.set_synchronized_updates(false);
-    full_redraw_pending_ = true;
     if (parsing_pty_) sync_flush_pending_ = true;
-    else render_frame(true);
+    else render_frame(false);
 }
 
 void TerminalSession::render_frame(bool full_redraw) {
@@ -475,13 +522,14 @@ void TerminalSession::render_frame(bool full_redraw) {
 }
 
 void TerminalSession::render_pending_frame() {
-    if (!surface_ || engine_.synchronized_updates()) return;
+    if (!surface_ || !surface_->is_ready() || engine_.synchronized_updates()) return;
     if (engine_.window_title() != last_title_) {
         last_title_ = engine_.window_title();
         surface_->set_title(last_title_);
     }
 
-    pixman_image_t* back_buf = surface_->get_back_buffer();
+    const bool full_redraw = full_redraw_pending_;
+    pixman_image_t* back_buf = surface_->get_back_buffer_for_frame(full_redraw);
     if (!back_buf) return;
 
     const int target_w = pixman_image_get_width(back_buf);
@@ -491,24 +539,45 @@ void TerminalSession::render_pending_frame() {
                                    target_w - 2 * padding_x_px_);
     const int content_h = std::min(engine_.rows() * metrics.cell_height,
                                    target_h - 2 * padding_y_px_);
-    const bool full_redraw = full_redraw_pending_;
     full_redraw_pending_ = false;
 
     damage_region_.clear();
     if (full_redraw || content_w <= 0 || content_h <= 0) {
-        // Padding is static; repaint it only with the whole frame (startup,
-        // resize or a new surface), then let the renderer own the grid area.
-        const uint32_t argb = renderer_.config().default_bg;
-        const pixman_color_t bg{
-            static_cast<uint16_t>(((argb >> 16) & 0xff) * 257),
-            static_cast<uint16_t>(((argb >> 8) & 0xff) * 257),
-            static_cast<uint16_t>((argb & 0xff) * 257),
-            static_cast<uint16_t>(((argb >> 24) & 0xff) * 257),
-        };
-        const pixman_rectangle16_t rect{0, 0,
-            static_cast<uint16_t>(std::max(0, target_w)),
-            static_cast<uint16_t>(std::max(0, target_h))};
-        pixman_image_fill_rectangles(PIXMAN_OP_SRC, back_buf, &bg, 1, &rect);
+        // Padding is static; repaint only the outer border strips on full redraw
+        // (or the whole target when the grid has zero area), leaving the content
+        // area to CpuRenderer's single-pass background + foreground render.
+        const pixman_color_t bg = render::CpuRenderer::to_pixman_color(renderer_.config().default_bg);
+        if (content_w <= 0 || content_h <= 0) {
+            const pixman_rectangle16_t rect{0, 0,
+                static_cast<uint16_t>(std::max(0, target_w)),
+                static_cast<uint16_t>(std::max(0, target_h))};
+            pixman_image_fill_rectangles(PIXMAN_OP_SRC, back_buf, &bg, 1, &rect);
+        } else {
+            pixman_rectangle16_t borders[4];
+            int count = 0;
+            const int bottom_y = padding_y_px_ + content_h;
+            const int right_x = padding_x_px_ + content_w;
+            if (padding_y_px_ > 0) {
+                borders[count++] = {0, 0, static_cast<uint16_t>(target_w),
+                    static_cast<uint16_t>(std::min(padding_y_px_, target_h))};
+            }
+            if (bottom_y < target_h) {
+                borders[count++] = {0, static_cast<int16_t>(bottom_y),
+                    static_cast<uint16_t>(target_w), static_cast<uint16_t>(target_h - bottom_y)};
+            }
+            if (padding_x_px_ > 0) {
+                borders[count++] = {0, static_cast<int16_t>(padding_y_px_),
+                    static_cast<uint16_t>(std::min(padding_x_px_, target_w)),
+                    static_cast<uint16_t>(content_h)};
+            }
+            if (right_x < target_w) {
+                borders[count++] = {static_cast<int16_t>(right_x), static_cast<int16_t>(padding_y_px_),
+                    static_cast<uint16_t>(target_w - right_x), static_cast<uint16_t>(content_h)};
+            }
+            if (count > 0) {
+                pixman_image_fill_rectangles(PIXMAN_OP_SRC, back_buf, &bg, count, borders);
+            }
+        }
         damage_region_.union_rect(0, 0, std::max(0, target_w), std::max(0, target_h));
     }
 

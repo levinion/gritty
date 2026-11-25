@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 usage() {
   echo "Usage: $0 [release|debug] [build|test|run|setup] [arguments...]"
-  echo "Defaults: release build. setup accepts Meson options (e.g. -Dgui_tests=true)."
+  echo "Defaults: release build. setup accepts Meson options (e.g. -Dtests=false)."
 }
 if [[ ${1:-} == -h || ${1:-} == --help ]]; then
   usage
@@ -14,7 +14,7 @@ fi
 profile=${1:-release}
 action=${2:-build}
 case "$profile" in
-  release) options=(--buildtype=release) ;;
+  release) options=(--buildtype=release -Db_lto=true) ;;
   debug) options=(--buildtype=debug) ;;
   *) usage >&2; exit 2 ;;
 esac

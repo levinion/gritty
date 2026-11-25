@@ -15,16 +15,14 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install meson ninja pkg-config pixman freetype harfbuzz utf8proc libpng doctest
+          brew install meson ninja pkg-config pixman freetype harfbuzz utf8proc libpng doctest tmux
 
       - name: Configure release build
         run: |
           meson setup build/release \
             --buildtype=release \
             -Db_lto=true \
-            -Dtests=true \
-            -Dbenchmarks=false \
-            -Dgui_tests=false
+            -Dtests=true
 
       - name: Compile
         run: meson compile -C build/release
@@ -56,7 +54,9 @@ jobs:
             wayland-protocols \
             libxkbcommon \
             fontconfig \
-            doctest
+            doctest \
+            tmux \
+            ttf-dejavu
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,9 +66,7 @@ jobs:
           meson setup build/release \
             --buildtype=release \
             -Db_lto=true \
-            -Dtests=true \
-            -Dbenchmarks=false \
-            -Dgui_tests=false
+            -Dtests=true
 
       - name: Compile
         run: meson compile -C build/release

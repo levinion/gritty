@@ -19,6 +19,7 @@
         _markedRange = NSMakeRange(NSNotFound, 0);
         _selectedRange = NSMakeRange(NSNotFound, 0);
         _imeHandled = NO;
+        _scrollAccumY = 0.0;
         // Host our own CPU-image layer. A layer-backed NSView lets AppKit
         // allocate additional resize backing bitmaps we never draw into.
         [self setLayer:[CALayer layer]];
@@ -30,18 +31,37 @@
         self.layer.opaque = !surface->is_transparent();
         self.layer.backgroundColor = (surface->is_transparent() ? NSColor.clearColor : NSColor.blackColor).CGColor;
         self.layer.contentsScale = [NSScreen mainScreen].backingScaleFactor;
-        if (@available(macOS 14.0, *)) {
-            _displayLink = [[self displayLinkWithTarget:self selector:@selector(frameTick:)] retain];
-            _displayLink.paused = YES;
-            [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
-        }
+        [self rebuildDisplayLink];
     }
     return self;
 }
 
 - (void)dealloc {
+    [_displayLink invalidate];
+    [_displayLink release];
+    _displayLink = nil;
     [_markedText release];
     [super dealloc];
+}
+
+- (void)rebuildDisplayLink {
+    if (!_surface) return;
+    if (@available(macOS 14.0, *)) {
+        const BOOL was_paused = _displayLink ? _displayLink.paused : YES;
+        if (_displayLink) {
+            [_displayLink invalidate];
+            [_displayLink release];
+            _displayLink = nil;
+        }
+        _displayLink = [[self displayLinkWithTarget:self selector:@selector(frameTick:)] retain];
+        _displayLink.paused = was_paused;
+        [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    }
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window) [self rebuildDisplayLink];
 }
 
 - (void)detachSurface {
@@ -96,6 +116,7 @@
 - (void)viewDidChangeBackingProperties {
     @autoreleasepool {
         [super viewDidChangeBackingProperties];
+        [self rebuildDisplayLink];
         CGFloat s = self.window ? self.window.backingScaleFactor : [NSScreen mainScreen].backingScaleFactor;
         self.layer.contentsScale = s;
         NSSize pts = self.bounds.size;
@@ -234,7 +255,26 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 - (void)mouseDragged:(NSEvent *)event { [self handleMouse:event]; }
 - (void)rightMouseDragged:(NSEvent *)event { [self handleMouse:event]; }
 - (void)otherMouseDragged:(NSEvent *)event { [self handleMouse:event]; }
-- (void)scrollWheel:(NSEvent *)event { [self handleMouse:event]; }
+- (void)scrollWheel:(NSEvent *)event {
+    if (!_surface) return;
+    if ([event hasPreciseScrollingDeltas]) {
+        if (event.phase == NSEventPhaseBegan) _scrollAccumY = 0.0;
+        _scrollAccumY += [event scrollingDeltaY];
+        constexpr CGFloat kStep = 15.0;
+        while (_scrollAccumY >= kStep || _scrollAccumY <= -kStep) {
+            auto ev = gritty::platform::macos::MacInput::translate_mouse_event(
+                event, 0, 0, self.bounds.size.height);
+            ev.button = _scrollAccumY > 0 ? gritty::input::MouseButton::WheelUp
+                                          : gritty::input::MouseButton::WheelDown;
+            ev.action = gritty::input::MouseAction::Press;
+            _surface->on_mouse_event(ev);
+            _scrollAccumY += (_scrollAccumY > 0 ? -kStep : kStep);
+        }
+        return;
+    }
+    if ([event scrollingDeltaY] == 0.0) return;
+    [self handleMouse:event];
+}
 
 - (void)handleMouse:(NSEvent *)event {
     if (_surface) {

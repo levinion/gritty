@@ -22,12 +22,13 @@ using namespace gritty;
 namespace {
 
 std::string find_default_config() {
+    std::error_code ec;
     const char* xdg = std::getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) {
         const std::string dir = std::string(xdg) + "/gritty/";
         for (const char* name : {"config.toml", "gritty.ini", "config.ini"}) {
             const std::string p = dir + name;
-            if (std::filesystem::exists(p)) return p;
+            if (std::filesystem::exists(p, ec) && !ec) return p;
         }
     }
     const char* home = std::getenv("HOME");
@@ -35,7 +36,7 @@ std::string find_default_config() {
         const std::string dir = std::string(home) + "/.config/gritty/";
         for (const char* name : {"config.toml", "gritty.ini", "config.ini"}) {
             const std::string p = dir + name;
-            if (std::filesystem::exists(p)) return p;
+            if (std::filesystem::exists(p, ec) && !ec) return p;
         }
     }
     return "";
@@ -97,21 +98,41 @@ int main(int argc, char* argv[]) {
         .family = cfg->font.family
     });
 
+    std::string resolved_family = cfg->font.family;
     std::string resolved_font_path;
+    std::string resolved_postscript;
     if (match) {
         resolved_font_path = match->path;
+        resolved_postscript = match->postscript_name;
     } else {
-        auto fallback = font_discovery.find_font(platform::FontPattern{.family = "Monaco"});
-        if (fallback) resolved_font_path = fallback->path;
-        else resolved_font_path = "/System/Library/Fonts/Monaco.ttf";
+        for (const char* family : {"Menlo", "Monaco"}) {
+            if (auto fallback = font_discovery.find_font(platform::FontPattern{.family = family})) {
+                resolved_family = family;
+                resolved_font_path = fallback->path;
+                resolved_postscript = fallback->postscript_name;
+                break;
+            }
+        }
+        if (resolved_font_path.empty()) {
+            std::error_code ec;
+            if (std::filesystem::exists("/System/Library/Fonts/Menlo.ttc", ec) && !ec) {
+                resolved_family = "Menlo";
+                resolved_font_path = "/System/Library/Fonts/Menlo.ttc";
+            } else {
+                resolved_family = "Monaco";
+                resolved_font_path = "/System/Library/Fonts/Monaco.ttf";
+            }
+        }
     }
 
     core::SessionConfig sess_cfg{
         .font_path = resolved_font_path,
+        .font_postscript_name = resolved_postscript,
         .font_size = cfg->font.size,
         .cols = static_cast<int>(cols),
         .rows = static_cast<int>(rows),
         .shell = cli.command.empty() ? cfg->main.shell : cli.command,
+        .term = cfg->main.term,
         .cwd = cli.working_directory,
         .args = cli.command_args,
         .font_dpi = cfg->font.dpi,
@@ -151,16 +172,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Register fallback file paths only: FontEngine opens each face lazily on
-    // the first glyph miss, so CJK/Emoji fonts cost no startup heap.
-    for (const auto& fallback : font_discovery.fallback_chain(
-             platform::FontPattern{.family = cfg->font.family})) {
-        if (fallback.path != resolved_font_path) session->add_fallback_font(fallback.path);
-    }
-
     surf_ptr->set_decorations(cfg->window.decorations);
     surf_ptr->show_window(cfg->main.title);
     session->render_frame(true);
+
+    // Register real Bold / Italic / Bold-Italic faces and fallbacks lazily after
+    // the first frame is presented so CoreText cascade queries never stall launch.
+    for (const bool bold : {true, false}) {
+        for (const bool italic : {true, false}) {
+            if (!bold && !italic) continue;
+            if (auto style_match = font_discovery.find_font(platform::FontPattern{
+                    .family = resolved_family, .bold = bold, .italic = italic})) {
+                if (style_match->path != resolved_font_path ||
+                    style_match->postscript_name != resolved_postscript) {
+                    session->set_style_font(bold, italic, style_match->path,
+                                            style_match->postscript_name);
+                }
+            }
+        }
+    }
+    for (const auto& fallback : font_discovery.fallback_chain(
+             platform::FontPattern{.family = resolved_family})) {
+        if (fallback.path != resolved_font_path ||
+            fallback.postscript_name != resolved_postscript) {
+            session->add_fallback_font(fallback.path, fallback.postscript_name);
+        }
+    }
     // Config parsing and font discovery allocate short-lived heap pages.
     // Trim once here, never on a rendering, input or PTY path.
     util::trim_transient_heap();

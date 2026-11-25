@@ -116,7 +116,6 @@ size_t string_payload_run(const uint8_t* data, size_t length, bool osc) {
 // State transitions follow foot vt.c (DEC's ANSI parser), with bounded strings
 // for this callback-based implementation. See upstream foot vt.c and tmux source tests.
 VtParser::VtParser(TerminalEngine& engine) : engine_(engine) {
-    string_buffer_.reserve(65536);
     reset();
 }
 
@@ -159,8 +158,16 @@ void VtParser::feed(const uint8_t* data, size_t length) {
             const size_t start = i;
             i += string_payload_run(data + i, length - i, state_ == ParserState::OscString);
             if (i > start && state_ != ParserState::IgnoredString) {
-                const size_t limit = string_type_ == StringType::Osc
-                    ? 65536 : 32u * 1024u * 1024u;
+                size_t limit = 32u * 1024u * 1024u;
+                if (string_type_ == StringType::Osc) {
+                    const bool is_osc52 = string_buffer_.starts_with("52;") ||
+                        (string_buffer_.empty() && i - start >= 3 &&
+                         data[start] == '5' && data[start + 1] == '2' && data[start + 2] == ';') ||
+                        (string_buffer_ == "5" && i - start >= 2 &&
+                         data[start] == '2' && data[start + 1] == ';') ||
+                        (string_buffer_ == "52" && i - start >= 1 && data[start] == ';');
+                    limit = is_osc52 ? (1400u * 1024u) : 65536u;
+                }
                 const size_t room = string_buffer_.size() < limit ? limit - string_buffer_.size() : 0;
                 const size_t count = std::min(i - start, room);
                 if (count) string_buffer_.append(
@@ -171,99 +178,108 @@ void VtParser::feed(const uint8_t* data, size_t length) {
             continue;
         }
 
-        // Complete 7-bit CSI sequences are parsed in this loop instead of
-        // re-entering process_byte() once per parameter byte. Any incomplete
-        // or unusual sequence is left untouched for the normal state machine.
-        if (state_ == ParserState::Ground && utf8_state_ == 0 &&
-            data[i] == 0x1b && i + 2 < length && data[i + 1] == '[') {
-            clear_sequence();
-            size_t j = i + 2;
-            const uint8_t lead = data[j];
-            if (lead >= '<' && lead <= '?') {
-                set_csi_prefix(lead);
-                ++j;
-            }
-
-            bool complete = false;
-            while (j < length) {
-                const uint8_t byte = data[j];
-                if (byte >= '0' && byte <= '9') {
-                    append_csi_digit(byte);
-                    ++j;
-                } else if (byte == ';' || byte == ':') {
-                    if (!advance_csi_param(byte)) break;
-                    ++j;
-                } else if (byte >= 0x40 && byte <= 0x7e) {
-                    handle_csi(byte);
-                    state_ = ParserState::Ground;
-                    i = j + 1;
-                    complete = true;
-                    break;
-                } else {
-                    // C0, DEL, ESC, CAN/SUB, intermediates and high bytes all
-                    // need the exact normal state-machine behaviour.
-                    break;
-                }
-            }
-            if (complete) continue;
-        }
-
-        if (state_ == ParserState::Ground && utf8_state_ == 0 &&
-            length - i >= 12) { // Four three-byte codepoints.
-            std::array<char32_t, 32> wide{};
-            const auto run = common_wide_run(data + i, length - i, wide.data(), wide.size());
-            if (run.count >= 4) {
-                engine_.print_wide_run(std::span<const char32_t>(wide.data(), run.count));
-                i += run.bytes;
+        if (state_ == ParserState::Ground && utf8_state_ == 0) {
+            const uint8_t b = data[i];
+            if (b == '\n') {
+                engine_.line_feed();
+                ++i;
                 continue;
             }
-        }
+            if (b == '\r') {
+                engine_.carriage_return();
+                ++i;
+                continue;
+            }
+            if (b >= 0x20 && b <= 0x7e) {
+                if (i + 1 >= length || data[i + 1] < 0x20 || data[i + 1] > 0x7e) {
+                    engine_.print_ascii_char(b);
+                    ++i;
+                    continue;
+                }
+                const size_t run = printable_ascii_run(data + i, length - i);
+                if (run >= 4) {
+                    engine_.print_ascii_run(std::string_view(
+                        reinterpret_cast<const char*>(data + i), run));
+                } else {
+                    for (size_t k = 0; k < run; ++k) engine_.print_ascii_char(data[i + k]);
+                }
+                i += run;
+                continue;
+            }
 
-        if (state_ == ParserState::Ground && utf8_state_ == 0 && data[i] >= 0x80) {
-            const uint8_t lead = data[i];
-            int expected = 0;
-            char32_t cp = 0;
-            uint32_t minimum = 0;
-            if (lead >= 0xc2 && lead <= 0xdf) {
-                expected = 1; cp = lead & 0x1f; minimum = 0x80;
-            } else if (lead >= 0xe0 && lead <= 0xef) {
-                expected = 2; cp = lead & 0x0f; minimum = 0x800;
-            } else if (lead >= 0xf0 && lead <= 0xf4) {
-                expected = 3; cp = lead & 0x07; minimum = 0x10000;
-            }
-            if (expected != 0 && length - i >= 4 && static_cast<size_t>(expected + 1) <= length - i) {
-                bool valid = true;
-                for (int k = 1; k <= expected; ++k) {
-                    if ((data[i + k] & 0xc0) != 0x80) { valid = false; break; }
-                    cp = (cp << 6) | (data[i + k] & 0x3f);
+            // Complete 7-bit CSI sequences are parsed in this loop instead of
+            // re-entering process_byte() once per parameter byte. Any incomplete
+            // or unusual sequence is left untouched for the normal state machine.
+            if (b == 0x1b && i + 2 < length && data[i + 1] == '[') {
+                clear_sequence();
+                size_t j = i + 2;
+                const uint8_t lead = data[j];
+                if (lead >= '<' && lead <= '?') {
+                    set_csi_prefix(lead);
+                    ++j;
                 }
-                if (valid && cp >= minimum && cp <= 0x10ffff &&
-                    !(cp >= 0xd800 && cp <= 0xdfff)) {
-                    engine_.print_char(cp);
+
+                bool complete = false;
+                while (j < length) {
+                    const uint8_t byte = data[j];
+                    if (byte >= '0' && byte <= '9') {
+                        append_csi_digit(byte);
+                        ++j;
+                    } else if (byte == ';' || byte == ':') {
+                        if (!advance_csi_param(byte)) break;
+                        ++j;
+                    } else if (byte >= 0x40 && byte <= 0x7e) {
+                        handle_csi(byte);
+                        state_ = ParserState::Ground;
+                        i = j + 1;
+                        complete = true;
+                        break;
+                    } else {
+                        // C0, DEL, ESC, CAN/SUB, intermediates and high bytes all
+                        // need the exact normal state-machine behaviour.
+                        break;
+                    }
+                }
+                if (complete) continue;
+            }
+
+            if (b >= 0x80) {
+                while (length - i >= 4 && data[i] >= 0x80) {
+                    const uint8_t lead = data[i];
+                    if (lead >= 0xe0 && lead <= 0xef && length - i >= 12) {
+                        std::array<char32_t, 128> wide{};
+                        const auto run = common_wide_run(data + i, length - i, wide.data(), wide.size());
+                        if (run.count >= 4) {
+                            engine_.print_wide_run(std::span<const char32_t>(wide.data(), run.count));
+                            i += run.bytes;
+                            continue;
+                        }
+                    }
+                    int expected = 0;
+                    char32_t cp = 0;
+                    uint32_t minimum = 0;
+                    if (lead >= 0xc2 && lead <= 0xdf) {
+                        expected = 1; cp = lead & 0x1f; minimum = 0x80;
+                    } else if (lead >= 0xe0 && lead <= 0xef) {
+                        expected = 2; cp = lead & 0x0f; minimum = 0x800;
+                    } else if (lead >= 0xf0 && lead <= 0xf4) {
+                        expected = 3; cp = lead & 0x07; minimum = 0x10000;
+                    } else {
+                        break;
+                    }
+                    bool valid = true;
+                    for (int k = 1; k <= expected; ++k) {
+                        if ((data[i + k] & 0xc0) != 0x80) { valid = false; break; }
+                        cp = (cp << 6) | (data[i + k] & 0x3f);
+                    }
+                    if (!valid) break;
+                    engine_.print_char(cp >= minimum && cp <= 0x10ffff &&
+                        !(cp >= 0xd800 && cp <= 0xdfff) ? cp : U'\ufffd');
                     i += static_cast<size_t>(expected + 1);
-                    continue;
                 }
-                if (valid) {
-                    engine_.print_char(U'\ufffd');
-                    i += static_cast<size_t>(expected + 1);
-                    continue;
-                }
+                if (i >= length) continue;
+                if (data[i] < 0x80) continue;
             }
-        }
-        if (state_ == ParserState::Ground && utf8_state_ == 0 &&
-            data[i] >= 0x20 && data[i] <= 0x7e) {
-            const size_t run = printable_ascii_run(data + i, length - i);
-            if (run >= 4) {
-                engine_.print_ascii_run(std::string_view(
-                    reinterpret_cast<const char*>(data + i), run));
-            } else {
-                // Short runs avoid a second process_byte() pass through CAN/SUB,
-                // ESC, DEL, C0 and SWAR checks.
-                for (size_t k = 0; k < run; ++k)
-                    engine_.print_char(data[i + k]);
-            }
-            i += run;
-            continue;
         }
         process_byte(data[i++]);
     }
@@ -279,11 +295,15 @@ int VtParser::get_param(int idx, int fallback) const noexcept {
 }
 
 void VtParser::append_string(uint8_t byte) {
-    // OSC stays bounded: it is used for titles/hyperlinks/clipboard and has no
-    // large-payload use case. APC carries Kitty image transfers (and tmux DCS
-    // passthrough), so allow the same 32 MiB budget as the image cache.
-    const size_t limit = string_type_ == StringType::Osc
-        ? 65536 : 32u * 1024u * 1024u;
+    // OSC stays bounded: most OSCs are short titles/links, while OSC 52 allows
+    // up to ~1 MiB decoded clipboard payloads (~1.4 MiB base64). APC/DCS carry
+    // Kitty image transfers and tmux passthrough up to 32 MiB.
+    size_t limit = 32u * 1024u * 1024u;
+    if (string_type_ == StringType::Osc) {
+        const bool is_osc52 = string_buffer_.starts_with("52;") ||
+            (string_buffer_ == "52" && byte == ';');
+        limit = is_osc52 ? (1400u * 1024u) : 65536u;
+    }
     if (string_buffer_.size() < limit) string_buffer_.push_back(static_cast<char>(byte));
     else string_overflow_ = true;
 }

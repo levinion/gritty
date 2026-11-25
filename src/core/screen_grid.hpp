@@ -17,6 +17,14 @@ struct Row {
     bool dirty{true};
     int damage_start{0};
     int damage_end{-1};
+    // Every cell at x >= clean_from equals blank(clean_bg). Lets clear_row() and
+    // end-of-line erases skip touching untouched right-hand tails during scrolling.
+    int clean_from{0};
+    Color clean_bg{Color::make_default()};
+
+    void note_written(int end_col) noexcept {
+        if (end_col + 1 > clean_from) clean_from = end_col + 1;
+    }
 
     void mark_dirty(int col) noexcept {
         dirty = true;
@@ -83,13 +91,15 @@ public:
     [[nodiscard]] int cols() const noexcept { return cols_; }
     [[nodiscard]] int rows() const noexcept { return rows_; }
 
-    [[nodiscard]] const Row& row(int y) const noexcept { return visible_rows_[y]; }
-    [[nodiscard]] Row& row(int y) noexcept { return visible_rows_[y]; }
+    [[nodiscard]] const Row& row(int y) const noexcept { return row_storage_[physical_row(y)]; }
+    [[nodiscard]] Row& row(int y) noexcept { return row_storage_[physical_row(y)]; }
 
-    [[nodiscard]] const Cell& cell(int x, int y) const noexcept { return visible_rows_[y].cells[x]; }
-    [[nodiscard]] Cell& cell(int x, int y) noexcept { return visible_rows_[y].cells[x]; }
+    [[nodiscard]] const Cell& cell(int x, int y) const noexcept { return row_storage_[physical_row(y)].cells[x]; }
+    [[nodiscard]] Cell& cell(int x, int y) noexcept { return row_storage_[physical_row(y)].cells[x]; }
 
     void set_cell(int x, int y, const Cell& c) noexcept;
+    // Clear the paired half when overwriting or slicing a wide character.
+    void repair_wide_span(int start_col, int end_col, int y) noexcept;
     // Side-table access. extra_idx == 0 is handled inline without a store lookup.
     [[nodiscard]] CellExtra get_cell_extra(uint16_t extra_idx) const noexcept {
         if (extra_idx == 0) return {};
@@ -115,9 +125,15 @@ public:
     void take_pending_scrolls(std::vector<ScrollOp>& out) noexcept {
         out.assign(scroll_ops_.begin(), scroll_ops_.end());
         scroll_ops_.clear();
+        last_dropped_top_ = -1;
+        last_dropped_bottom_ = -1;
     }
     [[nodiscard]] bool has_pending_scroll() const noexcept { return !scroll_ops_.empty(); }
-    void clear_pending_scroll() noexcept { scroll_ops_.clear(); }
+    void clear_pending_scroll() noexcept {
+        scroll_ops_.clear();
+        last_dropped_top_ = -1;
+        last_dropped_bottom_ = -1;
+    }
     // Test/benchmark hook: 1 reproduces the old single-region behaviour.
     void set_max_pending_scrolls(size_t count) noexcept { max_scroll_ops_ = std::max<size_t>(1, count); }
 
@@ -144,6 +160,12 @@ public:
     void collect_combining_garbage(uint32_t preserve = 0);
 
 private:
+    [[nodiscard]] size_t physical_row(int y) const noexcept {
+        int idx = top_row_ + y;
+        if (idx >= rows_) idx -= rows_;
+        return row_order_[static_cast<size_t>(idx)];
+    }
+    void normalize_row_order() noexcept;
     void clear_row(Row& row, const Cell& empty_cell);
     void record_scroll(int top, int bottom, int rows);
     void drop_scrolls();
@@ -151,7 +173,11 @@ private:
     size_t max_scroll_ops_{8};
     int cols_;
     int rows_;
-    std::vector<Row> visible_rows_;
+    std::vector<Row> row_storage_;
+    std::vector<uint16_t> row_order_;
+    int top_row_{0};
+    int last_dropped_top_{-1};
+    int last_dropped_bottom_{-1};
     CombiningStore combining_store_;
     CellExtraStore cell_extras_;
 };

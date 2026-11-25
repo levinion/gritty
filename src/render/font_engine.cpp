@@ -1,13 +1,75 @@
 #include "render/font_engine.hpp"
 #include <ft2build.h>
+#include FT_OUTLINE_H
 #include FT_SYNTHESIS_H
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace gritty::render {
 namespace {
 constexpr size_t non_ascii_l1_slot(char32_t cp) noexcept {
     return static_cast<size_t>((static_cast<uint32_t>(cp) * 2654435761u) >> 20) & 0xfffu;
+}
+
+constexpr bool is_nerd_font_icon(char32_t cp) noexcept {
+    // Powerline separators (U+E0B0..U+E0D7), progress bars (U+EE00..U+EE0B),
+    // and Kitty Unicode placeholder (U+10EEEE) must stay at native geometry.
+    if ((cp >= 0xE0B0 && cp <= 0xE0D7) || (cp >= 0xEE00 && cp <= 0xEE0B) || cp == 0x10EEEE)
+        return false;
+    return (cp >= 0xE000 && cp <= 0xF8FF) ||
+           (cp >= 0xF0000 && cp <= 0xFFFFD) ||
+           (cp >= 0x100000 && cp <= 0x10FFFD);
+}
+
+bool apply_face_size(FT_Face face, double pt_size, unsigned int dpi) noexcept {
+    if (!face || dpi == 0) return false;
+    if (FT_IS_SCALABLE(face)) {
+        const FT_F26Dot6 char_size = static_cast<FT_F26Dot6>(pt_size * 64.0);
+        return FT_Set_Char_Size(face, 0, char_size, dpi, dpi) == 0;
+    }
+    if (face->num_fixed_sizes > 0 && face->available_sizes) {
+        const double target_px = pt_size * static_cast<double>(dpi) / 72.0;
+        int best_idx = 0;
+        double best_diff = std::abs(static_cast<double>(face->available_sizes[0].height) - target_px);
+        bool best_ge = face->available_sizes[0].height >= target_px;
+        for (int i = 1; i < face->num_fixed_sizes; ++i) {
+            const double h = static_cast<double>(face->available_sizes[i].height);
+            const bool ge = h >= target_px;
+            const double diff = std::abs(h - target_px);
+            if ((ge && !best_ge) || (ge == best_ge && diff < best_diff)) {
+                best_idx = i;
+                best_diff = diff;
+                best_ge = ge;
+            }
+        }
+        return FT_Select_Size(face, best_idx) == 0;
+    }
+    const FT_F26Dot6 char_size = static_cast<FT_F26Dot6>(pt_size * 64.0);
+    return FT_Set_Char_Size(face, 0, char_size, dpi, dpi) == 0;
+}
+
+util::FtFace open_ft_face(FT_Library lib, const std::string& path, const std::string& postscript_name) {
+    FT_Face raw = nullptr;
+    if (FT_New_Face(lib, path.c_str(), 0, &raw) != 0 || !raw) return {};
+    util::FtFace face(raw);
+    if (!postscript_name.empty() && raw->num_faces > 1) {
+        const char* ps0 = FT_Get_Postscript_Name(raw);
+        if (!ps0 || postscript_name != ps0) {
+            for (FT_Long idx = 1; idx < raw->num_faces; ++idx) {
+                FT_Face cand = nullptr;
+                if (FT_New_Face(lib, path.c_str(), idx, &cand) == 0 && cand) {
+                    const char* ps = FT_Get_Postscript_Name(cand);
+                    if (ps && postscript_name == ps) {
+                        face.reset(cand);
+                        break;
+                    }
+                    FT_Done_Face(cand);
+                }
+            }
+        }
+    }
+    return face;
 }
 } // namespace
 
@@ -18,27 +80,28 @@ FontEngine::FontEngine(AntialiasMode antialias, GlyphCacheLimits limits)
     }
 }
 
-bool FontEngine::load_font(std::string_view font_path, double pt_size, unsigned int dpi) {
+bool FontEngine::load_font(std::string_view font_path, double pt_size, unsigned int dpi,
+                           std::string_view postscript_name) {
     if (!ft_lib_.valid()) return false;
 
     pt_size_ = pt_size;
     dpi_ = dpi;
 
-    FT_Face raw_face = nullptr;
-    FT_Error err = FT_New_Face(ft_lib_.get(), std::string(font_path).c_str(), 0, &raw_face);
-    if (err || !raw_face) return false;
-
-    util::FtFace ft_face(raw_face);
-    FT_F26Dot6 char_size = static_cast<FT_F26Dot6>(pt_size_ * 64.0);
-    FT_Set_Char_Size(ft_face.get(), 0, char_size, dpi_, dpi_);
+    const std::string path_str(font_path);
+    const std::string ps_str(postscript_name);
+    util::FtFace ft_face = open_ft_face(ft_lib_.get(), path_str, ps_str);
+    if (!ft_face.valid()) return false;
+    if (!apply_face_size(ft_face.get(), pt_size_, dpi_)) return false;
 
     hb_font_t* hb_font = hb_ft_font_create_referenced(ft_face.get());
 
     faces_.clear();
+    style_faces_ = {};
     faces_.push_back(LoadedFace{
         .face = std::move(ft_face),
         .hb_font = util::HbFont(hb_font),
-        .path = std::string(font_path),
+        .path = path_str,
+        .postscript_name = ps_str,
         .attempted = true
     });
     face_load_attempts_ = 1;
@@ -48,15 +111,70 @@ bool FontEngine::load_font(std::string_view font_path, double pt_size, unsigned 
     return true;
 }
 
-bool FontEngine::add_fallback_font(std::string_view font_path) {
-    if (!ft_lib_.valid() || faces_.empty() || font_path.empty()) return false;
-    // uint8_t GlyphKey::face_idx must never wrap to a different face.
-    for (size_t i = 1; i < faces_.size(); ++i)
-        if (faces_[i].path == font_path) return true;
-    if (faces_.size() >= 256) return false;
-    faces_.push_back(LoadedFace{.face = {}, .hb_font = {}, .path = std::string(font_path)});
-    char_index_cache_.clear();
+bool FontEngine::set_dpi(unsigned int dpi) {
+    if (faces_.empty() || dpi == 0) return false;
+    if (dpi_ == dpi) return true;
+    if (faces_[0].face.valid() && !apply_face_size(faces_[0].face.get(), pt_size_, dpi)) {
+        return false;
+    }
+    dpi_ = dpi;
+    if (faces_[0].face.valid() && faces_[0].hb_font.valid()) {
+        hb_ft_font_changed(faces_[0].hb_font.get());
+    }
+    for (size_t i = 1; i < faces_.size(); ++i) {
+        if (faces_[i].face.valid()) {
+            apply_face_size(faces_[i].face.get(), pt_size_, dpi_);
+            if (faces_[i].hb_font.valid()) hb_ft_font_changed(faces_[i].hb_font.get());
+        }
+    }
+    for (auto& face : style_faces_) {
+        if (face.face.valid()) {
+            apply_face_size(face.face.get(), pt_size_, dpi_);
+            if (face.hb_font.valid()) hb_ft_font_changed(face.hb_font.get());
+        }
+    }
+    compute_metrics();
+    clear_cache();
     return true;
+}
+
+bool FontEngine::set_style_font(bool bold, bool italic, std::string_view font_path,
+                                std::string_view postscript_name) {
+    if (!ft_lib_.valid() || faces_.empty() || font_path.empty() || (!bold && !italic)) return false;
+    const size_t style = static_cast<size_t>(bold) * 2 + (italic ? 1 : 0);
+    style_faces_[style - 1] = LoadedFace{
+        .face = {},
+        .hb_font = {},
+        .path = std::string(font_path),
+        .postscript_name = std::string(postscript_name),
+        .attempted = false
+    };
+    clear_cache();
+    return true;
+}
+
+bool FontEngine::add_fallback_font(std::string_view font_path, std::string_view postscript_name) {
+    if (!ft_lib_.valid() || faces_.empty() || font_path.empty()) return false;
+    // uint8_t fallback slots: keep faces_.size() < 256 so style faces stay at >= 256.
+    for (size_t i = 1; i < faces_.size(); ++i)
+        if (faces_[i].path == font_path && faces_[i].postscript_name == postscript_name) return true;
+    if (faces_.size() >= 256) return false;
+    faces_.push_back(LoadedFace{
+        .face = {},
+        .hb_font = {},
+        .path = std::string(font_path),
+        .postscript_name = std::string(postscript_name)
+    });
+    clear_cache();
+    return true;
+}
+
+FontEngine::LoadedFace* FontEngine::face_for_idx(uint16_t face_idx) noexcept {
+    if (face_idx < faces_.size()) return &faces_[face_idx];
+    if (face_idx >= kStyleFaceOffset && face_idx < kStyleFaceOffset + style_faces_.size()) {
+        return &style_faces_[face_idx - kStyleFaceOffset];
+    }
+    return nullptr;
 }
 
 size_t FontEngine::loaded_face_count() const noexcept {
@@ -67,15 +185,15 @@ bool FontEngine::open_fallback(LoadedFace& pending) {
     if (pending.attempted) return pending.face.valid();
     pending.attempted = true; // Failed files are not reopened for every missing character.
     ++face_load_attempts_;
-    FT_Face raw = nullptr;
-    if (FT_New_Face(ft_lib_.get(), pending.path.c_str(), 0, &raw) != 0 || !raw) return false;
-    util::FtFace face(raw);
-    if (FT_Set_Char_Size(raw, 0, static_cast<FT_F26Dot6>(pt_size_ * 64.0), dpi_, dpi_) != 0)
-        return false;
-    pending.hb_font.reset(hb_ft_font_create_referenced(raw));
+    util::FtFace face = open_ft_face(ft_lib_.get(), pending.path, pending.postscript_name);
+    if (!face.valid()) return false;
+    if (!apply_face_size(face.get(), pt_size_, dpi_)) return false;
+    pending.hb_font.reset(hb_ft_font_create_referenced(face.get()));
     pending.face = std::move(face);
     // A new face can cover codepoints that were previously resolved as missing.
-    char_index_cache_.clear();
+    for (auto& cache : char_index_cache_) {
+        std::erase_if(cache, [](const auto& kv) { return kv.second.glyph_index == 0; });
+    }
     return true;
 }
 
@@ -91,11 +209,15 @@ void FontEngine::compute_metrics() {
         height = ascent + descent;
     }
 
-    // Advance width of 'M' or 'W'
+    // Advance width and cap height of 'M'
     int cell_width = 8;
+    int cap_height = std::max(1, (ascent * 3) / 4);
     FT_UInt glyph_m = FT_Get_Char_Index(face, 'M');
     if (glyph_m != 0 && FT_Load_Glyph(face, glyph_m, FT_LOAD_DEFAULT) == 0) {
         cell_width = static_cast<int>(std::ceil(face->glyph->advance.x / 64.0));
+        if (face->glyph->metrics.height > 0) {
+            cap_height = std::max(1, static_cast<int>(std::ceil(face->glyph->metrics.height / 64.0)));
+        }
     }
     if (cell_width <= 0) cell_width = 8;
     if (height <= 0) height = 16;
@@ -109,39 +231,64 @@ void FontEngine::compute_metrics() {
     metrics_.cell_height = height;
     metrics_.ascent = ascent;
     metrics_.descent = descent;
+    metrics_.cap_height = cap_height;
     metrics_.underline_pos = underline_pos;
     metrics_.underline_thickness = underline_thick;
 }
 
-FontEngine::CharIndex FontEngine::resolve_char(char32_t cp) {
+FontEngine::CharIndex FontEngine::resolve_char(char32_t cp, bool bold, bool italic) {
+    const size_t style = static_cast<size_t>(bold) * 2 + (italic ? 1 : 0);
+    auto& cache = char_index_cache_[style];
     CharIndex result{};
-    auto cached = char_index_cache_.find(cp);
-    if (cached != char_index_cache_.end()) return cached->second;
+    if (auto cached = cache.find(cp); cached != cache.end()) return cached->second;
+
+    if (style != 0) {
+        auto& style_face = style_faces_[style - 1];
+        if (!style_face.path.empty()) {
+            const bool just_opened = !style_face.attempted;
+            if (style_face.face.valid() || open_fallback(style_face)) {
+                if (just_opened) cache.clear();
+                const uint32_t glyph = FT_Get_Char_Index(style_face.face.get(), cp);
+                if (glyph != 0) {
+                    result.face_idx = static_cast<uint16_t>(kStyleFaceOffset + (style - 1));
+                    result.glyph_index = glyph;
+                    result.resolved = true;
+                    if (cache.size() >= 65536) cache.clear();
+                    cache.emplace(cp, result);
+                    return result;
+                }
+            }
+        }
+    }
 
     for (size_t i = 0; i < faces_.size(); ++i) {
         if (!faces_[i].face.valid() && !open_fallback(faces_[i])) continue;
         const uint32_t glyph = FT_Get_Char_Index(faces_[i].face.get(), cp);
         if (glyph != 0) {
-            result.face_idx = static_cast<uint8_t>(i);
+            result.face_idx = static_cast<uint16_t>(i);
             result.glyph_index = glyph;
             break;
         }
     }
     result.resolved = true;
-    if (char_index_cache_.size() >= 8192) char_index_cache_.clear();
-    char_index_cache_.emplace(cp, result);
+    if (cache.size() >= 65536) cache.clear();
+    cache.emplace(cp, result);
     return result;
 }
 
-const CachedGlyph* FontEngine::cached_or_rasterize(const GlyphKey& key) {
+const CachedGlyph* FontEngine::cached_or_rasterize(const GlyphKey& key, GlyphCacheEntry** entry_out,
+                                                   bool constrain_icon) {
+    if (entry_out) *entry_out = nullptr;
     auto it = glyph_cache_.find(key);
     if (it != glyph_cache_.end()) {
         ++cache_hits_;
-        glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, it->second.recency);
+        if (it->second.recency != glyph_lru_.begin())
+            glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, it->second.recency);
+        if (entry_out) *entry_out = &it->second;
         return &it->second.glyph;
     }
     ++cache_misses_;
-    return rasterize_glyph(key.face_idx, key.glyph_index, key.bold, key.italic);
+    return rasterize_glyph(key.face_idx, key.glyph_index, key.bold, key.italic, entry_out, constrain_icon);
 }
 
 const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
@@ -160,40 +307,51 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
     if (cp >= 0x20 && cp <= 0x7e) {
         const auto slot = static_cast<size_t>(cp - 0x20);
         auto& l1 = ascii_glyph_table_[style][slot];
-        if (l1.glyph) {
-            // Refresh LRU too: an L1 hit must not incorrectly age the glyph.
-            return cached_or_rasterize(l1.key);
+        if (l1.entry) {
+            ++cache_hits_;
+            if (l1.entry->recency != glyph_lru_.begin())
+                glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, l1.entry->recency);
+            return &l1.entry->glyph;
         }
     }
 
-    const CharIndex resolved = resolve_char(cp);
+    const CharIndex resolved = resolve_char(cp, bold, italic);
+    GlyphCacheEntry* entry = nullptr;
     const CachedGlyph* glyph = cached_or_rasterize(GlyphKey{
         .glyph_index = resolved.glyph_index,
         .face_idx = resolved.face_idx,
         .bold = bold,
         .italic = italic
-    });
-    if (glyph && glyph != &transient_glyph_) {
-        const GlyphKey key{
-            .glyph_index = resolved.glyph_index,
-            .face_idx = resolved.face_idx,
-            .bold = bold,
-            .italic = italic
-        };
+    }, &entry, is_nerd_font_icon(cp));
+    if (entry) {
         if (cp >= 0x20 && cp <= 0x7e) {
-            ascii_glyph_table_[style][cp - 0x20].glyph = glyph;
-            ascii_glyph_table_[style][cp - 0x20].key = key;
+            const auto slot = static_cast<uint16_t>(cp - 0x20);
+            ascii_glyph_table_[style][slot].entry = entry;
+            if (entry->l1_kind == 0) {
+                entry->l1_kind = 1;
+                entry->l1_style = static_cast<uint8_t>(style);
+                entry->l1_slot = slot;
+            } else if (!(entry->l1_kind == 1 && entry->l1_style == style && entry->l1_slot == slot)) {
+                entry->l1_kind = 3;
+            }
         } else if (cp > 0x7e) {
-            const auto slot = non_ascii_l1_slot(cp);
-            non_ascii_l1_[style][slot] = glyph;
+            const auto slot = static_cast<uint16_t>(non_ascii_l1_slot(cp));
+            non_ascii_l1_[style][slot] = &entry->glyph;
             non_ascii_l1_cp_[style][slot] = cp;
+            if (entry->l1_kind == 0) {
+                entry->l1_kind = 2;
+                entry->l1_style = static_cast<uint8_t>(style);
+                entry->l1_slot = slot;
+            } else if (!(entry->l1_kind == 2 && entry->l1_style == style && entry->l1_slot == slot)) {
+                entry->l1_kind = 3;
+            }
         }
     }
     return glyph;
 }
 
-const CachedGlyph* FontEngine::glyph_for_index(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic) {
-    if (face_idx >= faces_.size()) return nullptr;
+const CachedGlyph* FontEngine::glyph_for_index(uint16_t face_idx, uint32_t glyph_index, bool bold, bool italic) {
+    if (!face_for_idx(face_idx)) return nullptr;
     transient_glyph_ = CachedGlyph{};
     transient_bitmap_bytes_ = 0;
     return cached_or_rasterize(GlyphKey{
@@ -216,9 +374,10 @@ const ShapedCluster* FontEngine::shape_cluster(std::span<const char32_t> cluster
 
     // Shape with the face that covers the base codepoint (combining marks are
     // positioned by HarfBuzz anchors, which is what makes them land correctly).
-    const CharIndex base = resolve_char(cluster.front());
-    const uint8_t face_idx = base.face_idx < faces_.size() ? base.face_idx : 0;
-    const auto& face = faces_[face_idx];
+    const CharIndex base = resolve_char(cluster.front(), bold, italic);
+    const LoadedFace* loaded = face_for_idx(base.face_idx);
+    const uint16_t face_idx = loaded ? base.face_idx : 0;
+    const auto& face = loaded ? *loaded : faces_[0];
     if (!face.hb_font.valid() || !face.hb_font.get()) return nullptr;
 
     static_assert(sizeof(char32_t) == sizeof(uint32_t));
@@ -254,9 +413,13 @@ const ShapedCluster* FontEngine::shape_cluster(std::span<const char32_t> cluster
     return &it->second;
 }
 
-const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_index, bool bold, bool italic) {
-    if (face_idx >= faces_.size()) return nullptr;
-    FT_Face face = faces_[face_idx].face.get();
+const CachedGlyph* FontEngine::rasterize_glyph(uint16_t face_idx, uint32_t glyph_index,
+                                                 bool bold, bool italic, GlyphCacheEntry** entry_out,
+                                                 bool constrain_icon) {
+    if (entry_out) *entry_out = nullptr;
+    LoadedFace* loaded = face_for_idx(face_idx);
+    if (!loaded || !loaded->face.valid()) return nullptr;
+    FT_Face face = loaded->face.get();
 
     // FT_LOAD_COLOR is ignored by monochrome faces. On a colour hit FreeType
     // returns FT_PIXEL_MODE_BGRA, handled below as an independent source page.
@@ -289,6 +452,31 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
         FT_GlyphSlot_Oblique(face->glyph);
     }
 
+    // Non-Mono Nerd Font PUA icons are designed up to ~1.54x cell width and
+    // ~1.27x cap height. Scale oversized vector outlines down cleanly before
+    // rasterization so they match single-cell icon proportions without blur.
+    bool constrained = false;
+    if (constrain_icon && glyph_index != 0 && face->glyph->format == FT_GLYPH_FORMAT_OUTLINE &&
+        metrics_.cell_width > 0 && metrics_.cell_height > 0) {
+        FT_BBox cbox{};
+        FT_Outline_Get_CBox(&face->glyph->outline, &cbox);
+        const double bw = static_cast<double>(cbox.xMax - cbox.xMin) / 64.0;
+        const double bh = static_cast<double>(cbox.yMax - cbox.yMin) / 64.0;
+        const double max_w = static_cast<double>(metrics_.cell_width);
+        const double cap_h = static_cast<double>(metrics_.cap_height > 0 ? metrics_.cap_height : metrics_.ascent);
+        const double max_h = std::max(1.0, std::min(static_cast<double>(metrics_.cell_height), cap_h * 1.15));
+        if (bw > max_w || bh > max_h) {
+            const double scale = std::min(bw > 0.0 ? max_w / bw : 1.0,
+                                          bh > 0.0 ? max_h / bh : 1.0);
+            if (scale > 0.0 && scale < 1.0) {
+                const FT_Fixed fscale = static_cast<FT_Fixed>(std::lround(scale * 65536.0));
+                FT_Matrix matrix{fscale, 0, 0, fscale};
+                FT_Outline_Transform(&face->glyph->outline, &matrix);
+                constrained = true;
+            }
+        }
+    }
+
     if (FT_Render_Glyph(face->glyph, render_mode) != 0) {
         return nullptr;
     }
@@ -310,12 +498,13 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
             .bold = bold,
             .italic = italic
         };
-        return cache_glyph(key, std::move(cached));
+        return cache_glyph(key, std::move(cached), entry_out);
     }
 
     if (bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
-        // Colour emoji: allocate a BGRA page only on an actual hit. Keep it
-        // out of the monochrome A8 atlas and out of glyph batching.
+        // Colour emoji: FreeType already delivers premultiplied BGRA pixels.
+        // Scale down oversized bitmap strikes (e.g. Apple Color Emoji 160px)
+        // to fit within a two-column cell, and keep out of the A8 atlas.
         cached.width = static_cast<int>(bitmap.width);
         cached.height = static_cast<int>(bitmap.rows);
         cached.is_subpixel = false;
@@ -330,15 +519,32 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
         for (int y = 0; y < h; ++y) {
             const uint8_t* src_row = bitmap.buffer + static_cast<size_t>(y) * bitmap.pitch;
             uint32_t* dst_row = dst + static_cast<size_t>(y) * dst_stride;
-            for (int x = 0; x < w; ++x) {
-                const uint8_t a = src_row[x * 4 + 3];
-                const auto premultiply = [a](uint8_t c) noexcept -> uint8_t {
-                    return static_cast<uint8_t>((static_cast<uint32_t>(c) * a + 127u) / 255u);
-                };
-                dst_row[x] = (static_cast<uint32_t>(a) << 24) |
-                    (static_cast<uint32_t>(premultiply(src_row[x * 4 + 2])) << 16) |
-                    (static_cast<uint32_t>(premultiply(src_row[x * 4 + 1])) << 8) |
-                    premultiply(src_row[x * 4]);
+            std::memcpy(dst_row, src_row, static_cast<size_t>(w) * 4);
+        }
+        const int max_w = std::max(1, metrics_.cell_width * 2);
+        const int max_h = std::max(1, metrics_.cell_height);
+        if (w > max_w || h > max_h) {
+            const double scale = std::min(static_cast<double>(max_w) / w,
+                                          static_cast<double>(max_h) / h);
+            const int dst_w = std::max(1, static_cast<int>(std::lround(w * scale)));
+            const int dst_h = std::max(1, static_cast<int>(std::lround(h * scale)));
+            pixman_image_t* scaled = pixman_image_create_bits(
+                PIXMAN_a8r8g8b8, dst_w, dst_h, nullptr, dst_w * 4);
+            if (scaled) {
+                pixman_transform_t transform;
+                pixman_transform_init_identity(&transform);
+                transform.matrix[0][0] = pixman_double_to_fixed(static_cast<double>(w) / dst_w);
+                transform.matrix[1][1] = pixman_double_to_fixed(static_cast<double>(h) / dst_h);
+                pixman_image_set_transform(cached.mask.get(), &transform);
+                pixman_image_set_filter(cached.mask.get(), PIXMAN_FILTER_BILINEAR, nullptr, 0);
+                pixman_image_set_repeat(cached.mask.get(), PIXMAN_REPEAT_PAD);
+                pixman_image_composite32(PIXMAN_OP_SRC, cached.mask.get(), nullptr, scaled,
+                    0, 0, 0, 0, 0, 0, dst_w, dst_h);
+                cached.mask.reset(scaled);
+                cached.width = dst_w;
+                cached.height = dst_h;
+                cached.bearing_x = static_cast<int>(std::lround(cached.bearing_x * scale));
+                cached.bearing_y = static_cast<int>(std::lround(cached.bearing_y * scale));
             }
         }
     } else if (bitmap.pixel_mode == FT_PIXEL_MODE_LCD) {
@@ -418,13 +624,21 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint8_t face_idx, uint32_t glyph_
         }
     }
 
+    if (constrained && !cached.is_color && cached.width > 0 && cached.height > 0) {
+        cached.bearing_x = (metrics_.cell_width - cached.width) / 2;
+        const int cap_h = metrics_.cap_height > 0 ? metrics_.cap_height : metrics_.ascent;
+        const int top_y = std::clamp(metrics_.ascent - (cap_h + cached.height) / 2,
+                                     0, std::max(0, metrics_.cell_height - cached.height));
+        cached.bearing_y = metrics_.ascent - top_y;
+    }
+
     GlyphKey key{
         .glyph_index = glyph_index,
         .face_idx = face_idx,
         .bold = bold,
         .italic = italic
     };
-    return cache_glyph(key, std::move(cached));
+    return cache_glyph(key, std::move(cached), entry_out);
 }
 
 } // namespace gritty::render

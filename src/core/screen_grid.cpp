@@ -24,54 +24,127 @@ void fill_cells(Cell* dst, size_t count, const Cell& value) noexcept {
 #endif
 }
 
+[[nodiscard]] inline bool is_pure_blank(const Cell& c) noexcept {
+    constexpr Cell kDefault{};
+    return c.codepoint == U' ' && c.fg.is_default() && c.extra_idx == 0 &&
+           cell_tail_word(c) == cell_tail_word(kDefault);
+}
+
 } // namespace
 
 
 ScreenGrid::ScreenGrid(int cols, int rows)
     : cols_(cols), rows_(rows) {
-    visible_rows_.resize(rows_);
-    for (auto& row : visible_rows_) {
-        row.cells.resize(cols_);
-        row.mark_all_dirty(cols_);
+    row_storage_.resize(rows_);
+    row_order_.resize(rows_);
+    for (int y = 0; y < rows_; ++y) {
+        row_order_[y] = static_cast<uint16_t>(y);
+        auto& r = row_storage_[y];
+        r.cells.resize(cols_);
+        r.clean_from = 0;
+        r.clean_bg = Color::make_default();
+        r.mark_all_dirty(cols_);
+    }
+}
+
+void ScreenGrid::normalize_row_order() noexcept {
+    if (top_row_ != 0) {
+        std::rotate(row_order_.begin(), row_order_.begin() + top_row_, row_order_.end());
+        top_row_ = 0;
     }
 }
 
 void ScreenGrid::resize(int new_cols, int new_rows) {
     if (new_cols <= 0 || new_rows <= 0) return;
     scroll_ops_.clear();
+    last_dropped_top_ = -1;
+    last_dropped_bottom_ = -1;
+    normalize_row_order();
 
-    if (new_rows < rows_) {
-        // Rows above the new viewport are discarded; tmux owns history.
-        visible_rows_.erase(visible_rows_.begin(), visible_rows_.begin() + (rows_ - new_rows));
-        collect_combining_garbage();
-    } else if (new_rows > rows_) {
-        for (int i = rows_; i < new_rows; ++i) {
-            Row r;
-            r.cells.resize(new_cols);
-            r.mark_all_dirty(new_cols);
-            visible_rows_.emplace_back(std::move(r));
-        }
+    const int old_rows = rows_;
+    std::vector<Row> ordered;
+    ordered.reserve(static_cast<size_t>(new_rows));
+    const int skip = new_rows < old_rows ? (old_rows - new_rows) : 0;
+    for (int y = skip; y < old_rows; ++y) {
+        ordered.emplace_back(std::move(row_storage_[row_order_[y]]));
     }
+    for (int y = old_rows; y < new_rows; ++y) {
+        Row r;
+        r.cells.resize(new_cols);
+        r.clean_from = 0;
+        r.clean_bg = Color::make_default();
+        r.mark_all_dirty(new_cols);
+        ordered.emplace_back(std::move(r));
+    }
+
+    row_storage_ = std::move(ordered);
+    row_order_.resize(static_cast<size_t>(new_rows));
+    for (int y = 0; y < new_rows; ++y) row_order_[y] = static_cast<uint16_t>(y);
+    top_row_ = 0;
 
     cols_ = new_cols;
     rows_ = new_rows;
 
-    for (auto& row : visible_rows_) {
-        if (row.cells.size() != static_cast<size_t>(cols_)) {
-            if (row.cells.capacity() > 2 * static_cast<size_t>(cols_))
-                std::vector<Cell>(cols_, Cell{}).swap(row.cells);
-            else row.cells.resize(cols_);
+    const int preserved = std::min(old_rows, new_rows);
+    for (int y = 0; y < preserved; ++y) {
+        auto& r = row_storage_[y];
+        if (r.cells.size() != static_cast<size_t>(cols_)) {
+            if (r.cells.capacity() > 2 * static_cast<size_t>(cols_))
+                std::vector<Cell>(cols_, Cell{}).swap(r.cells);
+            else r.cells.resize(cols_);
         }
-        row.mark_all_dirty(cols_);
+        r.clean_from = cols_;
+        r.mark_all_dirty(cols_);
+    }
+    if (skip > 0) collect_combining_garbage();
+}
+
+void ScreenGrid::repair_wide_span(int start_col, int end_col, int y) noexcept {
+    if (y < 0 || y >= rows_ || start_col > end_col) return;
+    start_col = std::clamp(start_col, 0, cols_ - 1);
+    end_col = std::clamp(end_col, 0, cols_ - 1);
+    auto& r = row(y);
+    if (start_col > 0 && r.cells[start_col].attrs.width == 0 &&
+        r.cells[start_col - 1].attrs.width == 2) {
+        Cell blank;
+        blank.bg = r.cells[start_col - 1].bg;
+        r.cells[start_col - 1] = blank;
+        r.mark_dirty(start_col - 1);
+        r.note_written(start_col - 1);
+    }
+    if (end_col + 1 < cols_ && r.cells[end_col].attrs.width == 2 &&
+        r.cells[end_col + 1].attrs.width == 0) {
+        Cell blank;
+        blank.bg = r.cells[end_col + 1].bg;
+        r.cells[end_col + 1] = blank;
+        r.mark_dirty(end_col + 1);
+        r.note_written(end_col + 1);
     }
 }
 
 void ScreenGrid::set_cell(int x, int y, const Cell& c) noexcept {
     if (x < 0 || x >= cols_ || y < 0 || y >= rows_) return;
-    auto& target = visible_rows_[y].cells[x];
+    auto& r = row(y);
+    auto& target = r.cells[x];
+    if (target.attrs.width == 2 && x + 1 < cols_ && r.cells[x + 1].attrs.width == 0 &&
+        c.attrs.width != 2) {
+        Cell blank;
+        blank.bg = r.cells[x + 1].bg;
+        r.cells[x + 1] = blank;
+        r.mark_dirty(x + 1);
+        r.note_written(x + 1);
+    }
+    if (target.attrs.width == 0 && c.attrs.width != 0 && x > 0 && r.cells[x - 1].attrs.width == 2) {
+        Cell blank;
+        blank.bg = r.cells[x - 1].bg;
+        r.cells[x - 1] = blank;
+        r.mark_dirty(x - 1);
+        r.note_written(x - 1);
+    }
     if (target != c) {
         target = c;
-        visible_rows_[y].mark_dirty(x);
+        r.mark_dirty(x);
+        r.note_written(x);
     }
 }
 
@@ -97,31 +170,44 @@ void ScreenGrid::clear_hyperlink_from_extras(uint16_t hyperlink_id) noexcept {
         return false;
     };
     bool visible_affected = false;
-    for (const auto& row : visible_rows_) visible_affected |= affected(row);
+    for (const auto& r : row_storage_) visible_affected |= affected(r);
     // Entries are interned and shared by visible cells; updating the entry in
     // place updates every reference without allocating or changing IDs.
     cell_extras_.clear_hyperlink(hyperlink_id);
     if (visible_affected)
-        for (auto& row : visible_rows_) row.mark_all_dirty(cols_);
+        for (auto& r : row_storage_) r.mark_all_dirty(cols_);
 }
 
-void ScreenGrid::clear_row(Row& row, const Cell& empty_cell) {
+void ScreenGrid::clear_row(Row& r, const Cell& empty_cell) {
     // A row recycled by a scroll must not keep a stale wide allocation (for
     // example after a shrink followed by a delete-lines operation).
-    if (row.cells.size() != static_cast<size_t>(cols_)) {
-        if (row.cells.capacity() > 2 * static_cast<size_t>(cols_))
-            std::vector<Cell>(cols_, empty_cell).swap(row.cells);
-        else row.cells.resize(cols_);
+    const bool blank = is_pure_blank(empty_cell);
+    if (r.cells.size() != static_cast<size_t>(cols_)) {
+        if (r.cells.capacity() > 2 * static_cast<size_t>(cols_))
+            std::vector<Cell>(cols_, empty_cell).swap(r.cells);
+        else {
+            r.cells.resize(cols_);
+            fill_cells(r.cells.data(), r.cells.size(), empty_cell);
+        }
+        r.clean_from = blank ? 0 : cols_;
+        r.clean_bg = empty_cell.bg;
+    } else if (blank && empty_cell.bg == r.clean_bg) {
+        const int limit = std::min(r.clean_from, cols_);
+        if (limit > 0) fill_cells(r.cells.data(), static_cast<size_t>(limit), empty_cell);
+        r.clean_from = 0;
+    } else {
+        fill_cells(r.cells.data(), r.cells.size(), empty_cell);
+        r.clean_from = blank ? 0 : cols_;
+        r.clean_bg = empty_cell.bg;
     }
-    fill_cells(row.cells.data(), row.cells.size(), empty_cell);
-    row.wrapped = false;
-    row.mark_all_dirty(cols_);
+    r.wrapped = false;
+    r.mark_all_dirty(cols_);
 }
 
 void ScreenGrid::drop_scrolls() {
     for (const auto& op : scroll_ops_) {
         for (int y = std::max(0, op.top); y <= std::min(rows_ - 1, op.bottom); ++y)
-            visible_rows_[y].mark_all_dirty(cols_);
+            row(y).mark_all_dirty(cols_);
     }
     scroll_ops_.clear();
 }
@@ -129,16 +215,21 @@ void ScreenGrid::drop_scrolls() {
 void ScreenGrid::record_scroll(int top, int bottom, int rows) {
     const int region = bottom - top + 1;
     if (rows == 0 || region <= 0) return;
+    if (scroll_ops_.empty() && top == last_dropped_top_ && bottom == last_dropped_bottom_) {
+        return; // Every row in [top, bottom] is already marked completely dirty this frame.
+    }
 
     auto repaint_region = [&](int r_top, int r_bottom) {
         for (int y = std::max(0, r_top); y <= std::min(rows_ - 1, r_bottom); ++y)
-            visible_rows_[y].mark_all_dirty(cols_);
+            row(y).mark_all_dirty(cols_);
     };
 
     if (std::abs(rows) >= region) {
         // The whole region was replaced; no pixel shift can survive.
         scroll_ops_.clear();
         repaint_region(top, bottom);
+        last_dropped_top_ = top;
+        last_dropped_bottom_ = bottom;
         return;
     }
 
@@ -152,6 +243,8 @@ void ScreenGrid::record_scroll(int top, int bottom, int rows) {
                 // and repaint all of their regions (correct, just slower).
                 drop_scrolls();
                 repaint_region(top, bottom);
+                last_dropped_top_ = top;
+                last_dropped_bottom_ = bottom;
             } else {
                 last.rows = merged;
             }
@@ -162,34 +255,65 @@ void ScreenGrid::record_scroll(int top, int bottom, int rows) {
     if (scroll_ops_.size() >= max_scroll_ops_) {
         drop_scrolls();
         repaint_region(top, bottom);
+        last_dropped_top_ = top;
+        last_dropped_bottom_ = bottom;
         return;
     }
+    last_dropped_top_ = -1;
+    last_dropped_bottom_ = -1;
     scroll_ops_.push_back(ScrollOp{top, bottom, rows});
 }
 
 void ScreenGrid::scroll_up(int top, int bottom, int count, const Cell& empty_cell) {
     if (top < 0 || bottom >= rows_ || top > bottom || count <= 0) return;
-    count = std::min(count, bottom - top + 1);
+    const int region = bottom - top + 1;
+    count = std::min(count, region);
 
-    // Rotate ownership, not cell data. The rows that leave the margin are
-    // wiped below, dropping their side-table references without a history copy.
-    auto first = visible_rows_.begin() + top;
-    auto last = visible_rows_.begin() + bottom + 1;
-    std::rotate(first, first + count, last);
+    if (top == 0 && bottom == rows_ - 1) {
+        top_row_ += count;
+        if (top_row_ >= rows_) top_row_ -= rows_;
+    } else {
+        normalize_row_order();
+        if (count == 1 && region > 1) {
+            const uint16_t saved = row_order_[top];
+            std::memmove(&row_order_[top], &row_order_[top + 1],
+                         static_cast<size_t>(region - 1) * sizeof(uint16_t));
+            row_order_[bottom] = saved;
+        } else if (count < region) {
+            std::rotate(row_order_.begin() + top,
+                        row_order_.begin() + top + count,
+                        row_order_.begin() + bottom + 1);
+        }
+    }
     for (int y = bottom - count + 1; y <= bottom; ++y) {
-        clear_row(visible_rows_[y], empty_cell);
+        clear_row(row(y), empty_cell);
     }
     record_scroll(top, bottom, count);
 }
 
 void ScreenGrid::scroll_down(int top, int bottom, int count, const Cell& empty_cell) {
     if (top < 0 || bottom >= rows_ || top > bottom || count <= 0) return;
-    count = std::min(count, bottom - top + 1);
-    auto first = visible_rows_.begin() + top;
-    auto last = visible_rows_.begin() + bottom + 1;
-    std::rotate(first, last - count, last);
+    const int region = bottom - top + 1;
+    count = std::min(count, region);
+
+    if (top == 0 && bottom == rows_ - 1) {
+        top_row_ -= count;
+        if (top_row_ < 0) top_row_ += rows_;
+    } else {
+        normalize_row_order();
+        if (count == 1 && region > 1) {
+            const uint16_t saved = row_order_[bottom];
+            std::memmove(&row_order_[top + 1], &row_order_[top],
+                         static_cast<size_t>(region - 1) * sizeof(uint16_t));
+            row_order_[top] = saved;
+        } else if (count < region) {
+            std::rotate(row_order_.begin() + top,
+                        row_order_.begin() + bottom + 1 - count,
+                        row_order_.begin() + bottom + 1);
+        }
+    }
     for (int y = top; y < top + count; ++y) {
-        clear_row(visible_rows_[y], empty_cell);
+        clear_row(row(y), empty_cell);
     }
     record_scroll(top, bottom, -count);
 }
@@ -197,7 +321,7 @@ void ScreenGrid::scroll_down(int top, int bottom, int count, const Cell& empty_c
 void ScreenGrid::erase_in_line(int x, int y, int mode, const Cell& empty_cell) {
     if (y < 0 || y >= rows_) return;
     x = std::clamp(x, 0, cols_ - 1);
-    auto& r = visible_rows_[y];
+    auto& r = row(y);
 
     int start = 0;
     int end = 0;
@@ -219,7 +343,25 @@ void ScreenGrid::erase_in_line(int x, int y, int mode, const Cell& empty_cell) {
             return;
     }
 
-    fill_cells(r.cells.data() + start, static_cast<size_t>(end - start + 1), empty_cell);
+    repair_wide_span(start, end, y);
+    const bool blank = is_pure_blank(empty_cell);
+    if (end == cols_ - 1 && blank && empty_cell.bg == r.clean_bg) {
+        const int fill_end = std::min(cols_, r.clean_from);
+        if (fill_end > start) {
+            fill_cells(r.cells.data() + start, static_cast<size_t>(fill_end - start), empty_cell);
+        }
+        r.clean_from = std::min(r.clean_from, start);
+    } else {
+        fill_cells(r.cells.data() + start, static_cast<size_t>(end - start + 1), empty_cell);
+        if (start == 0 && end == cols_ - 1 && blank) {
+            r.clean_from = 0;
+            r.clean_bg = empty_cell.bg;
+        } else if (end == cols_ - 1) {
+            r.clean_from = cols_;
+        } else {
+            r.note_written(end);
+        }
+    }
     r.mark_dirty_range(start, end);
     if (mode == 2 || (mode == 0 && x == 0)) {
         r.wrapped = false;
@@ -266,7 +408,26 @@ void ScreenGrid::delete_lines(int y, int bottom, int count, const Cell& empty_ce
 void ScreenGrid::insert_cells(int x, int y, int count, const Cell& empty_cell) {
     if (y < 0 || y >= rows_ || x < 0 || x >= cols_ || count <= 0) return;
     count = std::min(count, cols_ - x);
-    auto& r = visible_rows_[y];
+    auto& r = row(y);
+    if (r.cells[x].attrs.width == 0) {
+        if (x > 0 && r.cells[x - 1].attrs.width == 2) {
+            Cell blank;
+            blank.bg = r.cells[x - 1].bg;
+            r.cells[x - 1] = blank;
+            r.mark_dirty(x - 1);
+        }
+        Cell blank;
+        blank.bg = r.cells[x].bg;
+        r.cells[x] = blank;
+        r.mark_dirty(x);
+    }
+    if (cols_ - 1 - count >= x && r.cells[cols_ - 1 - count].attrs.width == 2) {
+        // Rightmost wide leader shifted into the final column loses its continuation.
+        Cell blank;
+        blank.bg = r.cells[cols_ - 1 - count].bg;
+        r.cells[cols_ - 1 - count] = blank;
+        r.mark_dirty(cols_ - 1 - count);
+    }
 
     for (int i = cols_ - 1; i >= x + count; --i) {
         r.cells[i] = r.cells[i - count];
@@ -276,12 +437,20 @@ void ScreenGrid::insert_cells(int x, int y, int count, const Cell& empty_cell) {
         r.cells[i] = empty_cell;
         r.mark_dirty(i);
     }
+    r.clean_from = cols_;
 }
 
 void ScreenGrid::delete_cells(int x, int y, int count, const Cell& empty_cell) {
     if (y < 0 || y >= rows_ || x < 0 || x >= cols_ || count <= 0) return;
     count = std::min(count, cols_ - x);
-    auto& r = visible_rows_[y];
+    auto& r = row(y);
+    repair_wide_span(x, x, y);
+    if (x + count < cols_ && r.cells[x + count].attrs.width == 0) {
+        Cell blank;
+        blank.bg = r.cells[x + count].bg;
+        r.cells[x + count] = blank;
+        r.mark_dirty(x + count);
+    }
 
     for (int i = x; i <= cols_ - 1 - count; ++i) {
         r.cells[i] = r.cells[i + count];
@@ -291,20 +460,25 @@ void ScreenGrid::delete_cells(int x, int y, int count, const Cell& empty_cell) {
         r.cells[i] = empty_cell;
         r.mark_dirty(i);
     }
+    r.clean_from = cols_;
 }
 
 void ScreenGrid::mark_all_dirty() noexcept {
     // A full repaint supersedes any pending pixel shift.
     scroll_ops_.clear();
-    for (auto& row : visible_rows_) {
-        row.mark_all_dirty(cols_);
+    last_dropped_top_ = -1;
+    last_dropped_bottom_ = -1;
+    for (auto& r : row_storage_) {
+        r.mark_all_dirty(cols_);
     }
 }
 
 void ScreenGrid::reset_damage() noexcept {
     scroll_ops_.clear();
-    for (auto& row : visible_rows_) {
-        row.reset_damage();
+    last_dropped_top_ = -1;
+    last_dropped_bottom_ = -1;
+    for (auto& r : row_storage_) {
+        r.reset_damage();
     }
 }
 
@@ -333,10 +507,10 @@ void ScreenGrid::collect_combining_garbage(uint32_t preserve) {
     combining_store_.begin_collection();
     combining_store_.mark(preserve);
 
-    const auto mark_row = [this](const Row& row) {
-        for (const auto& cell : row.cells) cell_extras_.mark(cell.extra_idx);
+    const auto mark_row = [this](const Row& r) {
+        for (const auto& cell : r.cells) cell_extras_.mark(cell.extra_idx);
     };
-    for (const auto& row : visible_rows_) mark_row(row);
+    for (const auto& r : row_storage_) mark_row(r);
     cell_extras_.mark_combining(combining_store_);
     cell_extras_.sweep();
     combining_store_.sweep();

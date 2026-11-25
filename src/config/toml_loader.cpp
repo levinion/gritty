@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -100,7 +101,15 @@ ConfigError parse_error(const char* message) {
     return result;
 }
 
-void apply_colors(AppConfig& cfg, toml_datum_t table, bool& invalid_alpha) {
+struct ValidationErrors {
+    std::string first_error;
+    void set(std::string_view msg) {
+        if (first_error.empty()) first_error.assign(msg);
+    }
+};
+
+void apply_colors(AppConfig& cfg, toml_datum_t table, bool cursor_color_explicit,
+                  ValidationErrors& errors) {
     if (const auto value = as_string(find_key(table, "foreground"))) {
         if (auto color = TomlLoader::parse_color(*value)) cfg.colors.foreground = *color;
     }
@@ -108,7 +117,10 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool& invalid_alpha) {
         if (auto color = TomlLoader::parse_color(*value)) cfg.colors.background = *color;
     }
     if (const auto value = as_string(find_key(table, "cursor"))) {
-        if (auto color = TomlLoader::parse_color(*value)) cfg.colors.cursor = *color;
+        if (auto color = TomlLoader::parse_color(*value)) {
+            cfg.colors.cursor = *color;
+            if (!cursor_color_explicit) cfg.cursor.color = *color;
+        }
     }
     for (int i = 0; i < 8; ++i) {
         const std::string regular = "regular" + std::to_string(i);
@@ -132,13 +144,13 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool& invalid_alpha) {
     double parsed = 0;
     if (!as_number(alpha, parsed) || !std::isfinite(parsed) ||
         parsed < 0.0 || parsed > 1.0) {
-        invalid_alpha = true;
+        errors.set("colors.alpha must be a finite number between 0 and 1");
         return;
     }
     cfg.colors.alpha = parsed;
 }
 
-void apply_padding(AppConfig& cfg, toml_datum_t table, bool& invalid_padding) {
+void apply_padding(AppConfig& cfg, toml_datum_t table, ValidationErrors& errors) {
     const toml_datum_t padding = find_key(table, "padding");
     if (padding.type == TOML_UNKNOWN) return;
 
@@ -148,14 +160,20 @@ void apply_padding(AppConfig& cfg, toml_datum_t table, bool& invalid_padding) {
     if (padding.type == TOML_INT64) {
         x = y = padding.u.int64;
     } else if (padding.type == TOML_TABLE) {
-        if (!as_integer(find_key(padding, "x"), x)) x = -1;
-        if (!as_integer(find_key(padding, "y"), y)) y = -1;
+        const toml_datum_t dx = find_key(padding, "x");
+        const toml_datum_t dy = find_key(padding, "y");
+        if (dx.type == TOML_UNKNOWN && dy.type == TOML_UNKNOWN) {
+            valid = false;
+        } else {
+            if (dx.type != TOML_UNKNOWN && !as_integer(dx, x)) valid = false;
+            if (dy.type != TOML_UNKNOWN && !as_integer(dy, y)) valid = false;
+        }
     } else {
         valid = false;
     }
     if (x < 0 || x > 512 || y < 0 || y > 512) valid = false;
     if (!valid) {
-        invalid_padding = true;
+        errors.set("window.padding must be an integer between 0 and 512");
         return;
     }
     cfg.window.padding.x = static_cast<int>(x);
@@ -163,13 +181,18 @@ void apply_padding(AppConfig& cfg, toml_datum_t table, bool& invalid_padding) {
 }
 
 void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
-                   bool& invalid_alpha, bool& invalid_decorations, bool& invalid_padding) {
+                   bool& cursor_color_explicit, ValidationErrors& errors) {
     if (section == "main") {
         if (const auto value = as_string(find_key(table, "shell"))) cfg.main.shell = *value;
         if (const auto value = as_string(find_key(table, "term"))) cfg.main.term = *value;
         if (const auto value = as_string(find_key(table, "title"))) cfg.main.title = *value;
-        if (const auto value = as_string(find_key(table, "osc52"))) {
-            if (const auto mode = parse_osc52_mode(*value)) cfg.main.osc52 = *mode;
+        if (const auto value = as_string(find_key(table, "app_id"))) cfg.main.app_id = *value;
+        const toml_datum_t osc52_datum = find_key(table, "osc52");
+        if (osc52_datum.type != TOML_UNKNOWN) {
+            const auto value = as_string(osc52_datum);
+            const auto mode = value ? parse_osc52_mode(*value) : std::nullopt;
+            if (!mode) errors.set("main.osc52 must be disabled, copy-only, paste-only, or enabled");
+            else cfg.main.osc52 = *mode;
         }
         // Legacy boolean spelling: true enables both directions.
         bool osc52_read = false;
@@ -179,64 +202,88 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
     }
     if (section == "font") {
         if (const auto value = as_string(find_key(table, "family"))) cfg.font.family = *value;
-        double size = 0;
-        if (as_number(find_key(table, "size"), size) && size > 0 && std::isfinite(size))
-            cfg.font.size = size;
-        int64_t dpi = 0;
-        if (as_integer(find_key(table, "dpi"), dpi) && dpi > 0 &&
-            static_cast<uint64_t>(dpi) <= std::numeric_limits<unsigned int>::max())
-            cfg.font.dpi = static_cast<unsigned int>(dpi);
-        if (const auto value = as_string(find_key(table, "antialias"))) {
-            const std::string mode = lower(*value);
-            if (mode == "grayscale") cfg.font.antialias = render::AntialiasMode::Grayscale;
-            else if (mode == "subpixel" || mode == "lcd") cfg.font.antialias = render::AntialiasMode::SubpixelLcd;
-            else if (mode == "none") cfg.font.antialias = render::AntialiasMode::None;
+        const toml_datum_t size_datum = find_key(table, "size");
+        if (size_datum.type != TOML_UNKNOWN) {
+            double size = 0;
+            if (!as_number(size_datum, size) || !std::isfinite(size) || size < 1.0 || size > 200.0)
+                errors.set("font.size must be a finite number between 1 and 200");
+            else cfg.font.size = size;
+        }
+        const toml_datum_t dpi_datum = find_key(table, "dpi");
+        if (dpi_datum.type != TOML_UNKNOWN) {
+            int64_t dpi = 0;
+            if (!as_integer(dpi_datum, dpi) || dpi <= 0 ||
+                static_cast<uint64_t>(dpi) > std::numeric_limits<unsigned int>::max())
+                errors.set("font.dpi must be a positive integer");
+            else cfg.font.dpi = static_cast<unsigned int>(dpi);
+        }
+        const toml_datum_t aa_datum = find_key(table, "antialias");
+        if (aa_datum.type != TOML_UNKNOWN) {
+            if (const auto value = as_string(aa_datum)) {
+                const std::string mode = lower(*value);
+                if (mode == "grayscale") cfg.font.antialias = render::AntialiasMode::Grayscale;
+                else if (mode == "subpixel" || mode == "lcd") cfg.font.antialias = render::AntialiasMode::SubpixelLcd;
+                else if (mode == "none") cfg.font.antialias = render::AntialiasMode::None;
+                else errors.set("font.antialias must be grayscale, subpixel, lcd, or none");
+            } else {
+                errors.set("font.antialias must be grayscale, subpixel, lcd, or none");
+            }
         }
         return;
     }
     if (section == "cursor") {
-        if (const auto value = as_string(find_key(table, "style"))) {
-            const std::string style = lower(*value);
-            if (style == "block") cfg.cursor.style = core::CursorShape::Block;
-            else if (style == "beam") cfg.cursor.style = core::CursorShape::Beam;
-            else if (style == "underline") cfg.cursor.style = core::CursorShape::Underline;
+        const toml_datum_t style_datum = find_key(table, "style");
+        if (style_datum.type != TOML_UNKNOWN) {
+            if (const auto value = as_string(style_datum)) {
+                const std::string style = lower(*value);
+                if (style == "block") cfg.cursor.style = core::CursorShape::Block;
+                else if (style == "beam") cfg.cursor.style = core::CursorShape::Beam;
+                else if (style == "underline") cfg.cursor.style = core::CursorShape::Underline;
+                else errors.set("cursor.style must be block, beam, or underline");
+            } else {
+                errors.set("cursor.style must be block, beam, or underline");
+            }
         }
         bool blink = false;
         if (as_bool(find_key(table, "blink"), blink)) cfg.cursor.blink = blink;
         if (const auto value = as_string(find_key(table, "color"))) {
-            if (auto color = TomlLoader::parse_color(*value)) cfg.cursor.color = *color;
+            if (auto color = TomlLoader::parse_color(*value)) {
+                cfg.cursor.color = *color;
+                cursor_color_explicit = true;
+            }
         }
         return;
     }
     if (section == "colors") {
-        apply_colors(cfg, table, invalid_alpha);
+        apply_colors(cfg, table, cursor_color_explicit, errors);
         return;
     }
     if (section == "window") {
-        if (const auto value = as_string(find_key(table, "decorations"))) {
-            const auto decorations = parse_window_decorations(*value);
-            if (!decorations) invalid_decorations = true;
+        const toml_datum_t datum = find_key(table, "decorations");
+        if (datum.type != TOML_UNKNOWN) {
+            const auto value = as_string(datum);
+            const auto decorations = value ? parse_window_decorations(*value) : std::nullopt;
+            if (!decorations) errors.set("window.decorations must be full, none, transparent, or buttonless");
             else cfg.window.decorations = *decorations;
         }
-        apply_padding(cfg, table, invalid_padding);
+        apply_padding(cfg, table, errors);
     }
 }
 
-void apply_tables(AppConfig& cfg, toml_datum_t root, bool& invalid_alpha,
-                  bool& invalid_decorations, bool& invalid_padding) {
+void apply_tables(AppConfig& cfg, toml_datum_t root, bool& cursor_color_explicit,
+                  ValidationErrors& errors) {
     constexpr std::string_view sections[] = {
         "main", "font", "cursor", "colors", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(root, section);
         if (table.type == TOML_TABLE)
-            apply_section(cfg, section, table, invalid_alpha, invalid_decorations,
-                          invalid_padding);
+            apply_section(cfg, section, table, cursor_color_explicit, errors);
     }
 }
 
 void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform,
-                    bool& invalid_alpha, bool& invalid_decorations, bool& invalid_padding) {
+                    ValidationErrors& errors) {
     // Accept both [platform.macos.font] and legacy [macos.font] forms.
     toml_datum_t platform_root = find_key(root, "platform");
     const bool prefixed = platform_root.type == TOML_TABLE;
@@ -244,45 +291,29 @@ void apply_platform(AppConfig& cfg, toml_datum_t root, std::string_view platform
     const toml_datum_t os = find_key(platform_root, platform);
     if (os.type != TOML_TABLE) return;
 
-    constexpr std::string_view sections[] = {
-        "main", "font", "cursor", "colors", "window"
-    };
-    for (const auto section : sections) {
-        const toml_datum_t table = find_key(os, section);
-        if (table.type == TOML_TABLE)
-            apply_section(cfg, section, table, invalid_alpha, invalid_decorations,
-                          invalid_padding);
-    }
-    if (prefixed) {
-        // [platform.macos] font = { family = "...", size = 14.0 }
-        apply_tables(cfg, os, invalid_alpha, invalid_decorations, invalid_padding);
-    }
+    bool platform_cursor_explicit = false;
+    apply_tables(cfg, os, platform_cursor_explicit, errors);
 }
 
 std::expected<std::shared_ptr<AppConfig>, ConfigError> load(
     std::string_view text,
     std::string_view platform_override
 ) {
+    if (text.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return std::unexpected(ConfigError{.message = "Configuration file is too large"});
+    }
     const std::string source(text);
     ParseResult parsed(toml_parse(source.c_str(), static_cast<int>(source.size())));
     if (!parsed.ok()) return std::unexpected(parse_error(parsed.error()));
 
     auto cfg = std::make_shared<AppConfig>();
-    bool invalid_alpha = false;
-    bool invalid_decorations = false;
-    bool invalid_padding = false;
-    apply_tables(*cfg, parsed.root(), invalid_alpha, invalid_decorations, invalid_padding);
-    apply_platform(*cfg, parsed.root(), target_platform(platform_override),
-                   invalid_alpha, invalid_decorations, invalid_padding);
-    if (invalid_alpha)
-        return std::unexpected(ConfigError{
-            .message = "colors.alpha must be a finite number between 0 and 1"});
-    if (invalid_decorations)
-        return std::unexpected(ConfigError{
-            .message = "window.decorations must be full, none, transparent, or buttonless"});
-    if (invalid_padding)
-        return std::unexpected(ConfigError{
-            .message = "window.padding must be an integer between 0 and 512"});
+    bool cursor_color_explicit = false;
+    ValidationErrors errors;
+    apply_tables(*cfg, parsed.root(), cursor_color_explicit, errors);
+    apply_platform(*cfg, parsed.root(), target_platform(platform_override), errors);
+    if (!errors.first_error.empty()) {
+        return std::unexpected(ConfigError{.message = std::move(errors.first_error)});
+    }
     return cfg;
 }
 
@@ -316,12 +347,19 @@ std::expected<std::shared_ptr<AppConfig>, ConfigError> TomlLoader::load_from_fil
     std::string_view platform_override
 ) {
     const std::string path(file_path);
-    std::ifstream file(path);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec)
+        return std::unexpected(ConfigError{
+            .message = "Failed to open configuration file: " + std::string(file_path)});
+    std::ifstream file(path, std::ios::binary);
     if (!file.is_open())
         return std::unexpected(ConfigError{
             .message = "Failed to open configuration file: " + std::string(file_path)});
     std::ostringstream buffer;
     buffer << file.rdbuf();
+    if (file.bad())
+        return std::unexpected(ConfigError{
+            .message = "Failed to read configuration file: " + std::string(file_path)});
     return load(buffer.str(), platform_override);
 }
 

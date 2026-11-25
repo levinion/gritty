@@ -379,7 +379,7 @@ TEST_CASE("TerminalSession redraws reallocated buffers and preserves logical siz
     CHECK(output->pixels.data()[(height + 1) * output->pixels.stride() / 4 - 1] == config.render_config.default_bg);
 
     render::FontEngine scaled;
-    REQUIRE(scaled.load_font(font, config.font_size, 192));
+    REQUIRE(scaled.load_font(font, config.font_size, config.font_dpi * 2));
     const auto metrics = scaled.metrics();
     output->resize(10 * metrics.cell_width, 3 * metrics.cell_height, 2.0);
     session.handle_surface_resize(output->width, output->height, 2.0);
@@ -528,7 +528,7 @@ TEST_CASE("Kitty graphics APC is parsed, acknowledged and rendered") {
     config.cols = 8;
     config.rows = 3;
     config.shell = "/bin/sh";
-    config.args = {"-c", "printf '\\033_Ga=T,f=32,s=1,v=1,i=10;/wAA/w==\\033\\\\'; sleep 1"};
+    config.args = {"-c", "stty -echo; printf '\\033_Ga=T,f=32,s=1,v=1,i=10;/wAA/w==\\033\\\\'; sleep 1"};
     core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
     REQUIRE(session.start());
 
@@ -547,6 +547,14 @@ TEST_CASE("Kitty graphics APC is parsed, acknowledged and rendered") {
     const int stride = output->pixels.stride() / 4;
     const int cw = output->width / config.cols;
     const int ch = output->height / config.rows;
+    // With c= and r= omitted, Kitty renders at natural 1x1 pixel size at (0, 0).
+    CHECK(output->pixels.data()[0] == 0xFFFF0000u);
+    CHECK(output->pixels.data()[(ch / 2) * stride + cw / 2] == config.render_config.default_bg);
+
+    // Explicitly specifying c=1,r=1 scales the placement to fill the cell.
+    CHECK(session.engine().kitty_graphics().process_apc_sequence(
+              "Ga=p,i=10,p=1,c=1,r=1;", 0, 0) == "\x1b_Gi=10;OK\x1b\\");
+    session.render_frame(true);
     CHECK(output->pixels.data()[(ch / 2) * stride + cw / 2] == 0xFFFF0000u);
 }
 
@@ -628,4 +636,144 @@ TEST_CASE("Window padding surrounds the grid and offsets input coordinates") {
     click.pixel_y = 1;
     session.handle_mouse_event(click);
     CHECK(output->opened_url.empty());
+}
+
+TEST_CASE("Window padding with scroll moves stays in bounds and matches full redraw") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.cols = 12;
+    config.rows = 4;
+    config.padding_x = 7;
+    config.padding_y = 0;
+    config.render_config.render_cursor = false;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "read line"};
+    core::TerminalSession session(config, std::move(surface), std::make_unique<TestLoop>(), nullptr);
+    REQUIRE(session.start());
+
+    for (int i = 0; i < 4; ++i) {
+        session.engine().print_ascii_run("0123456789AB");
+        if (i < 3) {
+            session.engine().carriage_return();
+            session.engine().line_feed();
+        }
+    }
+    session.render_frame(false);
+    // Now scroll one already-rendered line so destinations are clean and memmove runs.
+    session.engine().carriage_return();
+    session.engine().line_feed();
+    session.engine().print_ascii_run("NEWLINE67890");
+    session.render_frame(false);
+    CHECK(session.render_stats().scroll_moves > 0);
+
+    util::PixmanImage expected(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, output->width, output->height, nullptr, 0));
+    REQUIRE(expected.valid());
+    render::FontEngine ref_fonts;
+    REQUIRE(ref_fonts.load_font(font, config.font_size, config.font_dpi));
+    render::CpuRenderer ref_renderer(ref_fonts, config.render_config);
+    const auto bg = render::CpuRenderer::to_pixman_color(config.render_config.default_bg);
+    const pixman_rectangle16_t full_rect{0, 0,
+        static_cast<uint16_t>(output->width), static_cast<uint16_t>(output->height)};
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, expected.get(), &bg, 1, &full_rect);
+    const auto& metrics = ref_fonts.metrics();
+    const int content_w = config.cols * metrics.cell_width;
+    const int content_h = config.rows * metrics.cell_height;
+    auto* exp_bits = reinterpret_cast<uint32_t*>(
+        reinterpret_cast<uint8_t*>(expected.data()) + config.padding_x * 4);
+    util::PixmanImage exp_view(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, content_w, content_h, exp_bits, expected.stride()));
+    ref_renderer.render(session.engine(), exp_view.get(), nullptr, true);
+
+    for (int y = 0; y < output->height; ++y) {
+        const auto* actual_row = output->pixels.data() + y * (output->pixels.stride() / 4);
+        const auto* expected_row = expected.data() + y * (expected.stride() / 4);
+        for (int x = 0; x < output->width; ++x)
+            REQUIRE(actual_row[x] == expected_row[x]);
+    }
+}
+
+TEST_CASE("Transparent background premultiplies padding consistently with grid") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.cols = 4;
+    config.rows = 2;
+    config.padding_x = 4;
+    config.padding_y = 3;
+    config.render_config.default_bg = 0x80604020;
+    config.render_config.render_cursor = false;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "exit 0"};
+    core::TerminalSession session(config, std::move(surface), std::make_unique<TestLoop>(), nullptr);
+    REQUIRE(session.start());
+    const uint32_t pad_px = output->pixels.data()[0];
+    const uint32_t grid_px = output->pixels.data()[
+        config.padding_y * (output->pixels.stride() / 4) + config.padding_x];
+    CHECK(pad_px == 0x80302010u);
+    CHECK(grid_px == pad_px);
+}
+
+TEST_CASE("DECSET 2026 ESU flushes incrementally without forcing a full redraw") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.cols = 20;
+    config.rows = 10;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "printf '\\033[?2026hHI\\033[?2026l'; read line"};
+    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+    const size_t initial_full = session.render_stats().full_redraws;
+    const int initial_frames = output->frames;
+    for (int i = 0; i < 200 && output->frames == initial_frames; ++i)
+        events->pump();
+    REQUIRE(output->frames > initial_frames);
+    CHECK(session.render_stats().full_redraws == initial_full);
+    CHECK(output->last_damage.y2 < output->height);
+}
+
+TEST_CASE("HiDPI scale change preserves registered fallback fonts and TERM propagates") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    auto loop = std::make_unique<TestLoop>();
+    auto* events = loop.get();
+    core::SessionConfig config;
+    config.font_path = font;
+    config.term = "foot-extra";
+    config.cols = 16;
+    config.rows = 2;
+    config.shell = "/bin/sh";
+    config.args = {"-c", "printf '%s' \"$TERM\"; read line"};
+    core::TerminalSession session(config, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+    for (int i = 0; i < 200 && session.engine().grid().cell(9, 0).codepoint != U'a'; ++i)
+        events->pump();
+    std::string term_out;
+    for (int x = 0; x < 10; ++x)
+        term_out.push_back(static_cast<char>(session.engine().grid().cell(x, 0).codepoint));
+    CHECK(term_out == "foot-extra");
+
+    session.add_fallback_font(font, "FallbackAlias");
+    // Open the fallback by resolving a character missing from Monaco or force via set_dpi:
+    session.handle_surface_resize(output->width * 2, output->height * 2, 2.0);
+    // Registering another copy of the same path+ps succeeds as duplicate check,
+    // proving the fallback entry was preserved across DPI change.
+    const auto before_attempts = session.font_engine().face_load_attempt_count();
+    session.add_fallback_font(font, "FallbackAlias");
+    CHECK(session.font_engine().face_load_attempt_count() == before_attempts);
 }
