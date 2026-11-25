@@ -7,7 +7,7 @@ cask "gritty" do
   url "https://github.com/levinion/gritty/releases/download/v#{version}/gritty-#{version}-macos-arm64.tar.gz"
 
   name "Gritty"
-  desc "CPU-rendered terminal emulator for tmux on macOS and Linux"
+  desc "CPU-rendered terminal emulator for tmux on Apple Silicon macOS"
   homepage "https://github.com/levinion/gritty"
 
   livecheck do
@@ -16,7 +16,7 @@ cask "gritty" do
   end
 
   depends_on arch: :arm64
-  depends_on macos: ">= :sonoma"
+  depends_on macos: ">= :sequoia"
   depends_on formula: [
     "pixman",
     "freetype",

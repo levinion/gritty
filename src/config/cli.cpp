@@ -2,13 +2,18 @@
 
 #include "util/version.hpp"
 
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <string>
 #include <system_error>
 #include <utility>
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 
 namespace gritty::config {
 
@@ -54,12 +59,30 @@ struct Argument {
 }
 
 [[nodiscard]] bool parse_font_size(std::string_view text, double& out) noexcept {
-    const char* first = text.data();
-    const char* last = first + text.size();
-    if (first != last && *first == '+') ++first;
-    const auto [end, ec] = std::from_chars(first, last, out);
-    return ec == std::errc{} && end == last && std::isfinite(out) &&
-           out >= kMinFontSize && out <= kMaxFontSize;
+    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
+    if (text.empty() || text.size() >= 64) return false;
+    const unsigned char lead = static_cast<unsigned char>(text.front());
+    if (!((lead >= '0' && lead <= '9') || lead == '-' || lead == '.')) return false;
+    for (const char c : text) {
+        if (c == 'x' || c == 'X') return false;
+    }
+    char buf[64];
+    std::memcpy(buf, text.data(), text.size());
+    buf[text.size()] = '\0';
+    errno = 0;
+    char* end = nullptr;
+#if defined(__APPLE__)
+    const double value = strtod_l(buf, &end, nullptr);
+#else
+    const double value = std::strtod(buf, &end);
+#endif
+    if (end != buf + text.size() || !std::isfinite(value) ||
+        (errno == ERANGE && value != 0.0) ||
+        value < kMinFontSize || value > kMaxFontSize) {
+        return false;
+    }
+    out = value;
+    return true;
 }
 
 [[nodiscard]] std::unexpected<std::string> invalid_geometry(std::string_view name) {

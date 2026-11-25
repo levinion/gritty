@@ -5,61 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   macos:
     runs-on: macos-15
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          brew update
-          brew install meson ninja pkg-config pixman freetype harfbuzz utf8proc libpng doctest tmux
-
-      - name: Configure release build
-        run: |
-          meson setup build/release \
-            --buildtype=release \
-            -Db_lto=true \
-            -Dtests=true
-
-      - name: Compile
-        run: meson compile -C build/release
-
-      - name: Test
-        run: meson test -C build/release --print-errorlogs
-
-  archlinux:
-    runs-on: ubuntu-latest
-    container: archlinux:latest
-    steps:
-      - name: Install dependencies
-        run: |
-          pacman-key --init
-          pacman -Syu --noconfirm --needed \
-            base-devel \
-            clang \
-            git \
-            meson \
-            ninja \
-            pkgconf \
-            pixman \
-            freetype2 \
-            harfbuzz \
-            utf8proc \
-            libpng \
-            zlib \
-            wayland \
-            wayland-protocols \
-            libxkbcommon \
-            fontconfig \
-            doctest \
-            tmux \
-            ttf-dejavu
-
-      - name: Checkout
-        uses: actions/checkout@v4
+        run: brew install meson ninja pkg-config pixman freetype harfbuzz utf8proc libpng doctest tmux
 
       - name: Configure release build
         run: |
