@@ -1,6 +1,6 @@
 cask "gritty" do
-  version "0.1.0"
-  sha256 "3080e2b85142d3be31c3d4715513f4412f0653cc08ee5312a937c141d902d2bd"
+  version "2026.11.26"
+  sha256 "8d041954b455c519de979648d65a9ed264a4fa38a599d932240f93be17a2f8b3"
 
   # Local dry-run URL:
   # url "file://#{Dir.home}/Downloads/gritty-#{version}-macos-arm64.tar.gz"
