@@ -1,10 +1,15 @@
 #include <doctest/doctest.h>
+#include <cstdio>
 #include <filesystem>
 #include <thread>
 #include <chrono>
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include "input/input_mapper.hpp"
 #include "platform/posix_pty.hpp"
+#include "platform/single_instance.hpp"
 
 #if defined(PLATFORM_MACOS)
 #include "platform/macos/ct_discovery.hpp"
@@ -218,5 +223,125 @@ TEST_CASE("KqueueRunLoop pipe wake") {
     loop.wake();
     int res = loop.poll_once(50);
     CHECK(res >= 0);
+}
+
+TEST_CASE("KqueueRunLoop isolates scoped timers by owner and runs posted callbacks") {
+    macos::KqueueRunLoop loop;
+    int owner1_hits = 0;
+    int owner2_hits = 0;
+    loop.set_scoped_timer(0x1001, IEventLoop::TimerId::FrameCoalesce, 5, [&] { ++owner1_hits; });
+    loop.set_scoped_timer(0x2002, IEventLoop::TimerId::FrameCoalesce, 5, [&] { ++owner2_hits; });
+    loop.cancel_scoped_timer(0x1001, IEventLoop::TimerId::FrameCoalesce);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (owner2_hits == 0 && std::chrono::steady_clock::now() < deadline) loop.poll_once(5);
+    CHECK(owner1_hits == 0);
+    CHECK(owner2_hits == 1);
+
+    int posted_order = 0;
+    loop.post([&] { posted_order += 1; });
+    loop.post([&] { posted_order += 2; });
+    loop.poll_once(50);
+    CHECK(posted_order == 3);
+}
+
+TEST_CASE("SingleInstanceServer forwards launch requests, recovers stale sockets, and cleans up") {
+    const std::string sock_path =
+        "/tmp/gritty-ipc-test-" + std::to_string(static_cast<long>(::getpid())) + ".sock";
+    const std::string lock_path = sock_path + ".lock";
+    std::error_code ec;
+    std::filesystem::remove(sock_path, ec);
+    std::filesystem::remove(lock_path, ec);
+
+    // Create an unattached stale socket file first to verify stale recovery.
+    {
+        int stale_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        REQUIRE(stale_fd >= 0);
+        struct sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", sock_path.c_str());
+        REQUIRE(::bind(stale_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0);
+        ::close(stale_fd);
+        CHECK(std::filesystem::exists(sock_path));
+    }
+
+    LaunchRequest initial;
+    initial.inherited_cwd = "/tmp";
+    SingleInstanceServer server;
+    std::string err;
+    CHECK(server.acquire_or_forward(sock_path, initial, &err) ==
+          SingleInstanceServer::AcquireStatus::BecamePrimary);
+    CHECK(server.is_primary());
+
+    macos::KqueueRunLoop loop;
+    std::vector<LaunchRequest> received;
+    bool reject_next = false;
+    bool saw_rejected = false;
+    server.attach(loop, [&](const LaunchRequest& req) -> std::expected<void, std::string> {
+        if (reject_next) {
+            saw_rejected = true;
+            return std::unexpected("bad override");
+        }
+        received.push_back(req);
+        return {};
+    });
+
+    LaunchRequest second;
+    second.config_path = "/tmp/custom.toml";
+    second.explicit_cwd = "/tmp/work";
+    second.inherited_cwd = "/Users/dev";
+    second.title = "Second";
+    second.app_id = "gritty.test";
+    second.font_family = "Menlo";
+    second.font_size = 14.5;
+    second.cols = 100;
+    second.rows = 30;
+    second.hold = true;
+    second.config_overrides = {"window.opacity=0.8"};
+    second.command = "/usr/bin/env";
+    second.command_args = {"FOO=1"};
+
+    SingleInstanceServer::AcquireStatus forward_status = SingleInstanceServer::AcquireStatus::Failed;
+    std::thread sender([&] {
+        SingleInstanceServer probe;
+        forward_status = probe.acquire_or_forward(sock_path, second, &err);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (received.empty() && std::chrono::steady_clock::now() < deadline) loop.poll_once(10);
+    sender.join();
+
+    CHECK(forward_status == SingleInstanceServer::AcquireStatus::ForwardedOk);
+    REQUIRE(received.size() == 1);
+    CHECK(received[0].config_path == second.config_path);
+    CHECK(received[0].explicit_cwd == second.explicit_cwd);
+    CHECK(received[0].inherited_cwd == second.inherited_cwd);
+    CHECK(received[0].title == second.title);
+    CHECK(received[0].app_id == second.app_id);
+    CHECK(received[0].font_family == second.font_family);
+    CHECK(received[0].font_size == doctest::Approx(14.5));
+    CHECK(received[0].cols == 100);
+    CHECK(received[0].rows == 30);
+    CHECK(received[0].hold == true);
+    CHECK(received[0].config_overrides == second.config_overrides);
+    CHECK(received[0].command == second.command);
+    CHECK(received[0].command_args == second.command_args);
+
+    reject_next = true;
+    std::string server_err;
+    SingleInstanceServer::AcquireStatus reject_status = SingleInstanceServer::AcquireStatus::Failed;
+    std::thread rejected_sender([&] {
+        SingleInstanceServer probe;
+        reject_status = probe.acquire_or_forward(sock_path, second, &server_err);
+    });
+    const auto deadline2 = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (!saw_rejected && std::chrono::steady_clock::now() < deadline2) loop.poll_once(10);
+    rejected_sender.join();
+    CHECK(reject_status == SingleInstanceServer::AcquireStatus::ForwardedError);
+    CHECK(server_err == "bad override");
+
+    server.stop();
+    CHECK_FALSE(server.is_primary());
+    CHECK_FALSE(std::filesystem::exists(sock_path));
+    std::filesystem::remove(lock_path, ec);
 }
 #endif

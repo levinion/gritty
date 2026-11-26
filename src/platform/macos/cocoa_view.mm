@@ -179,26 +179,37 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     if (!_surface) return;
     const auto flags = [event modifierFlags];
     if (flags & NSEventModifierFlagCommand) {
-        // Never let AppKit's key bindings or NSTextInputClient see a Command
-        // chord: Cmd+V used to become a plain 'v' via insertText:.
-        // CapsLock/NumericPad and other incidental flags are irrelevant here.
+        // Consume Command chords before AppKit/NSTextInputClient so e.g. Cmd+V
+        // does not leak an unmodified character into insertText:.
         const bool plain = (flags & (NSEventModifierFlagControl | NSEventModifierFlagOption)) == 0;
         NSWindow* window = self.window;
-        if (plain && command_key_is(event, @"v")) {
+        if (plain && command_key_is(event, @"q")) {
+            _surface->on_quit_requested();
+        } else if (plain && window && command_key_is(event, @"w")) {
+            _surface->on_user_activity();
+            if (window.styleMask & NSWindowStyleMaskClosable) {
+                [window performClose:nil];
+            } else {
+                [window close];
+            }
+        } else if (plain && command_key_is(event, @"n")) {
+            _surface->on_user_activity();
+            _surface->on_new_window_requested();
+        } else if (plain && command_key_is(event, @"v")) {
+            _surface->on_user_activity();
             _surface->paste_from_pasteboard();
         } else if (plain && command_key_is(event, @"h")) {
+            _surface->on_user_activity();
             [NSApp hide:nil];
         } else if (plain && window && command_key_is(event, @"m")) {
+            _surface->on_user_activity();
             [window performMiniaturize:nil];
-        } else if (plain && window &&
-                   (command_key_is(event, @"w") || command_key_is(event, @"q"))) {
-            // Same path as the close button: windowWillClose ->
-            // CocoaLayerSurface::on_window_close -> close callback stops the
-            // KqueueRunLoop, so C++ destructors and the PTY are cleaned up.
-            [window performClose:nil];
+        } else {
+            _surface->on_user_activity();
         }
         return; // Every other Command chord is swallowed, never sent to PTY.
     }
+    _surface->on_user_activity();
     if (!direct_key_event(event, [self hasMarkedText])) {
         _imeHandled = NO;
         [self interpretKeyEvents:@[event]];
@@ -225,6 +236,7 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    if (_surface) _surface->on_user_activity();
     if (_surface && self.window) {
         const auto decorations = _surface->decorations();
         const bool borderless_titlebar = decorations == gritty::platform::WindowDecorations::Transparent ||
@@ -249,9 +261,15 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     [self handleMouse:event];
 }
 - (void)mouseUp:(NSEvent *)event { [self handleMouse:event]; }
-- (void)rightMouseDown:(NSEvent *)event { [self handleMouse:event]; }
+- (void)rightMouseDown:(NSEvent *)event {
+    if (_surface) _surface->on_user_activity();
+    [self handleMouse:event];
+}
 - (void)rightMouseUp:(NSEvent *)event { [self handleMouse:event]; }
-- (void)otherMouseDown:(NSEvent *)event { [self handleMouse:event]; }
+- (void)otherMouseDown:(NSEvent *)event {
+    if (_surface) _surface->on_user_activity();
+    [self handleMouse:event];
+}
 - (void)otherMouseUp:(NSEvent *)event { [self handleMouse:event]; }
 - (void)mouseMoved:(NSEvent *)event { [self handleMouse:event]; }
 - (void)mouseDragged:(NSEvent *)event { [self handleMouse:event]; }

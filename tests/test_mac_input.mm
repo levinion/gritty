@@ -214,3 +214,38 @@ TEST_CASE("Cocoa keyUp does not throw on isARepeat and IME commit preserves lite
         CHECK(committed == "你好世界");
     }
 }
+
+TEST_CASE("Cocoa Command+Q routes to quit callback without firing activity disarm") {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);
+        int quits = 0;
+        int new_windows = 0;
+        int activities = 0;
+        surface->set_quit_request_callback([&] { ++quits; });
+        surface->set_new_window_callback([&] { ++new_windows; });
+        surface->set_activity_callback([&] { ++activities; });
+
+        auto* view = [[GrittyView alloc] initWithSurface:surface.get()];
+        REQUIRE(view != nil);
+        auto key = [](NSString* chars, NSEventModifierFlags flags, unsigned short code) {
+            return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+                timestamp:0 windowNumber:0 context:nil characters:chars
+                charactersIgnoringModifiers:chars isARepeat:NO keyCode:code];
+        };
+
+        [view keyDown:key(@"q", NSEventModifierFlagCommand, 12)];
+        CHECK(quits == 1);
+        CHECK(activities == 0);
+
+        [view keyDown:key(@"n", NSEventModifierFlagCommand, 45)];
+        CHECK(new_windows == 1);
+        CHECK(activities == 1);
+
+        [view keyDown:key(@"k", 0, 40)];
+        CHECK(activities == 2);
+
+        [view detachSurface];
+        [view release];
+    }
+}

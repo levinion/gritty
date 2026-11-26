@@ -166,4 +166,13 @@ TEST_CASE("split_shell_command and resolve_working_directory handle flags and La
     CHECK(cfg::resolve_working_directory("", "/", "/Users/test") == "/Users/test");
     CHECK(cfg::resolve_working_directory("/", "/", "/Users/test") == "/");
     CHECK(cfg::resolve_working_directory("", "/Users/test/work", "/Users/test").empty());
+
+    const char* standalone_argv[] = {"gritty", "--standalone", "-e", "true"};
+    const auto standalone = cfg::parse_cli(4, standalone_argv);
+    REQUIRE(standalone.has_value());
+    CHECK(standalone->standalone);
+    CHECK(standalone->command == "true");
+
+    const char* bad_standalone_argv[] = {"gritty", "--standalone=1"};
+    CHECK_FALSE(cfg::parse_cli(2, bad_standalone_argv).has_value());
 }

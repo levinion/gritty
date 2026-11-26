@@ -394,3 +394,30 @@ TEST_CASE("TomlLoader and overrides support Alacritty TOML schema") {
     CHECK_FALSE(TomlLoader::load_from_string("[terminal]\nosc52 = 'ReadWrite'\n").has_value());
     CHECK_FALSE(TomlLoader::load_from_string("[terminal.shell]\nargs = [123]\n").has_value());
 }
+
+TEST_CASE("Window quit confirmation option defaults to needed and validates all modes") {
+    AppConfig defaults;
+    CHECK(defaults.window.confirm_quit == QuitConfirmation::Needed);
+
+    auto always = TomlLoader::load_from_string("[window]\nconfirm_quit = 'Always'\n");
+    REQUIRE(always.has_value());
+    CHECK((*always)->window.confirm_quit == QuitConfirmation::Always);
+
+    auto never = TomlLoader::load_from_string("[general]\nconfirm_quit = 'never'\n");
+    REQUIRE(never.has_value());
+    CHECK((*never)->window.confirm_quit == QuitConfirmation::Never);
+
+    auto needed = TomlLoader::load_from_string("[window]\nconfirm_quit = 'NEEDED'\n");
+    REQUIRE(needed.has_value());
+    CHECK((*needed)->window.confirm_quit == QuitConfirmation::Needed);
+
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nconfirm_quit = 'maybe'\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nconfirm_quit = true\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[general]\nconfirm_quit = 1\n").has_value());
+
+    REQUIRE(defaults.apply_override("window.confirm_quit=always").has_value());
+    CHECK(defaults.window.confirm_quit == QuitConfirmation::Always);
+    REQUIRE(defaults.apply_override("general.confirm_quit=never").has_value());
+    CHECK(defaults.window.confirm_quit == QuitConfirmation::Never);
+    CHECK_FALSE(defaults.apply_override("window.confirm_quit=bogus").has_value());
+}

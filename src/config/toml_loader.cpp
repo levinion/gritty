@@ -227,6 +227,13 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
                 errors.set("general.working_directory must be a string");
             }
         }
+        const toml_datum_t cq = find_key(table, "confirm_quit");
+        if (cq.type != TOML_UNKNOWN) {
+            const auto value = as_string(cq);
+            const auto mode = value ? parse_quit_confirmation(*value) : std::nullopt;
+            if (!mode) errors.set("general.confirm_quit must be always, needed, or never");
+            else cfg.window.confirm_quit = *mode;
+        }
         return;
     }
     if (section == "env") {
@@ -412,6 +419,13 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
             const auto decorations = value ? parse_window_decorations(*value) : std::nullopt;
             if (!decorations) errors.set("window.decorations must be full, none, transparent, or buttonless");
             else cfg.window.decorations = *decorations;
+        }
+        const toml_datum_t cq = find_key(table, "confirm_quit");
+        if (cq.type != TOML_UNKNOWN) {
+            const auto value = as_string(cq);
+            const auto mode = value ? parse_quit_confirmation(*value) : std::nullopt;
+            if (!mode) errors.set("window.confirm_quit must be always, needed, or never");
+            else cfg.window.confirm_quit = *mode;
         }
         const toml_datum_t opacity = find_key(table, "opacity");
         if (opacity.type != TOML_UNKNOWN) {

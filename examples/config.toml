@@ -16,6 +16,8 @@ opacity = 1.0
 # padding = 8
 padding = { x = 0, y = 0 }
 dimensions = { columns = 80, lines = 24 }
+# always | needed | never (needed confirms Cmd+Q when multiple windows are open)
+confirm_quit = "needed"
 
 [font]
 normal = { family = "Menlo" }

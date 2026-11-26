@@ -155,6 +155,11 @@ std::expected<CliOptions, std::string> parse_cli(int argc, const char* const* ar
             options.hold = true;
             continue;
         }
+        if (arg.name == "--standalone") {
+            if (arg.has_inline_value) return std::unexpected("Unexpected value for --standalone");
+            options.standalone = true;
+            continue;
+        }
 
         if (arg.name == "-o" || arg.name == "--option") {
             auto value = take_value(arg, i, argc, argv);
@@ -240,6 +245,7 @@ std::string format_cli_help(std::string_view prog) {
     out += "  --cols <n>                 Initial columns (1..1000)\n";
     out += "  --rows <n>                 Initial rows (1..1000)\n";
     out += "  --hold                     Keep the window open after the child exits\n";
+    out += "  --standalone               Start an isolated instance without IPC\n";
     out += "  -e <cmd> [args...]         Execute command (--command, --exec, --)\n";
     return out;
 }

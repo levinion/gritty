@@ -5,7 +5,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <optional>
 #include <functional>
 #include <pixman.h>
 #include "util/raii.hpp"
@@ -56,7 +55,7 @@ enum class MouseCursorShape : uint8_t {
     return std::nullopt;
 }
 
-// Window surface interface (WaylandShmSurface or CocoaLayerSurface)
+// Window surface abstraction implemented by the active platform backend.
 class IWindowSurface {
 public:
     virtual ~IWindowSurface() = default;
@@ -141,7 +140,7 @@ public:
     }
 };
 
-// Event loop interface (EpollEventLoop or KqueueRunLoop)
+// Event loop abstraction for I/O watches, scoped one-shot timers, and deferred callbacks.
 class IEventLoop {
 public:
     virtual ~IEventLoop() = default;
@@ -162,11 +161,7 @@ public:
 
     virtual void add_fd(int fd, uint32_t events, FdCallback cb) = 0;
     virtual void remove_fd(int fd) = 0;
-    // One-shot timers. A nonpositive delay or empty callback cancels `id`.
-    // The int overload is retained for headless/backward-compatible loops and
-    // maps to TimerId::Default.
-    // Timer names used by the session. add_timer/cancel_timer are the canonical
-    // one-shot API; backends may implement them through set_timer for now.
+    // One-shot timers keyed by (owner, TimerId); a non-positive delay or empty callback cancels.
     virtual void add_timer(TimerId id, int delay_ms, std::function<void()> callback) {
         set_timer(id, delay_ms, std::move(callback));
     }
@@ -175,13 +170,29 @@ public:
         (void)id;
         set_timer(delay_ms, std::move(callback));
     }
+    virtual void set_scoped_timer(
+        uintptr_t owner,
+        TimerId id,
+        int delay_ms,
+        std::function<void()> callback
+    ) {
+        (void)owner;
+        set_timer(id, delay_ms, std::move(callback));
+    }
+    virtual void cancel_scoped_timer(uintptr_t owner, TimerId id) {
+        set_scoped_timer(owner, id, 0, {});
+    }
     virtual void set_timer(int delay_ms, std::function<void()> callback) = 0;
+    // Schedule a callback to run safely outside the current I/O or UI handler.
+    virtual void post(std::function<void()> callback) {
+        if (callback) callback();
+    }
     virtual void run() = 0;
     virtual void stop() = 0;
     virtual void wake() = 0;
 };
 
-// Font discovery interface (FontconfigFinder or CoreTextFinder)
+// Font family and fallback chain discovery interface.
 struct FontPattern {
     std::string family;
     bool bold{false};
@@ -202,7 +213,7 @@ public:
     virtual std::vector<FontMatch> fallback_chain(const FontPattern& pattern) = 0;
 };
 
-// Clipboard interface (WaylandClipboard or PasteboardClipboard)
+// System clipboard abstraction.
 class IClipboard {
 public:
     virtual ~IClipboard() = default;

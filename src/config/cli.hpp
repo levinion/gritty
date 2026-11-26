@@ -26,6 +26,7 @@ struct CliOptions {
     size_t cols{0};
     size_t rows{0};
     bool hold{false};
+    bool standalone{false};
     std::vector<std::string> config_overrides;
     std::string command;
     std::vector<std::string> command_args;

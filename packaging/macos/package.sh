@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-2026.11.26}"
+VERSION="${1:-2026.11.26.1}"
 BIN_PATH="${2:-build/release/src/gritty}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 

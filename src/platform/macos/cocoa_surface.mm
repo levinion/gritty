@@ -5,10 +5,98 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UserNotifications/UserNotifications.h>
+#include <algorithm>
+#include <cmath>
 
 namespace gritty::platform::macos {
 
 namespace {
+
+AppDelegateCallbacks g_app_callbacks;
+bool g_app_initialized = false;
+
+} // namespace
+
+} // namespace gritty::platform::macos
+
+@interface GrittyAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation GrittyAppDelegate
+- (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)flag {
+    (void)sender;
+    if (!flag && gritty::platform::macos::g_app_callbacks.on_reopen_no_windows) {
+        gritty::platform::macos::g_app_callbacks.on_reopen_no_windows();
+    }
+    return YES;
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
+    (void)sender;
+    if (gritty::platform::macos::g_app_callbacks.on_quit_requested) {
+        gritty::platform::macos::g_app_callbacks.on_quit_requested();
+        return NSTerminateCancel;
+    }
+    return NSTerminateNow;
+}
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
+    (void)sender;
+    return NO;
+}
+@end
+
+namespace gritty::platform::macos {
+
+namespace {
+
+GrittyAppDelegate* g_app_delegate = nil;
+
+void ensure_cocoa_app_initialized() {
+    if (g_app_initialized) return;
+    g_app_initialized = true;
+    @autoreleasepool {
+        // Disable macOS accent press-and-hold menu so holding keys repeats cleanly
+        // (matching terminal emulators) without popping up a character picker.
+        NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+        [defaults registerDefaults:@{@"ApplePressAndHoldEnabled": @NO}];
+        if ([defaults boolForKey:@"ApplePressAndHoldEnabled"]) {
+            [defaults setBool:NO forKey:@"ApplePressAndHoldEnabled"];
+        }
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
+        // Set application icon from resources
+        NSString* iconPath = [[NSBundle mainBundle] pathForResource:@"gritty" ofType:@"icns"];
+        if (!iconPath || ![[NSFileManager defaultManager] fileExistsAtPath:iconPath]) {
+            NSArray* searchPaths = @[
+                @"resources/gritty.icns",
+                @"../resources/gritty.icns",
+                @"resources/gritty.png",
+                @"../resources/gritty.png"
+            ];
+            for (NSString* p in searchPaths) {
+                if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
+                    iconPath = p;
+                    break;
+                }
+            }
+        }
+        if (iconPath) {
+            // Keep a 128-point Retina Dock icon, not every representation of
+            // the 1024px ICNS (including its expensive decoded image cache).
+            CGImageRef pixels = copy_application_icon(iconPath.fileSystemRepresentation);
+            if (pixels) {
+                NSImage* icon = [[NSImage alloc] initWithCGImage:pixels size:NSMakeSize(128, 128)];
+                CGImageRelease(pixels);
+                if (icon) {
+                    [NSApp setApplicationIconImage:icon];
+                    [icon release];
+                }
+            }
+        }
+    }
+}
 
 NSWindowStyleMask style_mask_for_decorations(WindowDecorations decorations) noexcept {
     switch (decorations) {
@@ -122,48 +210,21 @@ void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
 }
 
 void CocoaLayerSurface::show_window(const std::string& title) {
+    ensure_cocoa_app_initialized();
     @autoreleasepool {
-        // Disable macOS accent press-and-hold menu so holding keys repeats cleanly
-        // (matching terminal emulators) without popping up a character picker.
-        NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-        [defaults registerDefaults:@{@"ApplePressAndHoldEnabled": @NO}];
-        if ([defaults boolForKey:@"ApplePressAndHoldEnabled"]) {
-            [defaults setBool:NO forKey:@"ApplePressAndHoldEnabled"];
+        const CGFloat win_w = pixel_width_ / scale_;
+        const CGFloat win_h = pixel_height_ / scale_;
+        NSRect frame = NSMakeRect(100, 100, win_w, win_h);
+        if (NSWindow* ref = [NSApp keyWindow] ? [NSApp keyWindow] : [NSApp mainWindow]) {
+            const NSRect ref_frame = ref.frame;
+            const NSRect visible = ref.screen ? ref.screen.visibleFrame
+                : ([NSScreen mainScreen] ? [NSScreen mainScreen].visibleFrame : NSMakeRect(0, 0, 4096, 4096));
+            CGFloat x = NSMinX(ref_frame) + 24.0;
+            CGFloat y = NSMaxY(ref_frame) - 24.0 - win_h;
+            if (x + win_w > NSMaxX(visible)) x = NSMinX(visible) + 24.0;
+            if (y < NSMinY(visible)) y = std::max(NSMinY(visible), NSMaxY(visible) - win_h - 24.0);
+            frame = NSMakeRect(x, y, win_w, win_h);
         }
-        [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-
-        // Set application icon from resources
-        NSString* iconPath = [[NSBundle mainBundle] pathForResource:@"gritty" ofType:@"icns"];
-        if (!iconPath || ![[NSFileManager defaultManager] fileExistsAtPath:iconPath]) {
-            NSArray* searchPaths = @[
-                @"resources/gritty.icns",
-                @"../resources/gritty.icns",
-                @"resources/gritty.png",
-                @"../resources/gritty.png"
-            ];
-            for (NSString* p in searchPaths) {
-                if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
-                    iconPath = p;
-                    break;
-                }
-            }
-        }
-        if (iconPath) {
-            // Keep a 128-point Retina Dock icon, not every representation of
-            // the 1024px ICNS (including its expensive decoded image cache).
-            CGImageRef pixels = copy_application_icon(iconPath.fileSystemRepresentation);
-            if (pixels) {
-                NSImage* icon = [[NSImage alloc] initWithCGImage:pixels size:NSMakeSize(128, 128)];
-                CGImageRelease(pixels);
-                if (icon) {
-                    [NSApp setApplicationIconImage:icon];
-                    [icon release];
-                }
-            }
-        }
-
-        NSRect frame = NSMakeRect(100, 100, pixel_width_ / scale_, pixel_height_ / scale_);
         const NSWindowStyleMask mask = style_mask_for_decorations(decorations_);
         window_title_ = title;
 
@@ -437,6 +498,54 @@ void CocoaLayerSurface::on_live_resize(bool active) {
 
 void CocoaLayerSurface::on_window_focus(bool focused) {
     if (focus_cb_) focus_cb_(focused);
+}
+
+void CocoaLayerSurface::focus_window() {
+    @autoreleasepool {
+        if (native_window_) {
+            [(NSWindow*)native_window_ makeKeyAndOrderFront:nil];
+        }
+        if (NSApp) {
+            [NSApp activateIgnoringOtherApps:YES];
+        }
+    }
+}
+
+void CocoaLayerSurface::on_quit_requested() {
+    if (quit_request_cb_) quit_request_cb_();
+    else on_window_close();
+}
+
+void CocoaLayerSurface::on_new_window_requested() {
+    if (new_window_cb_) new_window_cb_();
+}
+
+void CocoaLayerSurface::on_user_activity() {
+    if (activity_cb_) activity_cb_();
+}
+
+void initialize_cocoa_application(AppDelegateCallbacks callbacks) {
+    ensure_cocoa_app_initialized();
+    g_app_callbacks = std::move(callbacks);
+    @autoreleasepool {
+        if (!g_app_delegate) {
+            g_app_delegate = [[GrittyAppDelegate alloc] init];
+        }
+        [NSApp setDelegate:g_app_delegate];
+    }
+}
+
+void shutdown_cocoa_application() {
+    g_app_callbacks = {};
+    @autoreleasepool {
+        if (NSApp && g_app_delegate && [NSApp delegate] == g_app_delegate) {
+            [NSApp setDelegate:nil];
+        }
+        if (g_app_delegate) {
+            [g_app_delegate release];
+            g_app_delegate = nil;
+        }
+    }
 }
 
 void CocoaLayerSurface::set_cursor_shape(MouseCursorShape shape) {

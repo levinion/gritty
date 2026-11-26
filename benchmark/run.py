@@ -235,7 +235,7 @@ def _terminal_command(
 ) -> list[str]:
     command: list[str] = [binary]
     if target == "gritty":
-        command += ["--cols", str(cols), "--rows", str(rows)]
+        command += ["--standalone", "--cols", str(cols), "--rows", str(rows)]
         if config is not None:
             command += ["--config", str(config)]
         command += ["--", *inner]

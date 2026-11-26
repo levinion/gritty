@@ -49,6 +49,7 @@ public:
         scroll_mode_ = enabled ? ScrollMode::Adaptive : ScrollMode::Repaint;
     }
     void set_preedit(std::string_view utf8, size_t sel_start, size_t sel_end);
+    void set_status_banner(std::string_view utf8);
     struct RenderStats {
         size_t scroll_moves{0};
         size_t scroll_skips{0};    // Move was redundant: destinations are fully repainted anyway.
@@ -179,6 +180,15 @@ private:
         util::PixmanRegion* damage_out
     );
 
+    void render_status_banner(
+        const core::TerminalEngine& engine,
+        int cell_w,
+        int cell_h,
+        const FontMetrics& metrics,
+        pixman_image_t* target,
+        util::PixmanRegion* damage_out
+    );
+
     FontEngine& font_engine_;
     RenderConfig config_;
     bool config_changed_{true};
@@ -191,6 +201,10 @@ private:
     int previous_preedit_row_{-1};
     int previous_preedit_start_col_{0};
     int previous_preedit_end_col_{-1};
+    std::string status_banner_text_;
+    int previous_banner_row_{-1};
+    int previous_banner_start_col_{0};
+    int previous_banner_end_col_{-1};
     ScrollMode scroll_mode_{ScrollMode::Adaptive};
     bool glyph_batching_{true};
     pixman_glyph_cache_t* glyph_atlas_{nullptr};

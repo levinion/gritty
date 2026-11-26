@@ -2,9 +2,11 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include "core/terminal_engine.hpp"
 #include "core/vt_parser.hpp"
 #include "render/cpu_renderer.hpp"
@@ -50,6 +52,12 @@ public:
         std::unique_ptr<platform::IEventLoop> loop,
         std::unique_ptr<platform::IClipboard> clipboard
     );
+    TerminalSession(
+        const SessionConfig& config,
+        std::unique_ptr<platform::IWindowSurface> surface,
+        platform::IEventLoop* shared_loop,
+        std::unique_ptr<platform::IClipboard> clipboard
+    );
     ~TerminalSession();
 
     TerminalSession(const TerminalSession&) = delete;
@@ -91,10 +99,16 @@ public:
     void set_present_observer(std::function<void()> cb) { present_observer_ = std::move(cb); }
     // Cmd+click on an OSC 8 link opens it; tests can inject a handler.
     void set_url_open_handler(std::function<void(std::string_view)> cb) { url_open_handler_ = std::move(cb); }
+    // Invoked once when this window closes or its child PTY exits (unless hold_on_exit is set).
+    void set_exit_callback(std::function<void()> cb) { exit_cb_ = std::move(cb); }
+    // Transient bottom overlay pill rendered purely on the CPU.
+    void set_status_banner(std::string_view utf8);
     // Window focus changes feed DECSET 1004 reports to the child.
     void on_window_focus(bool focused);
 
 private:
+    void init_session();
+    void request_exit();
     void update_padding_pixels() noexcept;
     void finish_synchronized_update();
     void render_pending_frame();
@@ -104,7 +118,8 @@ private:
 
     SessionConfig config_;
     std::unique_ptr<platform::IWindowSurface> surface_;
-    std::unique_ptr<platform::IEventLoop> loop_;
+    std::unique_ptr<platform::IEventLoop> owned_loop_;
+    platform::IEventLoop* loop_{nullptr};
     std::unique_ptr<platform::IClipboard> clipboard_;
 
     TerminalEngine engine_;
@@ -122,6 +137,7 @@ private:
     std::string pending_write_;
     size_t write_offset_{0};
     bool watching_write_{false};
+    bool exit_requested_{false};
     bool full_redraw_pending_{false};
     bool parsing_pty_{false};
     bool sync_flush_pending_{false};
@@ -130,6 +146,7 @@ private:
     std::chrono::steady_clock::time_point last_immediate_commit_{};
     std::function<void()> present_observer_;
     std::function<void(std::string_view)> url_open_handler_;
+    std::function<void()> exit_cb_;
 };
 
 } // namespace gritty::core

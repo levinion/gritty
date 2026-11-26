@@ -27,6 +27,16 @@ enum class Osc52Mode : uint8_t {
 // Case-insensitive parser shared by TOML and CLI overrides.
 [[nodiscard]] std::optional<Osc52Mode> parse_osc52_mode(std::string_view value) noexcept;
 
+enum class QuitConfirmation : uint8_t {
+    Always = 0,
+    Needed = 1,
+    Never = 2,
+};
+
+[[nodiscard]] std::optional<QuitConfirmation> parse_quit_confirmation(
+    std::string_view value
+) noexcept;
+
 struct MainConfig {
     std::string shell;
     std::vector<std::string> shell_args;
@@ -77,6 +87,7 @@ struct WindowConfig {
     WindowPadding padding;
     size_t columns{80};
     size_t lines{24};
+    QuitConfirmation confirm_quit{QuitConfirmation::Needed};
 };
 
 // Case-insensitive parser shared by TOML, CLI overrides and tests.

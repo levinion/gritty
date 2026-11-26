@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <thread>
 #include <poll.h>
+#include <map>
+#include "core/quit_confirm.hpp"
 #include "core/terminal_session.hpp"
 #include "config/toml_loader.hpp"
 #include <unistd.h>
@@ -23,9 +25,11 @@ public:
     pixman_image_t* get_back_buffer() override { return blocked ? nullptr : pixels.get(); }
     void set_frame_ready_callback(FrameReadyCallback callback) override { frame_ready = std::move(callback); }
     void set_paste_callback(PasteCallback callback) override { paste = std::move(callback); }
+    void set_close_callback(CloseCallback callback) override { close_cb = std::move(callback); }
     void paste_text(std::string_view text) { if (paste) paste(text); }
     FrameReadyCallback frame_ready;
     PasteCallback paste;
+    CloseCallback close_cb;
     bool blocked{false};
     void present(const util::PixmanRegion& damage) override {
         ++frames;
@@ -60,8 +64,36 @@ public:
         timer_delay = delay;
         timer = std::move(callback);
     }
+    void set_scoped_timer(
+        uintptr_t owner,
+        TimerId id,
+        int delay,
+        std::function<void()> callback
+    ) override {
+        const auto key = std::make_pair(owner, static_cast<uintptr_t>(id));
+        if (!callback || delay <= 0) {
+            scoped_timers.erase(key);
+        } else {
+            scoped_timers[key] = std::move(callback);
+        }
+        set_timer(delay, scoped_timers.count(key) ? scoped_timers[key] : std::function<void()>{});
+    }
+    void post(std::function<void()> callback) override {
+        posted.push_back(std::move(callback));
+    }
+    void drain_posted() {
+        while (!posted.empty()) {
+            auto batch = std::move(posted);
+            posted.clear();
+            for (auto& fn : batch) {
+                if (fn) fn();
+            }
+        }
+    }
     int timer_delay{0};
     std::function<void()> timer;
+    std::map<std::pair<uintptr_t, uintptr_t>, std::function<void()>> scoped_timers;
+    std::vector<std::function<void()>> posted;
     void run() override {}
     void stop() override { stopped = true; }
     void wake() override {}
@@ -776,4 +808,83 @@ TEST_CASE("HiDPI scale change preserves registered fallback fonts and TERM propa
     const auto before_attempts = session.font_engine().face_load_attempt_count();
     session.add_fallback_font(font, "FallbackAlias");
     CHECK(session.font_engine().face_load_attempt_count() == before_attempts);
+}
+
+TEST_CASE("QuitConfirmGuard enforces always, needed, never and 2s confirmation timeout") {
+    using core::QuitAction;
+    using core::QuitConfirmGuard;
+    using config::QuitConfirmation;
+    const auto t0 = QuitConfirmGuard::Clock::now();
+
+    QuitConfirmGuard never;
+    CHECK(never.on_quit_requested(QuitConfirmation::Never, 1, t0) == QuitAction::QuitNow);
+    CHECK(never.on_quit_requested(QuitConfirmation::Never, 3, t0) == QuitAction::QuitNow);
+
+    QuitConfirmGuard needed;
+    CHECK(needed.on_quit_requested(QuitConfirmation::Needed, 1, t0) == QuitAction::QuitNow);
+    CHECK_FALSE(needed.armed());
+    CHECK(needed.on_quit_requested(QuitConfirmation::Needed, 2, t0) == QuitAction::RequestConfirm);
+    CHECK(needed.armed());
+    CHECK(needed.on_quit_requested(QuitConfirmation::Needed, 2, t0 + std::chrono::milliseconds(1999)) ==
+          QuitAction::QuitNow);
+    CHECK_FALSE(needed.armed());
+
+    // After timeout expires, first press arms again.
+    CHECK(needed.on_quit_requested(QuitConfirmation::Needed, 2, t0) == QuitAction::RequestConfirm);
+    CHECK(needed.on_quit_requested(QuitConfirmation::Needed, 2, t0 + std::chrono::milliseconds(2000)) ==
+          QuitAction::RequestConfirm);
+    needed.disarm();
+    CHECK_FALSE(needed.armed());
+
+    QuitConfirmGuard always;
+    CHECK(always.on_quit_requested(QuitConfirmation::Always, 1, t0) == QuitAction::RequestConfirm);
+    CHECK(always.on_quit_requested(QuitConfirmation::Always, 1, t0 + std::chrono::milliseconds(500)) ==
+          QuitAction::QuitNow);
+}
+
+TEST_CASE("Two TerminalSessions share one event loop with isolated exit callbacks and timers") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+
+    TestLoop shared_loop;
+    auto surface1 = std::make_unique<TestSurface>();
+    auto* surf1_ptr = surface1.get();
+    auto surface2 = std::make_unique<TestSurface>();
+    core::SessionConfig cfg;
+    cfg.font_path = font;
+    cfg.cols = 10;
+    cfg.rows = 2;
+    cfg.shell = "/bin/sh";
+    cfg.args = {"-c", "read line"};
+
+    auto s1 = std::make_unique<core::TerminalSession>(cfg, std::move(surface1), &shared_loop, nullptr);
+    auto s2 = std::make_unique<core::TerminalSession>(cfg, std::move(surface2), &shared_loop, nullptr);
+    int exited1 = 0;
+    int exited2 = 0;
+    s1->set_exit_callback([&] {
+        ++exited1;
+        shared_loop.post([&] { s1.reset(); });
+    });
+    s2->set_exit_callback([&] { ++exited2; });
+
+    REQUIRE(s1->start());
+    REQUIRE(s2->start());
+
+    // Arm SyncWatchdog timer on s2 before tearing down s1.
+    s2->engine().set_synchronized_updates(true);
+    shared_loop.set_scoped_timer(reinterpret_cast<uintptr_t>(s2.get()),
+        platform::IEventLoop::TimerId::SyncWatchdog, 16, [] {});
+
+    // Closing s1 invokes only s1's exit callback without stopping shared_loop.
+    REQUIRE(static_cast<bool>(surf1_ptr->close_cb));
+    surf1_ptr->close_cb();
+    CHECK(exited1 == 1);
+    CHECK(s1 != nullptr);
+    shared_loop.drain_posted();
+    CHECK(s1 == nullptr);
+    CHECK_FALSE(shared_loop.stopped);
+    CHECK(shared_loop.scoped_timers.count(std::make_pair(
+        reinterpret_cast<uintptr_t>(s2.get()),
+        static_cast<uintptr_t>(platform::IEventLoop::TimerId::SyncWatchdog))) == 1);
+    CHECK(exited2 == 0);
 }

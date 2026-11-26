@@ -32,8 +32,7 @@ public:
     bool request_frame() override;
     [[nodiscard]] bool supports_frame_pacing() const noexcept override { return true; }
     [[nodiscard]] bool frame_in_flight() const noexcept override { return frame_in_flight_; }
-    // foot-macos commits the transaction and lets the run loop flush it. An
-    // explicit flush is a synchronous round trip; keep it switchable for A/B.
+    // Commit CATransaction and let the run loop flush; explicit flush adds a sync round trip.
     void set_present_flush(bool enabled) noexcept { present_flush_ = enabled; }
     [[nodiscard]] bool present_flush() const noexcept { return present_flush_; }
 
@@ -42,6 +41,7 @@ public:
     [[nodiscard]] double scale() const noexcept override { return scale_; }
 
     void show_window(const std::string& title = "Gritty");
+    void focus_window();
     void set_title(const std::string& title) override;
     void set_transparent(bool transparent) override;
     void set_decorations(WindowDecorations decorations) override;
@@ -74,6 +74,9 @@ public:
     void set_close_callback(CloseCallback cb) override { close_cb_ = std::move(cb); }
     void set_frame_ready_callback(FrameReadyCallback cb) override;
     void set_focus_callback(FocusCallback cb) override { focus_cb_ = std::move(cb); }
+    void set_quit_request_callback(std::function<void()> cb) { quit_request_cb_ = std::move(cb); }
+    void set_new_window_callback(std::function<void()> cb) { new_window_cb_ = std::move(cb); }
+    void set_activity_callback(std::function<void()> cb) { activity_cb_ = std::move(cb); }
     void set_cursor_rect_provider(CursorRectProvider cb) override { cursor_rect_cb_ = std::move(cb); }
     void set_bracketed_paste_provider(BracketedPasteProvider cb) override { bracketed_paste_cb_ = std::move(cb); }
     void set_mouse_reporting_provider(MouseReportingProvider cb) override {
@@ -104,6 +107,9 @@ public:
     void on_frame_tick();
     void on_visibility_changed(bool visible);
     void on_window_focus(bool focused);
+    void on_quit_requested();
+    void on_new_window_requested();
+    void on_user_activity();
 
 private:
     void reallocate_buffer();
@@ -149,9 +155,20 @@ private:
     CloseCallback close_cb_;
     FrameReadyCallback frame_ready_cb_;
     FocusCallback focus_cb_;
+    std::function<void()> quit_request_cb_;
+    std::function<void()> new_window_cb_;
+    std::function<void()> activity_cb_;
     CursorRectProvider cursor_rect_cb_;
     BracketedPasteProvider bracketed_paste_cb_;
     MouseReportingProvider mouse_reporting_cb_;
 };
+
+struct AppDelegateCallbacks {
+    std::function<void()> on_reopen_no_windows;
+    std::function<void()> on_quit_requested;
+};
+
+void initialize_cocoa_application(AppDelegateCallbacks callbacks);
+void shutdown_cocoa_application();
 
 } // namespace gritty::platform::macos

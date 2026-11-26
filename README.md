@@ -122,7 +122,9 @@ Common CLI flags (`gritty --help` for the full list):
 - `-o <key=value>` — override any config key (repeatable, e.g. `-o window.padding=8`)
 - `--config-file <path>` (`-c`) — use a specific TOML file
 - `--cols <n>`, `--rows <n>` — initial grid size (default `80×24`)
-- `--working-directory <dir>` (`--cwd`), `-T <title>`, `--class <id>`, `--hold`
+- `--working-directory <dir>` (`--cwd`), `-T <title>`, `--class <id>`, `--hold`, `--standalone`
+
+Gritty runs under a single Dock icon/instance across launches while keeping every window independent: `Cmd+N` or launching `gritty` / `open -n -a Gritty` opens a new independent window, `Cmd+W` closes the focused window, closing the last window exits the instance cleanly, and `window.confirm_quit` (`"needed"` by default, `"always"`, or `"never"`) controls double-`Cmd+Q` quit confirmation.
 
 ## Benchmarks
 

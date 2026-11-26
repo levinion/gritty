@@ -20,26 +20,50 @@ TerminalSession::TerminalSession(
 )
     : config_(config),
       surface_(std::move(surface)),
-      loop_(std::move(loop)),
+      owned_loop_(std::move(loop)),
+      loop_(owned_loop_.get()),
       clipboard_(std::move(clipboard)),
       engine_(config.cols, config.rows),
       parser_(engine_),
       font_engine_(config.antialias),
       renderer_(font_engine_, config.render_config) {
-    engine_.configure_palette(config.palette);
-    engine_.configure_initial_colors(config.render_config.default_fg,
-                                     config.render_config.default_bg,
-                                     config.render_config.cursor_color);
+    init_session();
+}
+
+TerminalSession::TerminalSession(
+    const SessionConfig& config,
+    std::unique_ptr<platform::IWindowSurface> surface,
+    platform::IEventLoop* shared_loop,
+    std::unique_ptr<platform::IClipboard> clipboard
+)
+    : config_(config),
+      surface_(std::move(surface)),
+      loop_(shared_loop),
+      clipboard_(std::move(clipboard)),
+      engine_(config.cols, config.rows),
+      parser_(engine_),
+      font_engine_(config.antialias),
+      renderer_(font_engine_, config.render_config) {
+    init_session();
+}
+
+void TerminalSession::init_session() {
+    engine_.configure_palette(config_.palette);
+    engine_.configure_initial_colors(config_.render_config.default_fg,
+                                     config_.render_config.default_bg,
+                                     config_.render_config.cursor_color);
     parser_.set_sync_handler([this](bool enabled) {
         if (enabled) {
-            if (loop_) loop_->add_timer(platform::IEventLoop::TimerId::SyncWatchdog,
-                                       kSyncTimeoutMs, [this] { finish_synchronized_update(); });
+            if (loop_) loop_->set_scoped_timer(
+                reinterpret_cast<uintptr_t>(this),
+                platform::IEventLoop::TimerId::SyncWatchdog,
+                kSyncTimeoutMs, [this] { finish_synchronized_update(); });
         } else {
             finish_synchronized_update();
         }
     });
-    parser_.set_default_colors(config.render_config.default_fg, config.render_config.default_bg,
-                               config.render_config.cursor_color);
+    parser_.set_default_colors(config_.render_config.default_fg, config_.render_config.default_bg,
+                               config_.render_config.cursor_color);
     parser_.set_default_color_handler([this](uint32_t foreground, uint32_t background) {
         auto colors = renderer_.config();
         colors.default_fg = foreground;
@@ -65,7 +89,7 @@ TerminalSession::TerminalSession(
     parser_.set_clipboard_handler([this](std::string_view text) {
         if (clipboard_) clipboard_->copy_text(text);
     });
-    parser_.set_osc52_mode(config.osc52);
+    parser_.set_osc52_mode(config_.osc52);
     parser_.set_clipboard_read_handler([this] {
         return clipboard_ ? clipboard_->paste_text() : std::string{};
     });
@@ -163,8 +187,9 @@ TerminalSession::TerminalSession(
 
 TerminalSession::~TerminalSession() {
     if (loop_) {
-        loop_->cancel_timer(platform::IEventLoop::TimerId::SyncWatchdog);
-        loop_->cancel_timer(platform::IEventLoop::TimerId::FrameCoalesce);
+        const auto owner = reinterpret_cast<uintptr_t>(this);
+        loop_->cancel_scoped_timer(owner, platform::IEventLoop::TimerId::SyncWatchdog);
+        loop_->cancel_scoped_timer(owner, platform::IEventLoop::TimerId::FrameCoalesce);
     }
     if (surface_) {
         surface_->set_key_callback({});
@@ -242,7 +267,7 @@ bool TerminalSession::start() {
             handle_surface_resize(w, h, s);
         });
         surface_->set_close_callback([this]() {
-            if (loop_) loop_->stop();
+            request_exit();
         });
         surface_->set_frame_ready_callback([this] { render_pending_frame(); });
         surface_->set_focus_callback([this](bool focused) { on_window_focus(focused); });
@@ -301,8 +326,8 @@ void TerminalSession::flush_pty_write() {
         } else {
             pending_write_.clear();
             write_offset_ = 0;
-            if (loop_) loop_->stop();
-            break;
+            request_exit();
+            return;
         }
     }
     if (write_offset_ == pending_write_.size()) {
@@ -316,6 +341,7 @@ void TerminalSession::flush_pty_write() {
 void TerminalSession::handle_pty_read() {
     bool got_data = false;
     bool hit_budget = false;
+    bool should_exit = false;
     size_t total_read = 0;
     constexpr size_t kByteBudget = 1024 * 1024;
     constexpr size_t kTimingThreshold = 64 * 1024;
@@ -354,7 +380,9 @@ void TerminalSession::handle_pty_read() {
                 // Stop polling the closed PTY but keep the event loop (and the
                 // window) alive until the user closes it.
                 if (loop_ && pty_.master_fd() >= 0) loop_->remove_fd(pty_.master_fd());
-            } else if (loop_) loop_->stop();
+            } else {
+                should_exit = true;
+            }
             break;
         } else {
             if (errno == EINTR) continue;
@@ -362,7 +390,9 @@ void TerminalSession::handle_pty_read() {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 if (config_.hold_on_exit) {
                     if (loop_ && pty_.master_fd() >= 0) loop_->remove_fd(pty_.master_fd());
-                } else if (loop_) loop_->stop();
+                } else {
+                    should_exit = true;
+                }
             }
             break;
         }
@@ -375,7 +405,8 @@ void TerminalSession::handle_pty_read() {
         sync_flush_pending_ = false;
         render_frame(false);
     } else if (got_data) {
-        if (coalesce_frames_ && loop_ && surface_ && surface_->supports_frame_pacing()) {
+        if (!should_exit && coalesce_frames_ && loop_ && surface_ && surface_->supports_frame_pacing()) {
+            const auto owner = reinterpret_cast<uintptr_t>(this);
             if (surface_->frame_in_flight()) {
                 // Keep parsing; the frame clock will render the accumulated state.
                 render_frame(false);
@@ -384,7 +415,7 @@ void TerminalSession::handle_pty_read() {
                 if (now - last_immediate_commit_ >= std::chrono::milliseconds(2)) {
                     // Idle keystroke/cursor reply: bypass the coalescing timer.
                     if (coalesce_pending_) {
-                        loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 0, {});
+                        loop_->cancel_scoped_timer(owner, platform::IEventLoop::TimerId::FrameCoalesce);
                         coalesce_pending_ = false;
                     }
                     render_pending_frame();
@@ -393,14 +424,14 @@ void TerminalSession::handle_pty_read() {
                     // A burst of tiny writes must not submit one surface per
                     // packet; use a 2 ms coalescing window.
                     coalesce_pending_ = true;
-                    loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 2, [this] {
+                    loop_->set_scoped_timer(owner, platform::IEventLoop::TimerId::FrameCoalesce, 2, [this] {
                         coalesce_pending_ = false;
                         render_frame(false);
                     });
                 }
             } else if (!coalesce_pending_) {
                 coalesce_pending_ = true;
-                loop_->set_timer(platform::IEventLoop::TimerId::FrameCoalesce, 2, [this] {
+                loop_->set_scoped_timer(owner, platform::IEventLoop::TimerId::FrameCoalesce, 2, [this] {
                     coalesce_pending_ = false;
                     render_frame(false);
                 });
@@ -409,6 +440,22 @@ void TerminalSession::handle_pty_read() {
             render_frame(false);
         }
     }
+    if (should_exit) request_exit();
+}
+
+void TerminalSession::request_exit() {
+    if (exit_requested_) return;
+    exit_requested_ = true;
+    if (loop_ && pty_.master_fd() >= 0) {
+        loop_->remove_fd(pty_.master_fd());
+    }
+    if (exit_cb_) exit_cb_();
+    else if (loop_) loop_->stop();
+}
+
+void TerminalSession::set_status_banner(std::string_view utf8) {
+    renderer_.set_status_banner(utf8);
+    render_frame(false);
 }
 
 void TerminalSession::handle_preedit(std::string_view utf8, size_t sel_start, size_t sel_end) {
@@ -502,7 +549,9 @@ void TerminalSession::update_padding_pixels() noexcept {
 }
 
 void TerminalSession::finish_synchronized_update() {
-    if (loop_) loop_->cancel_timer(platform::IEventLoop::TimerId::SyncWatchdog);
+    if (loop_) loop_->cancel_scoped_timer(
+        reinterpret_cast<uintptr_t>(this),
+        platform::IEventLoop::TimerId::SyncWatchdog);
     // ESU, RIS and the safety timeout all converge here: release the guard and
     // commit the accumulated damage atomically.
     engine_.set_synchronized_updates(false);

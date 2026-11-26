@@ -113,6 +113,16 @@ void CpuRenderer::render(
         if (p_end + 1 < grid.cols() && prow.cells[p_end].attrs.width == 2)
             prow.mark_dirty(p_end + 1);
     }
+    if (previous_banner_row_ >= 0 && previous_banner_row_ < grid.rows() && grid.cols() > 0) {
+        const int b_start = std::clamp(previous_banner_start_col_, 0, grid.cols() - 1);
+        const int b_end = std::clamp(previous_banner_end_col_, b_start, grid.cols() - 1);
+        auto& brow = grid.row(previous_banner_row_);
+        brow.mark_dirty_range(b_start, b_end);
+        if (b_start > 0 && brow.cells[b_start].attrs.width == 0)
+            brow.mark_dirty(b_start - 1);
+        if (b_end + 1 < grid.cols() && brow.cells[b_end].attrs.width == 2)
+            brow.mark_dirty(b_end + 1);
+    }
     const bool has_preedit = !preedit_text_.empty();
     const bool draw_cursor = !has_preedit && config_.render_cursor && engine.cursor_visible();
     if (draw_cursor) damage_cursor(engine.cursor_col(), engine.cursor_row());
@@ -291,6 +301,13 @@ void CpuRenderer::render(
             damage_out->union_rect(cursor_col * cell_w, cursor_row * cell_h, cursor_span_w, cell_h);
         }
     }
+
+    if (!status_banner_text_.empty()) {
+        render_status_banner(engine, cell_w, cell_h, metrics, target, damage_out);
+    } else {
+        previous_banner_row_ = -1;
+        previous_banner_end_col_ = -1;
+    }
 }
 
 void CpuRenderer::apply_pending_scrolls(
@@ -321,7 +338,8 @@ void CpuRenderer::apply_pending_scrolls(
     // Pixel memmove cannot move Kitty image layers consistently: an image's
     // bitmap is not part of the grid rows and virtual placeholders are scaled
     // from their full rectangle. Repaint instead of risking torn image layers.
-    if (!preedit_text_.empty() || previous_preedit_row_ >= 0) {
+    if (!preedit_text_.empty() || previous_preedit_row_ >= 0 ||
+        !status_banner_text_.empty() || previous_banner_row_ >= 0) {
         repaint_all();
         return;
     }
@@ -1306,6 +1324,109 @@ void CpuRenderer::render_preedit(
     previous_preedit_row_ = row;
     previous_preedit_start_col_ = start_col;
     previous_preedit_end_col_ = start_col + total_cols - 1;
+    if (damage_out) damage_out->union_rect(bar_x, bar_y, bar_w, bar_h);
+}
+
+void CpuRenderer::set_status_banner(std::string_view utf8) {
+    status_banner_text_.assign(utf8);
+}
+
+void CpuRenderer::render_status_banner(
+    const core::TerminalEngine& engine,
+    int cell_w,
+    int cell_h,
+    const FontMetrics& metrics,
+    pixman_image_t* target,
+    util::PixmanRegion* damage_out
+) {
+    const int cols = engine.grid().cols();
+    const int rows = engine.grid().rows();
+    if (cols <= 0 || rows <= 0 || cell_w <= 0 || cell_h <= 0 || status_banner_text_.empty()) {
+        previous_banner_row_ = -1;
+        previous_banner_end_col_ = -1;
+        return;
+    }
+
+    struct BannerGlyph {
+        char32_t cp;
+        int width;
+        int col_offset;
+    };
+    std::vector<BannerGlyph> glyphs;
+    glyphs.reserve(status_banner_text_.size());
+    int total_cols = 0;
+    size_t offset = 0;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(status_banner_text_.data());
+    while (offset < status_banner_text_.size() && total_cols < cols) {
+        utf8proc_int32_t cp = 0;
+        const utf8proc_ssize_t n = utf8proc_iterate(
+            bytes + offset, static_cast<utf8proc_ssize_t>(status_banner_text_.size() - offset), &cp);
+        if (n <= 0) {
+            ++offset;
+            continue;
+        }
+        offset += static_cast<size_t>(n);
+        const int w = utf8proc_charwidth(cp);
+        if (w <= 0) continue;
+        const int span = std::min(w, cols - total_cols);
+        glyphs.push_back({static_cast<char32_t>(cp), span, total_cols});
+        total_cols += span;
+    }
+    if (total_cols <= 0) {
+        previous_banner_row_ = -1;
+        previous_banner_end_col_ = -1;
+        return;
+    }
+
+    const int row = rows - 1;
+    const int start_col = std::max(0, (cols - total_cols) / 2);
+    const int target_w = pixman_image_get_width(target);
+    const int target_h = pixman_image_get_height(target);
+    const int bar_x = start_col * cell_w;
+    const int bar_y = row * cell_h;
+    const int bar_w = std::min(total_cols * cell_w, std::max(0, target_w - bar_x));
+    const int bar_h = std::min(cell_h, std::max(0, target_h - bar_y));
+    if (bar_w <= 0 || bar_h <= 0) return;
+
+    const uint32_t bg_argb = config_.default_fg | 0xff000000u;
+    const uint32_t fg_argb = config_.default_bg | 0xff000000u;
+    const pixman_color_t bg_pcol = to_pixman_color(bg_argb);
+    const pixman_color_t fg_pcol = to_pixman_color(fg_argb);
+
+    const pixman_rectangle16_t bar_rect{
+        static_cast<int16_t>(bar_x), static_cast<int16_t>(bar_y),
+        static_cast<uint16_t>(bar_w), static_cast<uint16_t>(bar_h)
+    };
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &bg_pcol, 1, &bar_rect);
+
+    if (bar_w >= 2 && bar_h >= 2) {
+        const pixman_rectangle16_t borders[4] = {
+            {static_cast<int16_t>(bar_x), static_cast<int16_t>(bar_y),
+             static_cast<uint16_t>(bar_w), 1},
+            {static_cast<int16_t>(bar_x), static_cast<int16_t>(bar_y + bar_h - 1),
+             static_cast<uint16_t>(bar_w), 1},
+            {static_cast<int16_t>(bar_x), static_cast<int16_t>(bar_y),
+             1, static_cast<uint16_t>(bar_h)},
+            {static_cast<int16_t>(bar_x + bar_w - 1), static_cast<int16_t>(bar_y),
+             1, static_cast<uint16_t>(bar_h)},
+        };
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &fg_pcol, 4, borders);
+    }
+
+    pixman_image_t* solid = get_solid_fill(fg_argb);
+    for (const auto& g : glyphs) {
+        if (g.cp == ' ') continue;
+        const CachedGlyph* glyph = font_engine_.get_glyph(g.cp, false, false);
+        if (glyph && glyph->mask.valid() && glyph->width > 0 && glyph->height > 0) {
+            const int gx0 = (start_col + g.col_offset) * cell_w;
+            composite_cached_glyph(target, solid, *glyph,
+                gx0 + glyph->bearing_x, bar_y + metrics.ascent - glyph->bearing_y);
+        }
+    }
+
+    previous_banner_row_ = row;
+    previous_banner_start_col_ = start_col;
+    previous_banner_end_col_ = start_col + total_cols - 1;
     if (damage_out) damage_out->union_rect(bar_x, bar_y, bar_w, bar_h);
 }
 

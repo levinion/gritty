@@ -1,5 +1,6 @@
 platform_sources = files(
   'platform/posix_pty.cpp',
+  'platform/single_instance.cpp',
 )
 
 if host_os == 'darwin'

@@ -118,6 +118,23 @@ std::optional<Osc52Mode> parse_osc52_mode(std::string_view value) noexcept {
     return std::nullopt;
 }
 
+std::optional<QuitConfirmation> parse_quit_confirmation(std::string_view value) noexcept {
+    const auto text = trim(value);
+    auto equals = [text](std::string_view expected) noexcept {
+        if (text.size() != expected.size()) return false;
+        for (size_t i = 0; i < text.size(); ++i) {
+            const char c = text[i];
+            const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+            if (lowered != expected[i]) return false;
+        }
+        return true;
+    };
+    if (equals("always")) return QuitConfirmation::Always;
+    if (equals("needed")) return QuitConfirmation::Needed;
+    if (equals("never")) return QuitConfirmation::Never;
+    return std::nullopt;
+}
+
 void MainConfig::set_env(std::string_view key, std::string_view value) {
     if (key.empty()) return;
     const std::string entry = std::string(key) + "=" + std::string(value);
@@ -321,6 +338,12 @@ std::expected<void, std::string> AppConfig::apply_override(
         const auto decorations = parse_window_decorations(value);
         if (!decorations) return invalid(key, value);
         window.decorations = *decorations;
+        return {};
+    }
+    if (lowered == "window.confirm_quit" || lowered == "general.confirm_quit") {
+        const auto confirm = parse_quit_confirmation(value);
+        if (!confirm) return invalid(key, value);
+        window.confirm_quit = *confirm;
         return {};
     }
     if (lowered == "window.padding" || lowered == "window.padding.x" ||

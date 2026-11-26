@@ -104,19 +104,40 @@ void KqueueRunLoop::set_timer(int delay_ms, std::function<void()> callback) {
 }
 
 void KqueueRunLoop::set_timer(TimerId id, int delay_ms, std::function<void()> callback) {
-    const auto key = static_cast<uintptr_t>(id);
+    set_scoped_timer(0, id, delay_ms, std::move(callback));
+}
+
+void KqueueRunLoop::set_scoped_timer(
+    uintptr_t owner,
+    TimerId id,
+    int delay_ms,
+    std::function<void()> callback
+) {
+    const ScopedTimerKey key{owner, static_cast<uintptr_t>(id)};
     struct kevent event{};
     if (!callback || delay_ms <= 0) {
-        timers_.erase(key);
+        auto id_it = scoped_timer_idents_.find(key);
+        if (id_it == scoped_timer_idents_.end()) return;
+        const uintptr_t ident = id_it->second;
+        scoped_timer_idents_.erase(id_it);
+        timers_.erase(ident);
         if (kq_fd_.valid()) {
-            EV_SET(&event, key, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
+            EV_SET(&event, ident, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
             ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
         }
         return;
     }
     if (!kq_fd_.valid()) return;
 
-    timers_.insert_or_assign(key, std::move(callback));
+    auto id_it = scoped_timer_idents_.find(key);
+    uintptr_t ident = 0;
+    if (id_it != scoped_timer_idents_.end()) {
+        ident = id_it->second;
+    } else {
+        ident = next_timer_ident_++;
+        scoped_timer_idents_.emplace(key, ident);
+    }
+    timers_.insert_or_assign(ident, TimerEntry{key, std::move(callback)});
     uint16_t fflags = 0;
     if (id == TimerId::FrameCoalesce) {
 #ifdef NOTE_CRITICAL
@@ -126,8 +147,24 @@ void KqueueRunLoop::set_timer(TimerId id, int delay_ms, std::function<void()> ca
     }
     // EV_ADD updates an existing kevent with the same ident/filter; no separate
     // EV_DELETE syscall is needed when replacing a pending one-shot timer.
-    EV_SET(&event, key, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, fflags, delay_ms, nullptr);
+    EV_SET(&event, ident, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, fflags, delay_ms, nullptr);
     ::kevent(kq_fd_.get(), &event, 1, nullptr, 0, nullptr);
+}
+
+void KqueueRunLoop::post(std::function<void()> callback) {
+    if (!callback) return;
+    posted_.push_back(std::move(callback));
+    wake();
+}
+
+void KqueueRunLoop::drain_posted() {
+    while (!posted_.empty()) {
+        std::vector<std::function<void()>> batch;
+        batch.swap(posted_);
+        for (auto& fn : batch) {
+            if (fn) fn();
+        }
+    }
 }
 
 void KqueueRunLoop::wake() {
@@ -185,15 +222,19 @@ int KqueueRunLoop::poll_once(int timeout_ms) {
 
     struct kevent evs[32];
     int n = ::kevent(kq_fd_.get(), nullptr, 0, evs, 32, pts);
-    if (n <= 0) return n;
+    if (n <= 0) {
+        drain_posted();
+        return n;
+    }
 
     for (int i = 0; i < n; ++i) {
         if (evs[i].filter == EVFILT_TIMER) {
-            const auto key = static_cast<uintptr_t>(evs[i].ident);
-            auto it = timers_.find(key);
+            const auto ident = static_cast<uintptr_t>(evs[i].ident);
+            auto it = timers_.find(ident);
             if (it == timers_.end()) continue;
-            // Remove before invoking: a callback may reschedule the same id.
-            auto callback = std::move(it->second);
+            // Remove before invoking: a callback may reschedule the same key.
+            scoped_timer_idents_.erase(it->second.key);
+            auto callback = std::move(it->second.callback);
             timers_.erase(it);
             if (callback) callback();
             continue;
@@ -218,6 +259,7 @@ int KqueueRunLoop::poll_once(int timeout_ms) {
         }
     }
 
+    drain_posted();
     return n;
 }
 

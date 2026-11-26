@@ -1438,3 +1438,48 @@ TEST_CASE("CpuRenderer draws inline IME preedit and cleanly restores underlying 
         REQUIRE(target.data()[i] == baseline.data()[i]);
     }
 }
+
+TEST_CASE("CpuRenderer draws bottom status banner and restores underlying cells on clear") {
+    const auto path = find_test_font();
+    if (path.empty()) return;
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(path, 12.0));
+    TerminalEngine engine(40, 4);
+    engine.set_cursor_visible(false);
+    engine.set_cursor_row(3);
+    engine.print_ascii_run("bottom row text under the banner");
+
+    const int cw = fonts.metrics().cell_width, ch = fonts.metrics().cell_height;
+    gritty::util::PixmanImage baseline(pixman_image_create_bits(PIXMAN_a8r8g8b8, 40 * cw, 4 * ch, nullptr, 0));
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 40 * cw, 4 * ch, nullptr, 0));
+    CpuRenderer ref_renderer(fonts);
+    CpuRenderer renderer(fonts);
+    ref_renderer.render(engine, baseline.get(), nullptr, true);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    gritty::util::PixmanRegion damage;
+    renderer.set_status_banner(" Press Cmd+Q again to quit (2 windows) ");
+    renderer.render(engine, target.get(), &damage, false);
+    CHECK_FALSE(damage.empty());
+    CHECK(damage.extents().y1 >= 3 * ch);
+    bool differed = false;
+    for (int y = 3 * ch; y < 4 * ch; ++y) {
+        const auto* a = target.data() + y * (target.stride() / 4);
+        const auto* b = baseline.data() + y * (baseline.stride() / 4);
+        for (int x = 0; x < 40 * cw; ++x) {
+            if (a[x] != b[x]) {
+                differed = true;
+                break;
+            }
+        }
+        if (differed) break;
+    }
+    CHECK(differed);
+
+    renderer.set_status_banner("");
+    renderer.render(engine, target.get(), &damage, false);
+    CHECK_FALSE(damage.empty());
+    for (int i = 0; i < 4 * ch * (target.stride() / 4); ++i) {
+        REQUIRE(target.data()[i] == baseline.data()[i]);
+    }
+}
