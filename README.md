@@ -93,21 +93,26 @@ Gritty looks for a config file at `--config-file` (or `-c`), then `$XDG_CONFIG_H
 Here is a minimal `~/.config/gritty/config.toml` (see [examples/config.toml](examples/config.toml) for all keys):
 
 ```toml
-[main]
-osc52 = "copy-only" # disabled | copy-only | paste-only | enabled
+[terminal]
+osc52 = "OnlyCopy" # Disabled | OnlyCopy | OnlyPaste | CopyPaste
+
+# Optional explicit shell:
+# [terminal.shell]
+# program = "/bin/zsh"
+# args = ["-l"]
 
 [font]
-family = "Menlo"
+normal = { family = "Menlo" }
 size = 11.25
 dpi = 72              # 72 on macOS to match CoreText; 96 on Linux
 antialias = "grayscale" # grayscale | subpixel | none
 
 [window]
-decorations = "full" # full | none | transparent | buttonless
+decorations = "Full" # Full | None | Transparent | Buttonless
 padding = { x = 6, y = 4 }
 
 [platform.macos]
-font = { family = "JetBrainsMono Nerd Font", size = 12.0 }
+font = { normal = { family = "JetBrainsMono Nerd Font" }, size = 12.0 }
 ```
 
 Common CLI flags (`gritty --help` for the full list):

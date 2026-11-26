@@ -2,7 +2,6 @@
 #include "platform/macos/cocoa_view.hpp"
 #include "platform/macos/application_icon.hpp"
 #include "platform/macos/clipboard.hpp"
-#include <utf8proc.h>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UserNotifications/UserNotifications.h>
@@ -124,6 +123,13 @@ void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
 
 void CocoaLayerSurface::show_window(const std::string& title) {
     @autoreleasepool {
+        // Disable macOS accent press-and-hold menu so holding keys repeats cleanly
+        // (matching terminal emulators) without popping up a character picker.
+        NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+        [defaults registerDefaults:@{@"ApplePressAndHoldEnabled": @NO}];
+        if ([defaults boolForKey:@"ApplePressAndHoldEnabled"]) {
+            [defaults setBool:NO forKey:@"ApplePressAndHoldEnabled"];
+        }
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
@@ -256,27 +262,11 @@ void CocoaLayerSurface::on_key_event(const input::KeyEvent& ev) {
 
 void CocoaLayerSurface::commit_text(std::string_view utf8) {
     if (utf8.empty()) return;
-    size_t characters = 0;
-    std::string_view rest = utf8;
-    while (!rest.empty()) {
-        utf8proc_int32_t cp = 0;
-        const auto n = utf8proc_iterate(reinterpret_cast<const uint8_t*>(rest.data()), rest.size(), &cp);
-        if (n <= 0) break;
-        ++characters;
-        rest.remove_prefix(n);
-    }
-    if (characters > 1 && input_wants_bracketed_paste()) {
-        std::string wrapped = "\x1b[200~";
-        wrapped.append(utf8);
-        constexpr std::string_view end_marker = "\x1b[201~";
-        for (size_t at = 6; (at = wrapped.find(end_marker, at)) != std::string::npos;) {
-            wrapped.erase(at, end_marker.size());
-        }
-        wrapped += end_marker;
-        if (text_commit_cb_) text_commit_cb_(wrapped);
-        return;
-    }
     if (text_commit_cb_) text_commit_cb_(utf8);
+}
+
+void CocoaLayerSurface::on_preedit(std::string_view utf8, size_t sel_start, size_t sel_end) {
+    if (preedit_cb_) preedit_cb_(utf8, sel_start, sel_end);
 }
 
 void CocoaLayerSurface::paste_from_pasteboard() {

@@ -1,5 +1,6 @@
 #include "render/cpu_renderer.hpp"
 #include "core/kitty_placeholder.hpp"
+#include <utf8proc.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -102,7 +103,18 @@ void CpuRenderer::render(
             grid.row(row).mark_dirty(col + 1);
     };
     damage_cursor(previous_cursor_col_, previous_cursor_row_);
-    const bool draw_cursor = config_.render_cursor && engine.cursor_visible();
+    if (previous_preedit_row_ >= 0 && previous_preedit_row_ < grid.rows() && grid.cols() > 0) {
+        const int p_start = std::clamp(previous_preedit_start_col_, 0, grid.cols() - 1);
+        const int p_end = std::clamp(previous_preedit_end_col_, p_start, grid.cols() - 1);
+        auto& prow = grid.row(previous_preedit_row_);
+        prow.mark_dirty_range(p_start, p_end);
+        if (p_start > 0 && prow.cells[p_start].attrs.width == 0)
+            prow.mark_dirty(p_start - 1);
+        if (p_end + 1 < grid.cols() && prow.cells[p_end].attrs.width == 2)
+            prow.mark_dirty(p_end + 1);
+    }
+    const bool has_preedit = !preedit_text_.empty();
+    const bool draw_cursor = !has_preedit && config_.render_cursor && engine.cursor_visible();
     if (draw_cursor) damage_cursor(engine.cursor_col(), engine.cursor_row());
 
     if (full_redraw) {
@@ -256,6 +268,13 @@ void CpuRenderer::render(
     draw_images(engine, target, cell_w, cell_h, false, -1, damage_out, placeholder_clip.get());
     draw_placeholders(engine, target, false, placeholder_clip.get(), cell_w, cell_h, metrics, damage_out);
 
+    if (has_preedit) {
+        render_preedit(engine, cell_w, cell_h, metrics, target, damage_out);
+    } else {
+        previous_preedit_row_ = -1;
+        previous_preedit_end_col_ = -1;
+    }
+
     previous_cursor_col_ = draw_cursor ? engine.cursor_col() : -1;
     previous_cursor_row_ = draw_cursor ? engine.cursor_row() : -1;
     if (draw_cursor) {
@@ -302,6 +321,10 @@ void CpuRenderer::apply_pending_scrolls(
     // Pixel memmove cannot move Kitty image layers consistently: an image's
     // bitmap is not part of the grid rows and virtual placeholders are scaled
     // from their full rectangle. Repaint instead of risking torn image layers.
+    if (!preedit_text_.empty() || previous_preedit_row_ >= 0) {
+        repaint_all();
+        return;
+    }
     if (!engine.images().empty() || !engine.kitty_graphics().virtual_placements().empty()) {
         bool intersects = !engine.kitty_graphics().virtual_placements().empty();
         for (const auto& image : engine.images()) {
@@ -1160,6 +1183,130 @@ void CpuRenderer::render_cell_foreground(
         pixman_rectangle16_t r = {static_cast<int16_t>(px), static_cast<int16_t>(strike_y), static_cast<uint16_t>(span_w), static_cast<uint16_t>(strike_h)};
         pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &fg_pcol, 1, &r);
     }
+}
+
+void CpuRenderer::set_preedit(std::string_view utf8, size_t sel_start, size_t sel_end) {
+    preedit_text_.assign(utf8);
+    preedit_sel_start_ = std::min(sel_start, preedit_text_.size());
+    preedit_sel_end_ = std::clamp(sel_end, preedit_sel_start_, preedit_text_.size());
+}
+
+void CpuRenderer::render_preedit(
+    const core::TerminalEngine& engine,
+    int cell_w,
+    int cell_h,
+    const FontMetrics& metrics,
+    pixman_image_t* target,
+    util::PixmanRegion* damage_out
+) {
+    const int cols = engine.grid().cols();
+    const int rows = engine.grid().rows();
+    if (cols <= 0 || rows <= 0 || cell_w <= 0 || cell_h <= 0 || preedit_text_.empty()) {
+        previous_preedit_row_ = -1;
+        previous_preedit_end_col_ = -1;
+        return;
+    }
+
+    struct PreeditGlyph {
+        char32_t cp;
+        int width;
+        int col_offset;
+        bool selected;
+    };
+    std::vector<PreeditGlyph> glyphs;
+    glyphs.reserve(preedit_text_.size());
+    int total_cols = 0;
+    int caret_rel_col = 0;
+    size_t offset = 0;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(preedit_text_.data());
+    while (offset < preedit_text_.size() && total_cols < cols) {
+        utf8proc_int32_t cp = 0;
+        const utf8proc_ssize_t n = utf8proc_iterate(
+            bytes + offset, static_cast<utf8proc_ssize_t>(preedit_text_.size() - offset), &cp);
+        if (n <= 0) {
+            ++offset;
+            continue;
+        }
+        const size_t char_start = offset;
+        offset += static_cast<size_t>(n);
+        if (char_start < preedit_sel_start_) caret_rel_col = total_cols;
+        const int w = utf8proc_charwidth(cp);
+        if (w <= 0) continue;
+        const int span = std::min(w, cols - total_cols);
+        const bool selected = char_start >= preedit_sel_start_ && char_start < preedit_sel_end_;
+        glyphs.push_back({static_cast<char32_t>(cp), span, total_cols, selected});
+        total_cols += span;
+        if (offset <= preedit_sel_start_) caret_rel_col = total_cols;
+    }
+    if (total_cols <= 0) {
+        previous_preedit_row_ = -1;
+        previous_preedit_end_col_ = -1;
+        return;
+    }
+
+    const int row = std::clamp(engine.cursor_row(), 0, rows - 1);
+    const int start_col = std::clamp(engine.cursor_col(), 0, std::max(0, cols - total_cols));
+    const int target_w = pixman_image_get_width(target);
+    const int target_h = pixman_image_get_height(target);
+    const int bar_x = start_col * cell_w;
+    const int bar_y = row * cell_h;
+    const int bar_w = std::min(total_cols * cell_w, std::max(0, target_w - bar_x));
+    const int bar_h = std::min(cell_h, std::max(0, target_h - bar_y));
+    if (bar_w <= 0 || bar_h <= 0) return;
+
+    const uint32_t bg_argb = config_.default_bg | 0xff000000u;
+    const uint32_t fg_argb = config_.default_fg | 0xff000000u;
+    const pixman_color_t bg_pcol = to_pixman_color(bg_argb);
+    const pixman_color_t fg_pcol = to_pixman_color(fg_argb);
+
+    const pixman_rectangle16_t bar_rect{
+        static_cast<int16_t>(bar_x), static_cast<int16_t>(bar_y),
+        static_cast<uint16_t>(bar_w), static_cast<uint16_t>(bar_h)
+    };
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &bg_pcol, 1, &bar_rect);
+
+    for (const auto& g : glyphs) {
+        const int gx0 = (start_col + g.col_offset) * cell_w;
+        const int gw = g.width * cell_w;
+        if (g.selected && gx0 < target_w) {
+            const pixman_rectangle16_t sel_rect{
+                static_cast<int16_t>(gx0), static_cast<int16_t>(bar_y),
+                static_cast<uint16_t>(std::min(gw, target_w - gx0)), static_cast<uint16_t>(bar_h)
+            };
+            pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &fg_pcol, 1, &sel_rect);
+        }
+        const CachedGlyph* glyph = font_engine_.get_glyph(g.cp, false, false);
+        if (glyph && glyph->mask.valid() && glyph->width > 0 && glyph->height > 0) {
+            pixman_image_t* solid = get_solid_fill(g.selected ? bg_argb : fg_argb);
+            composite_cached_glyph(target, solid, *glyph,
+                gx0 + glyph->bearing_x, bar_y + metrics.ascent - glyph->bearing_y);
+        }
+    }
+
+    const int under_h = std::max(1, metrics.underline_thickness);
+    const int under_y = std::min(bar_y + bar_h - under_h, bar_y + metrics.ascent + metrics.underline_pos);
+    const pixman_rectangle16_t under_rect{
+        static_cast<int16_t>(bar_x), static_cast<int16_t>(std::max(bar_y, under_y)),
+        static_cast<uint16_t>(bar_w), static_cast<uint16_t>(under_h)
+    };
+    pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &fg_pcol, 1, &under_rect);
+
+    if (preedit_sel_start_ == preedit_sel_end_ && bar_w >= 2) {
+        const int caret_w = std::max(2, cell_w / 5);
+        const int max_caret_x = bar_x + bar_w - caret_w;
+        const int caret_x = std::clamp((start_col + caret_rel_col) * cell_w, bar_x, std::max(bar_x, max_caret_x));
+        const pixman_color_t caret_pcol = to_pixman_color(config_.cursor_color | 0xff000000u);
+        const pixman_rectangle16_t caret_rect{
+            static_cast<int16_t>(caret_x), static_cast<int16_t>(bar_y),
+            static_cast<uint16_t>(std::min(caret_w, bar_w)), static_cast<uint16_t>(bar_h)
+        };
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC, target, &caret_pcol, 1, &caret_rect);
+    }
+
+    previous_preedit_row_ = row;
+    previous_preedit_start_col_ = start_col;
+    previous_preedit_end_col_ = start_col + total_cols - 1;
+    if (damage_out) damage_out->union_rect(bar_x, bar_y, bar_w, bar_h);
 }
 
 void CpuRenderer::render_cursor(

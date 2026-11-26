@@ -67,6 +67,7 @@ public:
 
     void set_key_callback(KeyCallback cb) override { key_cb_ = std::move(cb); }
     void set_text_commit_callback(TextCommitCallback cb) override { text_commit_cb_ = std::move(cb); }
+    void set_preedit_callback(PreeditCallback cb) override { preedit_cb_ = std::move(cb); }
     void set_paste_callback(PasteCallback cb) override { paste_cb_ = std::move(cb); }
     void set_mouse_callback(MouseCallback cb) override { mouse_cb_ = std::move(cb); }
     void set_resize_callback(ResizeCallback cb) override { resize_cb_ = std::move(cb); }
@@ -87,6 +88,7 @@ public:
         return cursor_rect_cb_ ? cursor_rect_cb_() : CursorRect{};
     }
     void commit_text(std::string_view utf8);
+    void on_preedit(std::string_view utf8, size_t sel_start, size_t sel_end);
     // Invoked by GrittyView for Cmd+V. Reads the system pasteboard and hands
     // the raw UTF-8 to the session's paste callback.
     void paste_from_pasteboard();
@@ -140,6 +142,7 @@ private:
 
     KeyCallback key_cb_;
     TextCommitCallback text_commit_cb_;
+    PreeditCallback preedit_cb_;
     PasteCallback paste_cb_;
     MouseCallback mouse_cb_;
     ResizeCallback resize_cb_;

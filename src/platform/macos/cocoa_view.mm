@@ -159,6 +159,7 @@ bool command_key_is(NSEvent* event, NSString* expected) {
 
 bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     if (has_marked_text) return NO;
+    if ([event isARepeat]) return YES;
     const auto flags = [event modifierFlags];
     if (flags & (NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption)) return YES;
     switch ([event keyCode]) {
@@ -210,6 +211,7 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 - (void)keyUp:(NSEvent *)event {
     // The matching keyDown was consumed; do not leak a release event either.
     if ([event modifierFlags] & NSEventModifierFlagCommand) return;
+    if ([self hasMarkedText]) return;
     if (_surface) {
         auto ev = gritty::platform::macos::MacInput::translate_key_event(event);
         ev.action = gritty::input::KeyAction::Release;
@@ -285,10 +287,12 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 }
 
 - (void)clearMarkedText {
+    const BOOL had_marked = [self hasMarkedText];
     [_markedText release];
     _markedText = nil;
     _markedRange = NSMakeRange(NSNotFound, 0);
     _selectedRange = NSMakeRange(0, 0);
+    if (had_marked && _surface) _surface->on_preedit({}, 0, 0);
 }
 
 // NSTextInputClient
@@ -316,7 +320,14 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     else if ([name isEqualToString:@"moveDown:"]) key = KeyCode::Down;
     else if ([name isEqualToString:@"insertNewline:"]) key = KeyCode::Return;
     else if ([name isEqualToString:@"insertTab:"]) key = KeyCode::Tab;
-    else if ([name isEqualToString:@"cancelOperation:"]) key = KeyCode::Escape;
+    else if ([name isEqualToString:@"cancelOperation:"]) {
+        if ([self hasMarkedText]) {
+            _imeHandled = YES;
+            [self clearMarkedText];
+            return;
+        }
+        key = KeyCode::Escape;
+    }
     else if ([name isEqualToString:@"moveToBeginningOfLine:"]) key = KeyCode::Home;
     else if ([name isEqualToString:@"moveToEndOfLine:"]) key = KeyCode::End;
     if (key == KeyCode::Unknown) return;
@@ -342,28 +353,41 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 
 - (void)setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
     (void)replacementRange;
-    if (!string) { [self clearMarkedText]; return; }
+    if (!string) {
+        [self clearMarkedText];
+        _imeHandled = YES;
+        return;
+    }
     NSAttributedString* attributed = [string isKindOfClass:[NSAttributedString class]]
         ? (NSAttributedString*)string
         : [[[NSAttributedString alloc] initWithString:(NSString*)string] autorelease];
+    const NSUInteger length = [attributed length];
+    if (length == 0) {
+        [self clearMarkedText];
+        _imeHandled = YES;
+        return;
+    }
     if (!_markedText) _markedText = [[NSMutableAttributedString alloc] init];
     [_markedText setAttributedString:attributed];
-    const auto length = [_markedText length];
     _markedRange = NSMakeRange(0, length);
-    _selectedRange = NSMakeRange(std::min(selectedRange.location, length),
-        std::min(selectedRange.length, length - std::min(selectedRange.location, length)));
+    const NSUInteger sel_loc = std::min(selectedRange.location, length);
+    const NSUInteger sel_len = std::min(selectedRange.length, length - sel_loc);
+    _selectedRange = NSMakeRange(sel_loc, sel_len);
     _imeHandled = YES;
+    if (_surface) {
+        NSString* raw = [_markedText string];
+        const char* cstr = [raw UTF8String];
+        const size_t total_bytes = [raw lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        const size_t sel_start = [[raw substringToIndex:sel_loc]
+            lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        const size_t sel_end = sel_start + [[raw substringWithRange:NSMakeRange(sel_loc, sel_len)]
+            lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+        _surface->on_preedit(cstr ? std::string_view(cstr, total_bytes) : std::string_view{},
+                             sel_start, sel_end);
+    }
 }
 
 - (void)unmarkText {
-    if ([self hasMarkedText] && _surface) {
-        NSString* text = [_markedText string];
-        if (text && text.length > 0) {
-            const auto utf8 = std::string_view([text UTF8String],
-                [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
-            _surface->commit_text(utf8);
-        }
-    }
     [self clearMarkedText];
 }
 - (NSRange)selectedRange { return _selectedRange; }
@@ -385,7 +409,7 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
 }
 
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(nullable NSRangePointer)actualRange {
-    if (actualRange) *actualRange = range;
+    if (actualRange) *actualRange = (range.location == NSNotFound) ? NSMakeRange(0, 0) : range;
     if (!_surface || !self.window) return NSZeroRect;
     const auto cursor = _surface->cursor_rect();
     const CGFloat view_height = self.bounds.size.height;

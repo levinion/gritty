@@ -145,3 +145,25 @@ TEST_CASE("CLI and AppConfig reject malformed value options") {
     CHECK_FALSE(config.apply_override("colors.regular8=#000000").has_value());
     CHECK_FALSE(config.apply_override("cursor.blink=maybe").has_value());
 }
+
+TEST_CASE("split_shell_command and resolve_working_directory handle flags and LaunchServices cwd") {
+    const auto zsh = cfg::split_shell_command("/bin/zsh -l");
+    CHECK(zsh.executable == "/bin/zsh");
+    REQUIRE(zsh.args.size() == 1);
+    CHECK(zsh.args[0] == "-l");
+
+    const auto quoted = cfg::split_shell_command("tmux new -As 'my session'");
+    CHECK(quoted.executable == "tmux");
+    REQUIRE(quoted.args.size() == 3);
+    CHECK(quoted.args[0] == "new");
+    CHECK(quoted.args[1] == "-As");
+    CHECK(quoted.args[2] == "my session");
+
+    const auto blank = cfg::split_shell_command("   ");
+    CHECK(blank.executable.empty());
+    CHECK(blank.args.empty());
+
+    CHECK(cfg::resolve_working_directory("", "/", "/Users/test") == "/Users/test");
+    CHECK(cfg::resolve_working_directory("/", "/", "/Users/test") == "/");
+    CHECK(cfg::resolve_working_directory("", "/Users/test/work", "/Users/test").empty());
+}

@@ -120,19 +120,30 @@ TEST_CASE("Cocoa surface records OSC 22 pointer shapes") {
     }
 }
 
-TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
+TEST_CASE("NSTextInputClient commits IME text, emits preedit, and handles repeat/cancel") {
     @autoreleasepool {
         auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);
         std::string received;
+        std::string preedit;
+        size_t preedit_sel_start = 0;
+        size_t preedit_sel_end = 0;
+        int preedit_calls = 0;
         int key_events = 0;
         surface->set_key_callback([&](const gritty::input::KeyEvent&) { ++key_events; });
         surface->set_text_commit_callback([&](std::string_view text) { received.assign(text); });
+        surface->set_preedit_callback([&](std::string_view text, size_t sel_start, size_t sel_end) {
+            preedit.assign(text);
+            preedit_sel_start = sel_start;
+            preedit_sel_end = sel_end;
+            ++preedit_calls;
+        });
         surface->set_bracketed_paste_provider([] { return true; });
         auto* view = [[GrittyView alloc] initWithSurface:surface.get()];
         REQUIRE(view != nil);
 
+        // Multi-character IME commits must go straight to PTY without bracketed-paste wrappers.
         [view insertText:@"ab" replacementRange:NSMakeRange(NSNotFound, 0)];
-        CHECK(received == "\x1b[200~ab\x1b[201~");
+        CHECK(received == "ab");
         CHECK(key_events == 0); // IME text must not enter InputMapper/CSI-u.
         CHECK_FALSE([view hasMarkedText]);
 
@@ -140,24 +151,53 @@ TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
         CHECK([view hasMarkedText]);
         CHECK([view markedRange].length == 3);
         CHECK([view selectedRange].location == 2);
+        CHECK(preedit == "にほん");
+        CHECK(preedit_sel_start == 6);
+        CHECK(preedit_sel_end == 9);
+
+        // Cancel while composing clears preedit without leaking Escape to PTY.
+        [view doCommandBySelector:@selector(cancelOperation:)];
+        CHECK_FALSE([view hasMarkedText]);
+        CHECK(preedit.empty());
+        CHECK(key_events == 0);
+
+        // Setting empty marked text clears composition cleanly.
+        [view setMarkedText:@"ni" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+        CHECK([view hasMarkedText]);
+        [view setMarkedText:@"" selectedRange:NSMakeRange(0, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+        CHECK_FALSE([view hasMarkedText]);
+        CHECK([view markedRange].location == NSNotFound);
+        CHECK(preedit.empty());
+
+        // unmarkText clears composition without committing unfinished text.
+        [view setMarkedText:@"にほん" selectedRange:NSMakeRange(3, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
         received.clear();
         [view unmarkText];
         CHECK_FALSE([view hasMarkedText]);
         CHECK([view selectedRange].location == 0);
         CHECK([view selectedRange].length == 0);
-        CHECK(received == "\x1b[200~にほん\x1b[201~");
+        CHECK(received.empty());
+        CHECK(preedit.empty());
+        CHECK(preedit_calls > 0);
+
+        // Repeated plain keys outside IME bypass interpretKeyEvents: directly to key_cb_.
+        NSEvent* repeat_k = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"k"
+            charactersIgnoringModifiers:@"k" isARepeat:YES keyCode:40];
+        [view keyDown:repeat_k];
+        CHECK(key_events == 1);
 
         [view doCommandBySelector:@selector(deleteBackward:)];
-        CHECK(key_events == 1); // Correct selector spelling must emit Backspace.
+        CHECK(key_events == 2); // Correct selector spelling must emit Backspace.
         [view doCommandBySelector:@selector(deleteForward:)];
-        CHECK(key_events == 2);
+        CHECK(key_events == 3);
 
         [view detachSurface];
         [view release];
     }
 }
 
-TEST_CASE("Cocoa keyUp does not throw on isARepeat and bracketed IME text strips end marker") {
+TEST_CASE("Cocoa keyUp does not throw on isARepeat and IME commit preserves literal bytes") {
     @autoreleasepool {
         NSEvent* key_up = [NSEvent keyEventWithType:NSEventTypeKeyUp location:NSZeroPoint
             modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"a"
@@ -170,7 +210,7 @@ TEST_CASE("Cocoa keyUp does not throw on isARepeat and bracketed IME text strips
         std::string committed;
         surface->set_text_commit_callback([&](std::string_view text) { committed.assign(text); });
         surface->set_bracketed_paste_provider([] { return true; });
-        surface->commit_text("hi\x1b[201~there");
-        CHECK(committed == "\x1b[200~hithere\x1b[201~");
+        surface->commit_text("你好世界");
+        CHECK(committed == "你好世界");
     }
 }

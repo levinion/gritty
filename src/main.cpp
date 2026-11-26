@@ -2,7 +2,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <pwd.h>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "config/cli.hpp"
@@ -89,8 +91,8 @@ int main(int argc, char* argv[]) {
     if (cli.font_size > 0) cfg->font.size = cli.font_size;
     if (!cli.title.empty()) cfg->main.title = cli.title;
     if (!cli.app_id.empty()) cfg->main.app_id = cli.app_id;
-    const size_t cols = cli.cols ? cli.cols : (override_cols ? override_cols : 80);
-    const size_t rows = cli.rows ? cli.rows : (override_rows ? override_rows : 24);
+    const size_t cols = cli.cols ? cli.cols : (override_cols ? override_cols : cfg->window.columns);
+    const size_t rows = cli.rows ? cli.rows : (override_rows ? override_rows : cfg->window.lines);
 
 #if defined(PLATFORM_MACOS)
     platform::macos::CoreTextFinder font_discovery;
@@ -125,16 +127,50 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    std::string shell_cmd;
+    std::vector<std::string> shell_args;
+    if (!cli.command.empty()) {
+        shell_cmd = cli.command;
+        shell_args = cli.command_args;
+    } else if (!cfg->main.shell.empty()) {
+        std::error_code ec;
+        if (!cfg->main.shell_args.empty() ||
+            (std::filesystem::exists(cfg->main.shell, ec) && !ec)) {
+            shell_cmd = cfg->main.shell;
+            shell_args = cfg->main.shell_args;
+        } else {
+            auto split = config::split_shell_command(cfg->main.shell);
+            shell_cmd = std::move(split.executable);
+            shell_args = std::move(split.args);
+        }
+    }
+
+    std::error_code cwd_ec;
+    const std::string inherited_cwd = std::filesystem::current_path(cwd_ec).string();
+    const char* env_home = std::getenv("HOME");
+    std::string home_dir = (env_home && *env_home) ? std::string(env_home) : std::string{};
+    if (home_dir.empty()) {
+        if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_dir && *pw->pw_dir) {
+            home_dir = pw->pw_dir;
+        }
+    }
+    const std::string_view explicit_cwd = !cli.working_directory.empty()
+        ? std::string_view(cli.working_directory)
+        : std::string_view(cfg->main.working_directory);
+    const std::string resolved_cwd =
+        config::resolve_working_directory(explicit_cwd, inherited_cwd, home_dir);
+
     core::SessionConfig sess_cfg{
         .font_path = resolved_font_path,
         .font_postscript_name = resolved_postscript,
         .font_size = cfg->font.size,
         .cols = static_cast<int>(cols),
         .rows = static_cast<int>(rows),
-        .shell = cli.command.empty() ? cfg->main.shell : cli.command,
+        .shell = std::move(shell_cmd),
         .term = cfg->main.term,
-        .cwd = cli.working_directory,
-        .args = cli.command_args,
+        .cwd = resolved_cwd,
+        .args = std::move(shell_args),
+        .env = cfg->main.env,
         .font_dpi = cfg->font.dpi,
         .padding_x = cfg->window.padding.x,
         .padding_y = cfg->window.padding.y,

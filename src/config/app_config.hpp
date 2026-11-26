@@ -8,6 +8,7 @@
 #include <string_view>
 #include <memory>
 #include <optional>
+#include <vector>
 #include "core/terminal_engine.hpp"
 #include "platform/pal_interfaces.hpp"
 #include "render/font_engine.hpp"
@@ -28,10 +29,15 @@ enum class Osc52Mode : uint8_t {
 
 struct MainConfig {
     std::string shell;
+    std::vector<std::string> shell_args;
+    std::string working_directory;
+    std::vector<std::string> env;
     std::string term{"xterm-256color"};
     std::string title{"Gritty"};
     std::string app_id{"gritty"};
     Osc52Mode osc52{Osc52Mode::CopyOnly};
+
+    void set_env(std::string_view key, std::string_view value);
 };
 
 struct FontConfig {
@@ -69,6 +75,8 @@ struct WindowPadding {
 struct WindowConfig {
     platform::WindowDecorations decorations{platform::WindowDecorations::Full};
     WindowPadding padding;
+    size_t columns{80};
+    size_t lines{24};
 };
 
 // Case-insensitive parser shared by TOML, CLI overrides and tests.

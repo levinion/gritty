@@ -11,6 +11,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -65,11 +66,32 @@ bool PosixPty::spawn(const PtySpawnOptions& options) {
     std::string shell_path = options.command;
     if (shell_path.empty()) {
         const char* env_shell = std::getenv("SHELL");
-        shell_path = (env_shell && *env_shell) ? env_shell : "/bin/sh";
+        if (env_shell && *env_shell) {
+            shell_path = env_shell;
+        } else if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_shell && *pw->pw_shell) {
+            shell_path = pw->pw_shell;
+        } else {
+#if defined(__APPLE__)
+            shell_path = "/bin/zsh";
+#else
+            shell_path = ::access("/bin/bash", X_OK) == 0 ? "/bin/bash" : "/bin/sh";
+#endif
+        }
     }
+    std::string argv0_storage = shell_path;
+#if defined(__APPLE__)
+    // macOS GUI apps expect default interactive shells to start as login shells.
+    if (options.command.empty() && options.args.empty()) {
+        const size_t slash = shell_path.rfind('/');
+        const std::string_view base = slash == std::string::npos
+            ? std::string_view(shell_path)
+            : std::string_view(shell_path).substr(slash + 1);
+        if (!base.empty()) argv0_storage = "-" + std::string(base);
+    }
+#endif
     std::vector<char*> argv;
     argv.reserve(options.args.size() + 2);
-    argv.push_back(const_cast<char*>(shell_path.c_str()));
+    argv.push_back(const_cast<char*>(argv0_storage.c_str()));
     for (const auto& a : options.args) {
         argv.push_back(const_cast<char*>(a.c_str()));
     }

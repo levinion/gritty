@@ -1398,3 +1398,43 @@ TEST_CASE("FontEngine set_style_font and add_fallback_font invalidate L1 glyph c
         CHECK(fonts.cache_stats().misses > misses_mid);
     }
 }
+
+TEST_CASE("CpuRenderer draws inline IME preedit and cleanly restores underlying cells on clear") {
+    const auto path = find_test_font();
+    if (path.empty()) return;
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(path, 12.0));
+    TerminalEngine engine(12, 3);
+    engine.set_cursor_visible(false);
+    engine.print_ascii_run("hello world!");
+    engine.set_cursor_col(2);
+    engine.set_cursor_row(0);
+
+    const int cw = fonts.metrics().cell_width, ch = fonts.metrics().cell_height;
+    gritty::util::PixmanImage baseline(pixman_image_create_bits(PIXMAN_a8r8g8b8, 12 * cw, 3 * ch, nullptr, 0));
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 12 * cw, 3 * ch, nullptr, 0));
+    CpuRenderer ref_renderer(fonts);
+    CpuRenderer renderer(fonts);
+    ref_renderer.render(engine, baseline.get(), nullptr, true);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    gritty::util::PixmanRegion damage;
+    renderer.set_preedit("ni'好", 0, 2);
+    renderer.render(engine, target.get(), &damage, false);
+    CHECK_FALSE(damage.empty());
+    bool differed = false;
+    for (int i = 0; i < 3 * ch * (target.stride() / 4); ++i) {
+        if (target.data()[i] != baseline.data()[i]) {
+            differed = true;
+            break;
+        }
+    }
+    CHECK(differed);
+
+    renderer.set_preedit("", 0, 0);
+    renderer.render(engine, target.get(), &damage, false);
+    CHECK_FALSE(damage.empty());
+    for (int i = 0; i < 3 * ch * (target.stride() / 4); ++i) {
+        REQUIRE(target.data()[i] == baseline.data()[i]);
+    }
+}

@@ -108,6 +108,21 @@ struct ValidationErrors {
     }
 };
 
+void apply_ansi_group(AppConfig& cfg, toml_datum_t table, size_t base_idx) {
+    if (table.type != TOML_TABLE) return;
+    constexpr std::array<std::string_view, 8> names{
+        "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"
+    };
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (const auto value = as_string(find_key(table, names[i]))) {
+            if (auto color = TomlLoader::parse_color(*value)) {
+                cfg.colors.palette[base_idx + i] = *color & 0x00ffffff;
+                cfg.colors.palette_customized = true;
+            }
+        }
+    }
+}
+
 void apply_colors(AppConfig& cfg, toml_datum_t table, bool cursor_color_explicit,
                   ValidationErrors& errors) {
     if (const auto value = as_string(find_key(table, "foreground"))) {
@@ -116,12 +131,31 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool cursor_color_explicit
     if (const auto value = as_string(find_key(table, "background"))) {
         if (auto color = TomlLoader::parse_color(*value)) cfg.colors.background = *color;
     }
-    if (const auto value = as_string(find_key(table, "cursor"))) {
+    const toml_datum_t primary = find_key(table, "primary");
+    if (primary.type == TOML_TABLE) {
+        if (const auto value = as_string(find_key(primary, "foreground"))) {
+            if (auto color = TomlLoader::parse_color(*value)) cfg.colors.foreground = *color;
+        }
+        if (const auto value = as_string(find_key(primary, "background"))) {
+            if (auto color = TomlLoader::parse_color(*value)) cfg.colors.background = *color;
+        }
+    }
+
+    const toml_datum_t cursor_key = find_key(table, "cursor");
+    if (const auto value = as_string(cursor_key)) {
         if (auto color = TomlLoader::parse_color(*value)) {
             cfg.colors.cursor = *color;
             if (!cursor_color_explicit) cfg.cursor.color = *color;
         }
+    } else if (cursor_key.type == TOML_TABLE) {
+        if (const auto value = as_string(find_key(cursor_key, "cursor"))) {
+            if (auto color = TomlLoader::parse_color(*value)) {
+                cfg.colors.cursor = *color;
+                if (!cursor_color_explicit) cfg.cursor.color = *color;
+            }
+        }
     }
+
     for (int i = 0; i < 8; ++i) {
         const std::string regular = "regular" + std::to_string(i);
         const std::string bright = "bright" + std::to_string(i);
@@ -138,6 +172,8 @@ void apply_colors(AppConfig& cfg, toml_datum_t table, bool cursor_color_explicit
             }
         }
     }
+    apply_ansi_group(cfg, find_key(table, "normal"), 0);
+    apply_ansi_group(cfg, find_key(table, "bright"), 8);
 
     const toml_datum_t alpha = find_key(table, "alpha");
     if (alpha.type == TOML_UNKNOWN) return;
@@ -182,8 +218,77 @@ void apply_padding(AppConfig& cfg, toml_datum_t table, ValidationErrors& errors)
 
 void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
                    bool& cursor_color_explicit, ValidationErrors& errors) {
+    if (section == "general") {
+        const toml_datum_t wd = find_key(table, "working_directory");
+        if (wd.type != TOML_UNKNOWN) {
+            if (const auto value = as_string(wd)) {
+                cfg.main.working_directory = (lower(*value) == "none") ? std::string{} : std::string(*value);
+            } else {
+                errors.set("general.working_directory must be a string");
+            }
+        }
+        return;
+    }
+    if (section == "env") {
+        for (int i = 0; i < table.u.tab.size; ++i) {
+            const std::string_view key(table.u.tab.key[i], static_cast<size_t>(table.u.tab.len[i]));
+            const auto val = as_string(table.u.tab.value[i]);
+            if (!val) {
+                errors.set("env entries must be strings");
+                return;
+            }
+            if (key == "TERM") cfg.main.term = *val;
+            else cfg.main.set_env(key, *val);
+        }
+        return;
+    }
+    if (section == "terminal") {
+        const toml_datum_t osc52_datum = find_key(table, "osc52");
+        if (osc52_datum.type != TOML_UNKNOWN) {
+            const auto value = as_string(osc52_datum);
+            const auto mode = value ? parse_osc52_mode(*value) : std::nullopt;
+            if (!mode) errors.set("terminal.osc52 must be Disabled, OnlyCopy, OnlyPaste, or CopyPaste");
+            else cfg.main.osc52 = *mode;
+        }
+        const toml_datum_t shell = find_key(table, "shell");
+        if (shell.type != TOML_UNKNOWN) {
+            if (const auto s = as_string(shell)) {
+                cfg.main.shell = *s;
+                cfg.main.shell_args.clear();
+            } else if (shell.type == TOML_TABLE) {
+                const toml_datum_t prog = find_key(shell, "program");
+                if (prog.type != TOML_UNKNOWN) {
+                    if (const auto p = as_string(prog)) cfg.main.shell = *p;
+                    else errors.set("terminal.shell.program must be a string");
+                }
+                const toml_datum_t args = find_key(shell, "args");
+                if (args.type != TOML_UNKNOWN) {
+                    if (args.type != TOML_ARRAY) {
+                        errors.set("terminal.shell.args must be an array of strings");
+                    } else {
+                        std::vector<std::string> parsed_args;
+                        parsed_args.reserve(static_cast<size_t>(args.u.arr.size));
+                        bool ok = true;
+                        for (int i = 0; i < args.u.arr.size; ++i) {
+                            const auto elem = as_string(args.u.arr.elem[i]);
+                            if (!elem) { ok = false; break; }
+                            parsed_args.emplace_back(*elem);
+                        }
+                        if (!ok) errors.set("terminal.shell.args must be an array of strings");
+                        else cfg.main.shell_args = std::move(parsed_args);
+                    }
+                }
+            } else {
+                errors.set("terminal.shell must be a string or table");
+            }
+        }
+        return;
+    }
     if (section == "main") {
-        if (const auto value = as_string(find_key(table, "shell"))) cfg.main.shell = *value;
+        if (const auto value = as_string(find_key(table, "shell"))) {
+            cfg.main.shell = *value;
+            cfg.main.shell_args.clear();
+        }
         if (const auto value = as_string(find_key(table, "term"))) cfg.main.term = *value;
         if (const auto value = as_string(find_key(table, "title"))) cfg.main.title = *value;
         if (const auto value = as_string(find_key(table, "app_id"))) cfg.main.app_id = *value;
@@ -202,6 +307,10 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
     }
     if (section == "font") {
         if (const auto value = as_string(find_key(table, "family"))) cfg.font.family = *value;
+        const toml_datum_t normal = find_key(table, "normal");
+        if (normal.type == TOML_TABLE) {
+            if (const auto value = as_string(find_key(normal, "family"))) cfg.font.family = *value;
+        }
         const toml_datum_t size_datum = find_key(table, "size");
         if (size_datum.type != TOML_UNKNOWN) {
             double size = 0;
@@ -234,12 +343,35 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
     if (section == "cursor") {
         const toml_datum_t style_datum = find_key(table, "style");
         if (style_datum.type != TOML_UNKNOWN) {
-            if (const auto value = as_string(style_datum)) {
-                const std::string style = lower(*value);
-                if (style == "block") cfg.cursor.style = core::CursorShape::Block;
-                else if (style == "beam") cfg.cursor.style = core::CursorShape::Beam;
-                else if (style == "underline") cfg.cursor.style = core::CursorShape::Underline;
+            auto apply_shape = [&](std::string_view sv) {
+                const std::string shape = lower(sv);
+                if (shape == "block") cfg.cursor.style = core::CursorShape::Block;
+                else if (shape == "beam") cfg.cursor.style = core::CursorShape::Beam;
+                else if (shape == "underline") cfg.cursor.style = core::CursorShape::Underline;
                 else errors.set("cursor.style must be block, beam, or underline");
+            };
+            if (const auto value = as_string(style_datum)) {
+                apply_shape(*value);
+            } else if (style_datum.type == TOML_TABLE) {
+                const toml_datum_t shape_d = find_key(style_datum, "shape");
+                if (shape_d.type != TOML_UNKNOWN) {
+                    if (const auto sv = as_string(shape_d)) apply_shape(*sv);
+                    else errors.set("cursor.style.shape must be block, beam, or underline");
+                }
+                const toml_datum_t blink_d = find_key(style_datum, "blinking");
+                if (blink_d.type != TOML_UNKNOWN) {
+                    bool b = false;
+                    if (const auto bv = as_string(blink_d)) {
+                        const std::string mode = lower(*bv);
+                        if (mode == "never" || mode == "off") cfg.cursor.blink = false;
+                        else if (mode == "on" || mode == "always") cfg.cursor.blink = true;
+                        else errors.set("cursor.style.blinking must be never, off, on, or always");
+                    } else if (as_bool(blink_d, b)) {
+                        cfg.cursor.blink = b;
+                    } else {
+                        errors.set("cursor.style.blinking must be never, off, on, or always");
+                    }
+                }
             } else {
                 errors.set("cursor.style must be block, beam, or underline");
             }
@@ -259,6 +391,21 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         return;
     }
     if (section == "window") {
+        if (const auto value = as_string(find_key(table, "title"))) cfg.main.title = *value;
+        const toml_datum_t cls = find_key(table, "class");
+        if (cls.type != TOML_UNKNOWN) {
+            if (const auto s = as_string(cls)) {
+                cfg.main.app_id = *s;
+            } else if (cls.type == TOML_TABLE) {
+                const toml_datum_t gen = find_key(cls, "general");
+                if (gen.type != TOML_UNKNOWN) {
+                    if (const auto gs = as_string(gen)) cfg.main.app_id = *gs;
+                    else errors.set("window.class.general must be a string");
+                }
+            } else {
+                errors.set("window.class must be a string or table");
+            }
+        }
         const toml_datum_t datum = find_key(table, "decorations");
         if (datum.type != TOML_UNKNOWN) {
             const auto value = as_string(datum);
@@ -266,14 +413,42 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
             if (!decorations) errors.set("window.decorations must be full, none, transparent, or buttonless");
             else cfg.window.decorations = *decorations;
         }
+        const toml_datum_t opacity = find_key(table, "opacity");
+        if (opacity.type != TOML_UNKNOWN) {
+            double parsed = 0;
+            if (!as_number(opacity, parsed) || !std::isfinite(parsed) || parsed < 0.0 || parsed > 1.0)
+                errors.set("window.opacity must be a finite number between 0 and 1");
+            else cfg.colors.alpha = parsed;
+        }
         apply_padding(cfg, table, errors);
+        const toml_datum_t dims = find_key(table, "dimensions");
+        if (dims.type != TOML_UNKNOWN) {
+            if (dims.type != TOML_TABLE) {
+                errors.set("window.dimensions must be a table");
+            } else {
+                const toml_datum_t cols_d = find_key(dims, "columns");
+                const toml_datum_t lines_d = find_key(dims, "lines");
+                if (cols_d.type != TOML_UNKNOWN) {
+                    int64_t cols = 0;
+                    if (!as_integer(cols_d, cols) || cols < 1 || cols > 1000)
+                        errors.set("window.dimensions.columns must be an integer between 1 and 1000");
+                    else cfg.window.columns = static_cast<size_t>(cols);
+                }
+                if (lines_d.type != TOML_UNKNOWN) {
+                    int64_t lines = 0;
+                    if (!as_integer(lines_d, lines) || lines < 1 || lines > 1000)
+                        errors.set("window.dimensions.lines must be an integer between 1 and 1000");
+                    else cfg.window.lines = static_cast<size_t>(lines);
+                }
+            }
+        }
     }
 }
 
 void apply_tables(AppConfig& cfg, toml_datum_t root, bool& cursor_color_explicit,
                   ValidationErrors& errors) {
     constexpr std::string_view sections[] = {
-        "main", "font", "cursor", "colors", "window"
+        "general", "env", "main", "terminal", "font", "cursor", "colors", "window"
     };
     for (const auto section : sections) {
         const toml_datum_t table = find_key(root, section);

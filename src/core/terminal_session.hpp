@@ -25,6 +25,7 @@ struct SessionConfig {
     std::string term{"xterm-256color"};
     std::string cwd;
     std::vector<std::string> args;
+    std::vector<std::string> env;
 #if defined(PLATFORM_MACOS)
     unsigned int font_dpi{72};
 #else
@@ -72,6 +73,7 @@ public:
     }
 
     void handle_key_event(const input::KeyEvent& ev);
+    void handle_preedit(std::string_view utf8, size_t sel_start, size_t sel_end);
     // Format clipboard text for the child (DECSET 2004) and write it to PTY.
     void paste_text(std::string_view text);
     void handle_mouse_event(const input::MouseEvent& ev);

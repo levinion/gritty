@@ -1,64 +1,73 @@
-# Gritty Terminal Configuration
+# Gritty Terminal Configuration (Alacritty-compatible TOML schema)
 
-[main]
-shell = ""
-term = "xterm-256color"
+[general]
+working_directory = "None" # "None" follows inherited cwd (or $HOME if launched in "/")
+
+[env]
+TERM = "xterm-256color"
+
+[window]
 title = "Gritty"
-# foot-compatible clipboard security policy:
-# disabled | copy-only (default) | paste-only | enabled
-osc52 = "copy-only"
+class = { general = "gritty" }
+# Full | None | Transparent | Buttonless
+decorations = "Full"
+# 0.0 = clear, 1.0 = opaque (only applied when decorations != "Full")
+opacity = 1.0
+# padding = 8
+padding = { x = 0, y = 0 }
+dimensions = { columns = 80, lines = 24 }
 
 [font]
-family = "Menlo"
+normal = { family = "Menlo" }
 size = 11.25
-dpi = 72 # 72 on macOS to match CoreText / Alacritty point scale; 96 on Linux
+dpi = 72              # 72 on macOS to match CoreText / Alacritty; 96 on Linux
 antialias = "grayscale" # grayscale | subpixel | none
 
 [cursor]
-style = "block"   # block | beam | underline
-blink = false
-color = "#ffffff"
+# shape: Block | Underline | Beam, blinking: Never | Off | On | Always
+style = { shape = "Block", blinking = "Off" }
 
-[colors]
+[colors.primary]
 foreground = "#dddddd"
-background = "#111111" # Also accepts #AARRGGBB, e.g. #cc111111 (80% opaque)
-alpha = 1.0            # 0.0 = clear, 1.0 = opaque; only used when decorations are not "full"
-# alpha multiplies any alpha in background. Text and explicit app backgrounds stay opaque.
-# Full decorations are always opaque; use decorations = "transparent" (or "buttonless") with
-# alpha < 1 for a translucent background. For Neovim transparency, set
-# Normal/NormalNC/NormalFloat bg to NONE in your theme.
+background = "#111111"
+
+[colors.cursor]
 cursor = "#ffffff"
 
 # ANSI 16 colors (SGR 2 dim is computed from the active foreground color)
-regular0 = "#282c34"
-regular1 = "#f67e7d"
-regular2 = "#cae7b9"
-regular3 = "#e1dd8f"
-regular4 = "#7cb7ff"
-regular5 = "#d7bcc8"
-regular6 = "#00c1e4"
-regular7 = "#dcdfe4"
+[colors.normal]
+black = "#282c34"
+red = "#f67e7d"
+green = "#cae7b9"
+yellow = "#e1dd8f"
+blue = "#7cb7ff"
+magenta = "#d7bcc8"
+cyan = "#00c1e4"
+white = "#dcdfe4"
 
-bright0 = "#282c34"
-bright1 = "#f67e7d"
-bright2 = "#cae7b9"
-bright3 = "#e1dd8f"
-bright4 = "#7cb7ff"
-bright5 = "#d7bcc8"
-bright6 = "#00c1e4"
-bright7 = "#dcdfe4"
+[colors.bright]
+black = "#282c34"
+red = "#f67e7d"
+green = "#cae7b9"
+yellow = "#e1dd8f"
+blue = "#7cb7ff"
+magenta = "#d7bcc8"
+cyan = "#00c1e4"
+white = "#dcdfe4"
 
-[window]
-# full | none | transparent | buttonless
-decorations = "full"
-# Space around the terminal grid, in logical points (0..512 each side).
-# padding = 8            # shorthand for both axes
-# padding = { x = 8, y = 4 }
+[terminal]
+# Disabled | OnlyCopy | OnlyPaste | CopyPaste
+osc52 = "OnlyCopy"
 
-# macOS Platform Overrides (automatically deep-merged on macOS)
+# Empty uses your system shell ($SHELL -> user account shell -> /bin/zsh on macOS,
+# /bin/bash on Linux), started as a login shell on macOS.
+# [terminal.shell]
+# program = "/bin/zsh"
+# args = ["-l"]
+
+# Platform overrides (deep-merged automatically on the active OS)
 [platform.macos]
-font = { family = "JetBrainsMono Nerd Font", size = 14.0 }
+font = { normal = { family = "JetBrainsMono Nerd Font" }, size = 14.0 }
 
-# Linux Platform Overrides (automatically deep-merged on Linux)
 [platform.linux]
-font = { family = "monospace", size = 11.25, dpi = 96 }
+font = { normal = { family = "monospace" }, size = 11.25, dpi = 96 }

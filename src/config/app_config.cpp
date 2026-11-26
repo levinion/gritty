@@ -112,10 +112,24 @@ std::optional<Osc52Mode> parse_osc52_mode(std::string_view value) noexcept {
         return true;
     };
     if (equals("disabled")) return Osc52Mode::Disabled;
-    if (equals("copy-only") || equals("copyonly")) return Osc52Mode::CopyOnly;
-    if (equals("paste-only") || equals("pasteonly")) return Osc52Mode::PasteOnly;
-    if (equals("enabled")) return Osc52Mode::Enabled;
+    if (equals("copy-only") || equals("copyonly") || equals("onlycopy")) return Osc52Mode::CopyOnly;
+    if (equals("paste-only") || equals("pasteonly") || equals("onlypaste")) return Osc52Mode::PasteOnly;
+    if (equals("enabled") || equals("copypaste")) return Osc52Mode::Enabled;
     return std::nullopt;
+}
+
+void MainConfig::set_env(std::string_view key, std::string_view value) {
+    if (key.empty()) return;
+    const std::string entry = std::string(key) + "=" + std::string(value);
+    for (auto& existing : env) {
+        if (existing.size() > key.size() &&
+            existing.compare(0, key.size(), key) == 0 &&
+            existing[key.size()] == '=') {
+            existing = entry;
+            return;
+        }
+    }
+    env.push_back(entry);
 }
 
 std::optional<platform::WindowDecorations> parse_window_decorations(
@@ -158,14 +172,32 @@ std::expected<void, std::string> AppConfig::apply_override(
     std::string lowered;
     lower_into(lowered, key);
 
-    if (lowered == "main.shell") { main.shell = value; return {}; }
+    if (lowered == "main.shell" || lowered == "terminal.shell" ||
+        lowered == "terminal.shell.program") {
+        main.shell = value;
+        if (lowered != "terminal.shell.program") main.shell_args.clear();
+        return {};
+    }
+    if (lowered == "general.working_directory") {
+        std::string wd_lower;
+        lower_into(wd_lower, value);
+        main.working_directory = (wd_lower == "none") ? std::string{} : value;
+        return {};
+    }
+    if (lowered.starts_with("env.") && key.size() > 4) {
+        const std::string env_key = key.substr(4);
+        if (env_key == "TERM") main.term = value;
+        else main.set_env(env_key, value);
+        return {};
+    }
     if (lowered == "main.term") { main.term = value; return {}; }
-    if (lowered == "main.title") { main.title = value; return {}; }
-    if (lowered == "main.app_id") { main.app_id = value; return {}; }
-    if (lowered == "font.family") { font.family = value; return {}; }
+    if (lowered == "main.title" || lowered == "window.title") { main.title = value; return {}; }
+    if (lowered == "main.app_id" || lowered == "window.class" ||
+        lowered == "window.class.general") { main.app_id = value; return {}; }
+    if (lowered == "font.family" || lowered == "font.normal.family") { font.family = value; return {}; }
 
     bool flag = false;
-    if (lowered == "main.osc52") {
+    if (lowered == "main.osc52" || lowered == "terminal.osc52") {
         const auto mode = parse_osc52_mode(value);
         if (!mode) return invalid(key, value);
         main.osc52 = *mode;
@@ -203,7 +235,7 @@ std::expected<void, std::string> AppConfig::apply_override(
         return {};
     }
 
-    if (lowered == "cursor.style") {
+    if (lowered == "cursor.style" || lowered == "cursor.style.shape") {
         lower_into(mode, value);
         if (mode == "block") cursor.style = core::CursorShape::Block;
         else if (mode == "beam") cursor.style = core::CursorShape::Beam;
@@ -216,6 +248,13 @@ std::expected<void, std::string> AppConfig::apply_override(
         cursor.blink = flag;
         return {};
     }
+    if (lowered == "cursor.style.blinking") {
+        lower_into(mode, value);
+        if (mode == "never" || mode == "off" || mode == "false" || mode == "0") cursor.blink = false;
+        else if (mode == "on" || mode == "always" || mode == "true" || mode == "1") cursor.blink = true;
+        else return invalid(key, value);
+        return {};
+    }
     if (lowered == "cursor.color") {
         const auto color = TomlLoader::parse_color(value);
         if (!color) return invalid(key, value);
@@ -223,21 +262,43 @@ std::expected<void, std::string> AppConfig::apply_override(
         return {};
     }
 
-    if (lowered == "colors.alpha") {
+    if (lowered == "colors.alpha" || lowered == "window.opacity") {
         if (!parse_double(value, real) || real < 0.0 || real > 1.0) return invalid(key, value);
         colors.alpha = real;
         return {};
     }
-    if (lowered == "colors.foreground" || lowered == "colors.background" ||
-        lowered == "colors.cursor") {
+    if (lowered == "colors.foreground" || lowered == "colors.primary.foreground" ||
+        lowered == "colors.background" || lowered == "colors.primary.background" ||
+        lowered == "colors.cursor" || lowered == "colors.cursor.cursor") {
         const auto color = TomlLoader::parse_color(value);
         if (!color) return invalid(key, value);
-        if (lowered == "colors.foreground") colors.foreground = *color;
-        else if (lowered == "colors.background") colors.background = *color;
+        if (lowered == "colors.foreground" || lowered == "colors.primary.foreground")
+            colors.foreground = *color;
+        else if (lowered == "colors.background" || lowered == "colors.primary.background")
+            colors.background = *color;
         else {
             colors.cursor = *color;
             cursor.color = *color;
         }
+        return {};
+    }
+    if (lowered.starts_with("colors.normal.") || lowered.starts_with("colors.bright.")) {
+        const bool bright = lowered.starts_with("colors.bright.");
+        const std::string_view name = std::string_view(lowered).substr(
+            bright ? std::string_view("colors.bright.").size()
+                   : std::string_view("colors.normal.").size());
+        constexpr std::array<std::string_view, 8> names{
+            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"
+        };
+        int index = -1;
+        for (int i = 0; i < 8; ++i) {
+            if (name == names[static_cast<size_t>(i)]) { index = i; break; }
+        }
+        if (index < 0) return invalid(key, value);
+        const auto color = TomlLoader::parse_color(value);
+        if (!color) return invalid(key, value);
+        colors.palette[static_cast<size_t>(bright ? index + 8 : index)] = *color & 0x00ffffff;
+        colors.palette_customized = true;
         return {};
     }
     if (lowered.starts_with("colors.regular") || lowered.starts_with("colors.bright")) {
@@ -277,8 +338,13 @@ std::expected<void, std::string> AppConfig::apply_override(
     if (lowered == "window.dimensions.columns" || lowered == "window.dimensions.lines") {
         if (!parse_integer(value, integer) || integer < 1 || integer > 1000)
             return invalid(key, value);
-        size_t* out = lowered == "window.dimensions.columns" ? cols_out : rows_out;
-        if (out) *out = static_cast<size_t>(integer);
+        if (lowered == "window.dimensions.columns") {
+            window.columns = static_cast<size_t>(integer);
+            if (cols_out) *cols_out = static_cast<size_t>(integer);
+        } else {
+            window.lines = static_cast<size_t>(integer);
+            if (rows_out) *rows_out = static_cast<size_t>(integer);
+        }
         return {};
     }
 

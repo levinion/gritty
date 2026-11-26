@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <system_error>
@@ -245,6 +246,80 @@ std::string format_cli_help(std::string_view prog) {
 
 std::string format_cli_version() {
     return "Gritty " + std::string(util::kVersion) + " (foot parity + Kitty protocols)\n";
+}
+
+ShellCommand split_shell_command(std::string_view cmd) {
+    ShellCommand result;
+    std::vector<std::string> tokens;
+    std::string current;
+    bool in_token = false;
+    bool in_single = false;
+    bool in_double = false;
+    bool escaped = false;
+
+    for (const char ch : cmd) {
+        if (escaped) {
+            current.push_back(ch);
+            escaped = false;
+            in_token = true;
+            continue;
+        }
+        if (in_single) {
+            if (ch == '\'') in_single = false;
+            else current.push_back(ch);
+            in_token = true;
+            continue;
+        }
+        if (ch == '\\') {
+            escaped = true;
+            in_token = true;
+            continue;
+        }
+        if (in_double) {
+            if (ch == '"') in_double = false;
+            else current.push_back(ch);
+            in_token = true;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            in_token = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            in_token = true;
+            continue;
+        }
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+            if (in_token) {
+                tokens.push_back(std::move(current));
+                current.clear();
+                in_token = false;
+            }
+            continue;
+        }
+        current.push_back(ch);
+        in_token = true;
+    }
+    if (escaped) current.push_back('\\');
+    if (in_token) tokens.push_back(std::move(current));
+    if (!tokens.empty()) {
+        result.executable = std::move(tokens.front());
+        result.args.assign(std::make_move_iterator(tokens.begin() + 1),
+                           std::make_move_iterator(tokens.end()));
+    }
+    return result;
+}
+
+std::string resolve_working_directory(
+    std::string_view explicit_cwd,
+    std::string_view inherited_cwd,
+    std::string_view home_dir
+) {
+    if (!explicit_cwd.empty()) return std::string(explicit_cwd);
+    if (inherited_cwd == "/" && !home_dir.empty()) return std::string(home_dir);
+    return {};
 }
 
 } // namespace gritty::config

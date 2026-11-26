@@ -276,3 +276,121 @@ TEST_CASE("Default AppConfig matches Alacritty font and window defaults") {
     CHECK(cfg.cursor.blink == false);
     CHECK(cfg.main.osc52 == Osc52Mode::CopyOnly);
 }
+
+TEST_CASE("TomlLoader and overrides support Alacritty TOML schema") {
+    const std::string toml_str = R"(
+        [general]
+        working_directory = "/tmp/work"
+
+        [env]
+        TERM = "tmux-256color"
+        EDITOR = "nvim"
+
+        [window]
+        title = "Alacritty Style"
+        class = { general = "top.maruka.gritty" }
+        decorations = "Transparent"
+        opacity = 0.85
+        padding = { x = 10, y = 6 }
+        dimensions = { columns = 120, lines = 36 }
+
+        [font]
+        normal = { family = "JetBrainsMono Nerd Font" }
+        size = 12.5
+        dpi = 72
+        antialias = "subpixel"
+
+        [cursor]
+        style = { shape = "Beam", blinking = "On" }
+
+        [colors.primary]
+        foreground = "#c0caf5"
+        background = "#1a1b26"
+
+        [colors.cursor]
+        cursor = "#ff9e64"
+
+        [colors.normal]
+        black = "#15161e"
+        red = "#f7768e"
+
+        [colors.bright]
+        cyan = "#7dcfff"
+        white = "#c0caf5"
+
+        [terminal]
+        osc52 = "CopyPaste"
+
+        [terminal.shell]
+        program = "/bin/zsh"
+        args = ["-l", "-i"]
+
+        [platform.macos.font]
+        normal = { family = "Menlo" }
+        size = 11.25
+    )";
+
+    auto res = TomlLoader::load_from_string(toml_str, "macos");
+    REQUIRE(res.has_value());
+    const auto cfg = *res;
+
+    CHECK(cfg->main.working_directory == "/tmp/work");
+    CHECK(cfg->main.term == "tmux-256color");
+    REQUIRE(cfg->main.env.size() == 1);
+    CHECK(cfg->main.env[0] == "EDITOR=nvim");
+    CHECK(cfg->main.title == "Alacritty Style");
+    CHECK(cfg->main.app_id == "top.maruka.gritty");
+    CHECK(cfg->window.decorations == gritty::platform::WindowDecorations::Transparent);
+    CHECK(cfg->colors.alpha == 0.85);
+    CHECK(cfg->window.padding.x == 10);
+    CHECK(cfg->window.padding.y == 6);
+    CHECK(cfg->window.columns == 120);
+    CHECK(cfg->window.lines == 36);
+    CHECK(cfg->font.family == "Menlo");
+    CHECK(cfg->font.size == 11.25);
+    CHECK(cfg->font.antialias == gritty::render::AntialiasMode::SubpixelLcd);
+    CHECK(cfg->cursor.style == gritty::core::CursorShape::Beam);
+    CHECK(cfg->cursor.blink == true);
+    CHECK(cfg->colors.foreground == 0xffc0caf5);
+    CHECK(cfg->colors.background == 0xff1a1b26);
+    CHECK(cfg->colors.cursor == 0xffff9e64);
+    CHECK(cfg->cursor.color == 0xffff9e64);
+    CHECK(cfg->colors.palette[0] == 0x0015161e);
+    CHECK(cfg->colors.palette[1] == 0x00f7768e);
+    CHECK(cfg->colors.palette[14] == 0x007dcfff);
+    CHECK(cfg->colors.palette[15] == 0x00c0caf5);
+    CHECK(cfg->main.osc52 == Osc52Mode::Enabled);
+    CHECK(cfg->main.shell == "/bin/zsh");
+    REQUIRE(cfg->main.shell_args.size() == 2);
+    CHECK(cfg->main.shell_args[0] == "-l");
+    CHECK(cfg->main.shell_args[1] == "-i");
+
+    // CLI -o overrides also accept Alacritty key paths.
+    size_t cols = 0, rows = 0;
+    REQUIRE(cfg->apply_override("general.working_directory=None").has_value());
+    CHECK(cfg->main.working_directory.empty());
+    REQUIRE(cfg->apply_override("window.opacity=0.5").has_value());
+    CHECK(cfg->colors.alpha == 0.5);
+    REQUIRE(cfg->apply_override("cursor.style.shape=Underline").has_value());
+    CHECK(cfg->cursor.style == gritty::core::CursorShape::Underline);
+    REQUIRE(cfg->apply_override("cursor.style.blinking=Never").has_value());
+    CHECK(cfg->cursor.blink == false);
+    REQUIRE(cfg->apply_override("terminal.osc52=OnlyPaste").has_value());
+    CHECK(cfg->main.osc52 == Osc52Mode::PasteOnly);
+    REQUIRE(cfg->apply_override("colors.normal.red=#112233").has_value());
+    CHECK(cfg->colors.palette[1] == 0x00112233);
+    REQUIRE(cfg->apply_override("env.FOO=bar").has_value());
+    REQUIRE(cfg->apply_override("env.EDITOR=vim").has_value());
+    CHECK(cfg->main.env[0] == "EDITOR=vim");
+    CHECK(cfg->main.env[1] == "FOO=bar");
+    REQUIRE(cfg->apply_override("window.dimensions.columns=100", &cols, &rows).has_value());
+    CHECK(cols == 100);
+    CHECK(cfg->window.columns == 100);
+
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nopacity = 1.5\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\ndimensions = { columns = 0 }\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[cursor]\nstyle = { shape = 'Circle' }\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[cursor]\nstyle = { blinking = 'Sometimes' }\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[terminal]\nosc52 = 'ReadWrite'\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[terminal.shell]\nargs = [123]\n").has_value());
+}
