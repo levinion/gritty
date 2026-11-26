@@ -151,14 +151,14 @@ void KqueueRunLoop::wake() {
 
 void KqueueRunLoop::stop() {
     running_ = false;
-    wake();
     if (NSApp) {
         // CFRunLoopStop() alone only exits one CFRunLoop invocation; NSApp
-        // would immediately re-enter its own event loop. stop: makes [NSApp
-        // run] return, while the posted wake event unblocks a nested modal
-        // tracking loop.
+        // would immediately re-enter its own event loop. Set stop: before
+        // waking so the posted dummy NSEvent breaks [NSApp run] immediately
+        // instead of waiting for a subsequent mouse/timer event.
         [NSApp stop:nil];
     }
+    wake();
     CFRunLoopStop(CFRunLoopGetMain());
 }
 

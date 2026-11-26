@@ -1,5 +1,5 @@
 project('gritty', ['cpp', 'c'],
-  version: '0.1.0',
+  version: '2026.11.26',
   default_options: [
     'cpp_std=c++23',
     'c_std=c17',

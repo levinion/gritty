@@ -69,11 +69,11 @@ TEST_CASE("OSC 4/12 queries and palette resets use request terminators") {
 
     replies.clear();
     parser.feed("\033]4;1;?;2;?\033\\");
-    const std::string indexed_st = "\033]4;1;rgb:cccc/0404/0303\033\\"
-                                   "\033]4;2;rgb:1919/cbcb/0000\033\\";
+    const std::string indexed_st = "\033]4;1;rgb:f6f6/7e7e/7d7d\033\\"
+                                   "\033]4;2;rgb:caca/e7e7/b9b9\033\\";
     CHECK(replies == indexed_st);
-    const std::string indexed = "\033]4;1;rgb:cccc/0404/0303\a"
-                                "\033]4;2;rgb:1919/cbcb/0000\a";
+    const std::string indexed = "\033]4;1;rgb:f6f6/7e7e/7d7d\a"
+                                "\033]4;2;rgb:caca/e7e7/b9b9\a";
     replies.clear();
     parser.feed("\033]4;1;?;2;?\a");
     CHECK(replies == indexed);
@@ -81,11 +81,11 @@ TEST_CASE("OSC 4/12 queries and palette resets use request terminators") {
     parser.feed("\033]4;1;#010203\a");
     CHECK(engine.palette_color(1) == 0x010203);
     parser.feed("\033]104;1\a");
-    CHECK(engine.palette_color(1) == 0xcc0403);
+    CHECK(engine.palette_color(1) == 0xf67e7d);
     parser.feed("\033]4;1;#010203\a\033]104;\033\\");
-    CHECK(engine.palette_color(1) == 0xcc0403);
+    CHECK(engine.palette_color(1) == 0xf67e7d);
     parser.feed("\033]4;2;#010203\a\033]104\a");
-    CHECK(engine.palette_color(2) == 0x19cb00);
+    CHECK(engine.palette_color(2) == 0xcae7b9);
 
     parser.feed("\033]12;#112233\a");
     replies.clear();

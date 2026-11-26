@@ -173,6 +173,9 @@ ssize_t PosixPty::write(std::string_view data) {
 }
 
 void PosixPty::terminate() {
+    // Close the PTY master first so the kernel delivers EOF/SIGHUP to the
+    // foreground process group immediately instead of waiting on usleep polls.
+    master_fd_.reset();
     // Reap/check first: an already-reaped PID may have been reused by the OS.
     if (is_alive()) {
         auto wait_briefly = [this](int max_ms) -> pid_t {
@@ -187,17 +190,17 @@ void PosixPty::terminate() {
             }
             return 0;
         };
+        ::kill(-child_pid_, SIGHUP);
         ::kill(child_pid_, SIGHUP);
-        if (wait_briefly(100) == 0) {
+        if (wait_briefly(20) == 0) {
             ::kill(child_pid_, SIGTERM);
-            if (wait_briefly(50) == 0) {
+            if (wait_briefly(20) == 0) {
                 ::kill(child_pid_, SIGKILL);
-                wait_briefly(1000);
+                wait_briefly(100);
             }
         }
         child_pid_ = -1;
     }
-    master_fd_.reset();
 }
 
 } // namespace gritty::platform

@@ -10,8 +10,8 @@ namespace gritty::core {
 inline constexpr auto kDefaultPalette = [] {
     std::array<uint32_t, 256> palette{};
     constexpr std::array<uint32_t, 16> ansi{
-        0x000000, 0xcc0403, 0x19cb00, 0xcecb00, 0x0d73cc, 0xcb1ed1, 0x0dcdcd, 0xdddddd,
-        0x767676, 0xf2201f, 0x23fd00, 0xfffd00, 0x1a8fff, 0xfd28ff, 0x14ffff, 0xffffff,
+        0x282c34, 0xf67e7d, 0xcae7b9, 0xe1dd8f, 0x7cb7ff, 0xd7bcc8, 0x00c1e4, 0xdcdfe4,
+        0x282c34, 0xf67e7d, 0xcae7b9, 0xe1dd8f, 0x7cb7ff, 0xd7bcc8, 0x00c1e4, 0xdcdfe4,
     };
     for (std::size_t i = 0; i < ansi.size(); ++i) palette[i] = ansi[i];
     constexpr std::array<uint32_t, 6> steps{0, 95, 135, 175, 215, 255};

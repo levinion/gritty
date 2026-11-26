@@ -17,7 +17,7 @@
         _surface = surface;
         _markedText = nil;
         _markedRange = NSMakeRange(NSNotFound, 0);
-        _selectedRange = NSMakeRange(NSNotFound, 0);
+        _selectedRange = NSMakeRange(0, 0);
         _imeHandled = NO;
         _scrollAccumY = 0.0;
         // Host our own CPU-image layer. A layer-backed NSView lets AppKit
@@ -288,7 +288,7 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     [_markedText release];
     _markedText = nil;
     _markedRange = NSMakeRange(NSNotFound, 0);
-    _selectedRange = NSMakeRange(NSNotFound, 0);
+    _selectedRange = NSMakeRange(0, 0);
 }
 
 // NSTextInputClient
@@ -355,7 +355,17 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
     _imeHandled = YES;
 }
 
-- (void)unmarkText { [self clearMarkedText]; }
+- (void)unmarkText {
+    if ([self hasMarkedText] && _surface) {
+        NSString* text = [_markedText string];
+        if (text && text.length > 0) {
+            const auto utf8 = std::string_view([text UTF8String],
+                [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+            _surface->commit_text(utf8);
+        }
+    }
+    [self clearMarkedText];
+}
 - (NSRange)selectedRange { return _selectedRange; }
 - (NSRange)markedRange { return _markedRange; }
 - (BOOL)hasMarkedText { return _markedText != nil && [_markedText length] > 0; }

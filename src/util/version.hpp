@@ -4,7 +4,7 @@
 
 #ifndef GRITTY_VERSION
 // Standalone builds outside Meson still get a usable XTVERSION reply.
-#define GRITTY_VERSION "0.1.0"
+#define GRITTY_VERSION "2026.11.26"
 #endif
 
 namespace gritty::util {

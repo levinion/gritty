@@ -15,6 +15,7 @@
 #include "width_cases.hpp"
 #include "font_fixture.hpp"
 #include "config/toml_loader.hpp"
+#include "util/version.hpp"
 
 namespace {
 using namespace gritty;
@@ -288,8 +289,9 @@ TEST_CASE("Real tmux startup, pane splits, scrolling, redraw and client resize")
     tmux.expect_screen();
 
     // Discovery must complete, without impersonating foot's larger feature set.
+    const std::string expected_xtversion = "gritty(" + std::string(util::kVersion) + ")";
     REQUIRE(tmux.until([&] {
-        return tmux.command({"display-message", "-p", "#{client_termtype}"}).find("gritty(0.1.0)") != std::string::npos;
+        return tmux.command({"display-message", "-p", "#{client_termtype}"}).find(expected_xtversion) != std::string::npos;
     }));
     const auto features = tmux.command({"display-message", "-p", "#{client_termfeatures}"});
     CHECK(features.find("sync") != std::string::npos);

@@ -120,7 +120,7 @@ EOF
         in {
         default = (stdenvFor pkgs).mkDerivation {
           pname = "gritty";
-          version = "0.1.0";
+          version = "2026.11.26";
           src = ./.;
           MACOSX_DEPLOYMENT_TARGET = darwinDeploymentTarget;
           mesonFlags = [

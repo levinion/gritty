@@ -140,8 +140,12 @@ TEST_CASE("NSTextInputClient commits IME text and tracks marked text") {
         CHECK([view hasMarkedText]);
         CHECK([view markedRange].length == 3);
         CHECK([view selectedRange].location == 2);
+        received.clear();
         [view unmarkText];
         CHECK_FALSE([view hasMarkedText]);
+        CHECK([view selectedRange].location == 0);
+        CHECK([view selectedRange].length == 0);
+        CHECK(received == "\x1b[200~にほん\x1b[201~");
 
         [view doCommandBySelector:@selector(deleteBackward:)];
         CHECK(key_events == 1); // Correct selector spelling must emit Backspace.
