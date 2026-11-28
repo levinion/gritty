@@ -444,16 +444,51 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
                 const toml_datum_t lines_d = find_key(dims, "lines");
                 if (cols_d.type != TOML_UNKNOWN) {
                     int64_t cols = 0;
-                    if (!as_integer(cols_d, cols) || cols < 1 || cols > 1000)
-                        errors.set("window.dimensions.columns must be an integer between 1 and 1000");
+                    if (!as_integer(cols_d, cols) || cols < 0 || cols > 1000)
+                        errors.set("window.dimensions.columns must be an integer between 0 and 1000");
                     else cfg.window.columns = static_cast<size_t>(cols);
                 }
                 if (lines_d.type != TOML_UNKNOWN) {
                     int64_t lines = 0;
-                    if (!as_integer(lines_d, lines) || lines < 1 || lines > 1000)
-                        errors.set("window.dimensions.lines must be an integer between 1 and 1000");
+                    if (!as_integer(lines_d, lines) || lines < 0 || lines > 1000)
+                        errors.set("window.dimensions.lines must be an integer between 0 and 1000");
                     else cfg.window.lines = static_cast<size_t>(lines);
                 }
+            }
+        }
+        const toml_datum_t pos_d = find_key(table, "position");
+        if (pos_d.type != TOML_UNKNOWN) {
+            if (const auto s = as_string(pos_d)) {
+                if (lower(*s) == "none") cfg.window.position.reset();
+                else errors.set("window.position must be 'None' or a table { x = int, y = int }");
+            } else if (pos_d.type == TOML_TABLE) {
+                const toml_datum_t x_d = find_key(pos_d, "x");
+                const toml_datum_t y_d = find_key(pos_d, "y");
+                int64_t px = cfg.window.position ? cfg.window.position->x : 0;
+                int64_t py = cfg.window.position ? cfg.window.position->y : 0;
+                bool valid = !(x_d.type == TOML_UNKNOWN && y_d.type == TOML_UNKNOWN);
+                if (x_d.type != TOML_UNKNOWN && !as_integer(x_d, px)) valid = false;
+                if (y_d.type != TOML_UNKNOWN && !as_integer(y_d, py)) valid = false;
+                if (px < -32768 || px > 32768 || py < -32768 || py > 32768) valid = false;
+                if (!valid) {
+                    errors.set("window.position must be 'None' or a table { x = int, y = int }");
+                } else {
+                    cfg.window.position = platform::WindowPosition{
+                        static_cast<int>(px), static_cast<int>(py)
+                    };
+                }
+            } else {
+                errors.set("window.position must be 'None' or a table { x = int, y = int }");
+            }
+        }
+        const toml_datum_t startup_d = find_key(table, "startup_mode");
+        if (startup_d.type != TOML_UNKNOWN) {
+            const auto value = as_string(startup_d);
+            const auto mode = value ? parse_window_startup_mode(*value) : std::nullopt;
+            if (!mode) {
+                errors.set("window.startup_mode must be Windowed, Maximized, Fullscreen, or SimpleFullscreen");
+            } else {
+                cfg.window.startup_mode = *mode;
             }
         }
     }

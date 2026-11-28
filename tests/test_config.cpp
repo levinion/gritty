@@ -388,11 +388,58 @@ TEST_CASE("TomlLoader and overrides support Alacritty TOML schema") {
     CHECK(cfg->window.columns == 100);
 
     CHECK_FALSE(TomlLoader::load_from_string("[window]\nopacity = 1.5\n").has_value());
-    CHECK_FALSE(TomlLoader::load_from_string("[window]\ndimensions = { columns = 0 }\n").has_value());
+    CHECK(TomlLoader::load_from_string("[window]\ndimensions = { columns = 0, lines = 0 }\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\ndimensions = { columns = -1 }\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\ndimensions = { lines = 1001 }\n").has_value());
     CHECK_FALSE(TomlLoader::load_from_string("[cursor]\nstyle = { shape = 'Circle' }\n").has_value());
     CHECK_FALSE(TomlLoader::load_from_string("[cursor]\nstyle = { blinking = 'Sometimes' }\n").has_value());
     CHECK_FALSE(TomlLoader::load_from_string("[terminal]\nosc52 = 'ReadWrite'\n").has_value());
     CHECK_FALSE(TomlLoader::load_from_string("[terminal.shell]\nargs = [123]\n").has_value());
+}
+
+TEST_CASE("Window dimensions, position, and startup_mode follow Alacritty defaults and validation") {
+    AppConfig defaults;
+    CHECK(defaults.window.columns == 0);
+    CHECK(defaults.window.lines == 0);
+    CHECK_FALSE(defaults.window.position.has_value());
+    CHECK(defaults.window.startup_mode == gritty::platform::WindowStartupMode::Windowed);
+
+    auto placed = TomlLoader::load_from_string(R"(
+        [window]
+        position = { x = 120, y = 80 }
+        startup_mode = "Maximized"
+    )");
+    REQUIRE(placed.has_value());
+    REQUIRE((*placed)->window.position.has_value());
+    CHECK((*placed)->window.position->x == 120);
+    CHECK((*placed)->window.position->y == 80);
+    CHECK((*placed)->window.startup_mode == gritty::platform::WindowStartupMode::Maximized);
+
+    auto reset_none = TomlLoader::load_from_string(R"(
+        [window]
+        position = "None"
+        startup_mode = "SimpleFullscreen"
+    )");
+    REQUIRE(reset_none.has_value());
+    CHECK_FALSE((*reset_none)->window.position.has_value());
+    CHECK((*reset_none)->window.startup_mode == gritty::platform::WindowStartupMode::SimpleFullscreen);
+
+    REQUIRE(defaults.apply_override("window.position.x=-40").has_value());
+    REQUIRE(defaults.apply_override("window.position.y=60").has_value());
+    REQUIRE(defaults.window.position.has_value());
+    CHECK(defaults.window.position->x == -40);
+    CHECK(defaults.window.position->y == 60);
+    REQUIRE(defaults.apply_override("window.position=None").has_value());
+    CHECK_FALSE(defaults.window.position.has_value());
+    REQUIRE(defaults.apply_override("window.startup_mode=Fullscreen").has_value());
+    CHECK(defaults.window.startup_mode == gritty::platform::WindowStartupMode::Fullscreen);
+
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nposition = 'Center'\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nposition = {}\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nposition = { x = 40000 }\n").has_value());
+    CHECK_FALSE(TomlLoader::load_from_string("[window]\nstartup_mode = 'Minimized'\n").has_value());
+    CHECK_FALSE(defaults.apply_override("window.startup_mode=Minimized").has_value());
+    CHECK_FALSE(defaults.apply_override("window.position=Center").has_value());
 }
 
 TEST_CASE("Window quit confirmation option defaults to needed and validates all modes") {

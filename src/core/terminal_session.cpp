@@ -23,7 +23,7 @@ TerminalSession::TerminalSession(
       owned_loop_(std::move(loop)),
       loop_(owned_loop_.get()),
       clipboard_(std::move(clipboard)),
-      engine_(config.cols, config.rows),
+      engine_(std::max(1, config.cols), std::max(1, config.rows)),
       parser_(engine_),
       font_engine_(config.antialias),
       renderer_(font_engine_, config.render_config) {
@@ -40,7 +40,7 @@ TerminalSession::TerminalSession(
       surface_(std::move(surface)),
       loop_(shared_loop),
       clipboard_(std::move(clipboard)),
-      engine_(config.cols, config.rows),
+      engine_(std::max(1, config.cols), std::max(1, config.rows)),
       parser_(engine_),
       font_engine_(config.antialias),
       renderer_(font_engine_, config.render_config) {
@@ -221,8 +221,20 @@ bool TerminalSession::start() {
     update_padding_pixels();
 
     const auto& metrics = font_engine_.metrics();
-    int cell_w = metrics.cell_width;
-    int cell_h = metrics.cell_height;
+    const int cell_w = metrics.cell_width;
+    const int cell_h = metrics.cell_height;
+    const double scale = font_scale_ > 0 ? font_scale_ : 1.0;
+    const int def_w_px = config_.initial_width_pt > 0
+        ? std::max(1, static_cast<int>(std::lround(config_.initial_width_pt * scale))) : 0;
+    const int def_h_px = config_.initial_height_pt > 0
+        ? std::max(1, static_cast<int>(std::lround(config_.initial_height_pt * scale))) : 0;
+    const int init_cols = config_.cols > 0 ? config_.cols
+        : (def_w_px > 0 && cell_w > 0 ? std::max(2, (def_w_px - 2 * padding_x_px_) / cell_w) : 80);
+    const int init_rows = config_.rows > 0 ? config_.rows
+        : (def_h_px > 0 && cell_h > 0 ? std::max(1, (def_h_px - 2 * padding_y_px_) / cell_h) : 24);
+    if (init_cols != engine_.cols() || init_rows != engine_.rows()) {
+        engine_.resize(init_cols, init_rows);
+    }
     engine_.set_cell_size(cell_w, cell_h);
 
     platform::PtySpawnOptions pty_opts{
@@ -231,10 +243,10 @@ bool TerminalSession::start() {
         .cwd = config_.cwd,
         .env = config_.env,
         .term = config_.term,
-        .cols = config_.cols,
-        .rows = config_.rows,
-        .pixel_width = config_.cols * cell_w,
-        .pixel_height = config_.rows * cell_h
+        .cols = init_cols,
+        .rows = init_rows,
+        .pixel_width = init_cols * cell_w,
+        .pixel_height = init_rows * cell_h
     };
 
     if (!pty_.spawn(pty_opts)) {
@@ -288,8 +300,13 @@ bool TerminalSession::start() {
         });
 
         if (cell_w > 0 && cell_h > 0) {
-            surface_->resize(config_.cols * cell_w + 2 * padding_x_px_,
-                             config_.rows * cell_h + 2 * padding_y_px_, surface_->scale());
+            const int grid_w_px = init_cols * cell_w + 2 * padding_x_px_;
+            const int grid_h_px = init_rows * cell_h + 2 * padding_y_px_;
+            const int target_w_px = (config_.cols <= 0 && def_w_px > 0)
+                ? std::max(def_w_px, grid_w_px) : grid_w_px;
+            const int target_h_px = (config_.rows <= 0 && def_h_px > 0)
+                ? std::max(def_h_px, grid_h_px) : grid_h_px;
+            surface_->resize(target_w_px, target_h_px, surface_->scale());
         }
     }
 

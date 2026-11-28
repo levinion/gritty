@@ -3,6 +3,7 @@
 #include "platform/macos/mac_input.hpp"
 #include "platform/macos/cocoa_view.hpp"
 #include "platform/macos/cocoa_surface.hpp"
+#include <cmath>
 #include <memory>
 #include "input/input_mapper.hpp"
 
@@ -248,4 +249,38 @@ TEST_CASE("Cocoa Command+Q routes to quit callback without firing activity disar
         [view detachSurface];
         [view release];
     }
+}
+
+TEST_CASE("macOS window placement centers first window, converts top-left position, and cascades") {
+    using gritty::platform::WindowPosition;
+    using gritty::platform::macos::ScreenRect;
+    using gritty::platform::macos::compute_initial_window_origin;
+
+    const ScreenRect visible{0.0, 40.0, 1440.0, 860.0};
+    constexpr double primary_max_y = 900.0;
+
+    // Default first window: centered horizontally, visually centered vertically.
+    const auto centered = compute_initial_window_origin(
+        800.0, 600.0, visible, primary_max_y, std::nullopt, std::nullopt);
+    CHECK(centered.x == doctest::Approx(320.0));
+    CHECK(centered.y == doctest::Approx(40.0 + std::floor(260.0 * 0.55)));
+
+    // Explicit top-left position converts cleanly into AppKit bottom-left outer origin.
+    const auto explicit_pos = compute_initial_window_origin(
+        800.0, 600.0, visible, primary_max_y, WindowPosition{120, 80}, std::nullopt);
+    CHECK(explicit_pos.x == doctest::Approx(120.0));
+    CHECK(explicit_pos.y == doctest::Approx(900.0 - 80.0 - 600.0));
+
+    // Subsequent windows cascade (+24, -24) and wrap inside visibleFrame when reaching edges.
+    const ScreenRect ref{320.0, 183.0, 800.0, 600.0};
+    const auto cascaded = compute_initial_window_origin(
+        800.0, 600.0, visible, primary_max_y, std::nullopt, ref);
+    CHECK(cascaded.x == doctest::Approx(344.0));
+    CHECK(cascaded.y == doctest::Approx(159.0));
+
+    const ScreenRect edge_ref{700.0, 45.0, 800.0, 600.0};
+    const auto wrapped = compute_initial_window_origin(
+        800.0, 600.0, visible, primary_max_y, std::nullopt, edge_ref);
+    CHECK(wrapped.x == doctest::Approx(24.0));
+    CHECK(wrapped.y == doctest::Approx(40.0 + 860.0 - 600.0 - 24.0));
 }

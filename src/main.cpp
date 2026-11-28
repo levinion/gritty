@@ -203,6 +203,8 @@ public:
             .font_size = cfg->font.size,
             .cols = static_cast<int>(prepared->cols),
             .rows = static_cast<int>(prepared->rows),
+            .initial_width_pt = prepared->cols == 0 ? 800 : 0,
+            .initial_height_pt = prepared->rows == 0 ? 600 : 0,
             .shell = prepared->shell_cmd,
             .term = cfg->main.term,
             .cwd = prepared->resolved_cwd,
@@ -250,6 +252,8 @@ public:
         });
 
         surf_ptr->set_decorations(cfg->window.decorations);
+        surf_ptr->set_initial_position(cfg->window.position);
+        surf_ptr->set_startup_mode(cfg->window.startup_mode);
         surf_ptr->show_window(cfg->main.title);
         session->render_frame(true);
 

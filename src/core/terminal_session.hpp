@@ -23,6 +23,9 @@ struct SessionConfig {
     double font_size{11.25};
     int cols{80};
     int rows{24};
+    // When cols or rows <= 0, derive grid cells from this logical box size.
+    int initial_width_pt{0};
+    int initial_height_pt{0};
     std::string shell;
     std::string term{"xterm-256color"};
     std::string cwd;

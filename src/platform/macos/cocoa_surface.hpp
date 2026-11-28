@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include "platform/pal_interfaces.hpp"
 #include "platform/macos/iosurface_pool.hpp"
 #include "input/input_events.hpp"
@@ -15,6 +16,27 @@ class NSView;
 #endif
 
 namespace gritty::platform::macos {
+
+struct ScreenRect {
+    double x{0};
+    double y{0};
+    double width{0};
+    double height{0};
+};
+
+struct WindowOrigin {
+    double x{0};
+    double y{0};
+};
+
+[[nodiscard]] WindowOrigin compute_initial_window_origin(
+    double outer_w,
+    double outer_h,
+    const ScreenRect& visible_frame,
+    double primary_screen_max_y,
+    std::optional<WindowPosition> explicit_position,
+    std::optional<ScreenRect> cascade_reference
+) noexcept;
 
 class CocoaLayerSurface final : public IWindowSurface {
 public:
@@ -46,6 +68,9 @@ public:
     void set_transparent(bool transparent) override;
     void set_decorations(WindowDecorations decorations) override;
     [[nodiscard]] WindowDecorations decorations() const noexcept override { return decorations_; }
+    void set_initial_position(std::optional<WindowPosition> pos) noexcept { initial_position_ = pos; }
+    void set_startup_mode(WindowStartupMode mode) noexcept { startup_mode_ = mode; }
+    [[nodiscard]] WindowStartupMode startup_mode() const noexcept { return startup_mode_; }
     void set_cursor_shape(MouseCursorShape shape) override;
     [[nodiscard]] MouseCursorShape cursor_shape() const noexcept { return cursor_shape_; }
     void send_notification(std::string_view title, std::string_view body) override;
@@ -130,6 +155,9 @@ private:
     size_t presented_frames_{0};
     bool transparent_{false};
     WindowDecorations decorations_{WindowDecorations::Full};
+    std::optional<WindowPosition> initial_position_;
+    WindowStartupMode startup_mode_{WindowStartupMode::Windowed};
+    bool simple_fullscreen_active_{false};
     MouseCursorShape cursor_shape_{MouseCursorShape::Default};
     std::string window_title_{"Gritty"};
     void* native_window_{nullptr};

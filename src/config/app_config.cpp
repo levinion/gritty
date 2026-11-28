@@ -152,7 +152,13 @@ void MainConfig::set_env(std::string_view key, std::string_view value) {
 std::optional<platform::WindowDecorations> parse_window_decorations(
     std::string_view value
 ) noexcept {
-    return platform::parse_window_decorations(value);
+    return platform::parse_window_decorations(trim(value));
+}
+
+std::optional<platform::WindowStartupMode> parse_window_startup_mode(
+    std::string_view value
+) noexcept {
+    return platform::parse_window_startup_mode(trim(value));
 }
 
 AppConfig::AppConfig() {
@@ -340,6 +346,28 @@ std::expected<void, std::string> AppConfig::apply_override(
         window.decorations = *decorations;
         return {};
     }
+    if (lowered == "window.startup_mode") {
+        const auto startup = parse_window_startup_mode(value);
+        if (!startup) return invalid(key, value);
+        window.startup_mode = *startup;
+        return {};
+    }
+    if (lowered == "window.position") {
+        lower_into(mode, value);
+        if (mode == "none") {
+            window.position.reset();
+            return {};
+        }
+        return invalid(key, value);
+    }
+    if (lowered == "window.position.x" || lowered == "window.position.y") {
+        if (!parse_integer(value, integer) || integer < -32768 || integer > 32768)
+            return invalid(key, value);
+        if (!window.position) window.position = platform::WindowPosition{};
+        if (lowered == "window.position.x") window.position->x = static_cast<int>(integer);
+        else window.position->y = static_cast<int>(integer);
+        return {};
+    }
     if (lowered == "window.confirm_quit" || lowered == "general.confirm_quit") {
         const auto confirm = parse_quit_confirmation(value);
         if (!confirm) return invalid(key, value);
@@ -359,7 +387,7 @@ std::expected<void, std::string> AppConfig::apply_override(
     }
 
     if (lowered == "window.dimensions.columns" || lowered == "window.dimensions.lines") {
-        if (!parse_integer(value, integer) || integer < 1 || integer > 1000)
+        if (!parse_integer(value, integer) || integer < 0 || integer > 1000)
             return invalid(key, value);
         if (lowered == "window.dimensions.columns") {
             window.columns = static_cast<size_t>(integer);

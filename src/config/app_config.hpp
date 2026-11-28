@@ -85,13 +85,18 @@ struct WindowPadding {
 struct WindowConfig {
     platform::WindowDecorations decorations{platform::WindowDecorations::Full};
     WindowPadding padding;
-    size_t columns{80};
-    size_t lines{24};
+    size_t columns{0};
+    size_t lines{0};
+    std::optional<platform::WindowPosition> position;
+    platform::WindowStartupMode startup_mode{platform::WindowStartupMode::Windowed};
     QuitConfirmation confirm_quit{QuitConfirmation::Needed};
 };
 
-// Case-insensitive parser shared by TOML, CLI overrides and tests.
+// Case-insensitive parsers shared by TOML, CLI overrides and tests.
 [[nodiscard]] std::optional<platform::WindowDecorations> parse_window_decorations(
+    std::string_view value
+) noexcept;
+[[nodiscard]] std::optional<platform::WindowStartupMode> parse_window_startup_mode(
     std::string_view value
 ) noexcept;
 

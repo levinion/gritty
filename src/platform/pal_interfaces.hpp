@@ -19,6 +19,19 @@ enum class WindowDecorations : uint8_t {
     Buttonless = 3,
 };
 
+struct WindowPosition {
+    int x{0};
+    int y{0};
+    bool operator==(const WindowPosition&) const noexcept = default;
+};
+
+enum class WindowStartupMode : uint8_t {
+    Windowed = 0,
+    Maximized = 1,
+    Fullscreen = 2,
+    SimpleFullscreen = 3,
+};
+
 // Pointer shapes requested by OSC 22. Kept platform-neutral here; native
 // cursor mapping lives in each platform backend.
 enum class MouseCursorShape : uint8_t {
@@ -35,23 +48,38 @@ enum class MouseCursorShape : uint8_t {
     Hidden,
 };
 
+[[nodiscard]] constexpr bool ascii_iequals(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const char c = a[i];
+        const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lowered != b[i]) return false;
+    }
+    return true;
+}
+
 // Case-insensitive, allocation-free parser for the TOML/CLI string values.
 [[nodiscard]] constexpr std::optional<WindowDecorations> parse_window_decorations(
     std::string_view value
 ) noexcept {
-    auto equals = [value](std::string_view expected) noexcept {
-        if (value.size() != expected.size()) return false;
-        for (size_t i = 0; i < value.size(); ++i) {
-            const char c = value[i];
-            const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-            if (lowered != expected[i]) return false;
-        }
-        return true;
-    };
-    if (equals("full")) return WindowDecorations::Full;
-    if (equals("none")) return WindowDecorations::None;
-    if (equals("transparent")) return WindowDecorations::Transparent;
-    if (equals("buttonless")) return WindowDecorations::Buttonless;
+    if (ascii_iequals(value, "full")) return WindowDecorations::Full;
+    if (ascii_iequals(value, "none")) return WindowDecorations::None;
+    if (ascii_iequals(value, "transparent")) return WindowDecorations::Transparent;
+    if (ascii_iequals(value, "buttonless")) return WindowDecorations::Buttonless;
+    return std::nullopt;
+}
+
+[[nodiscard]] constexpr std::optional<WindowStartupMode> parse_window_startup_mode(
+    std::string_view value
+) noexcept {
+    if (ascii_iequals(value, "windowed")) return WindowStartupMode::Windowed;
+    if (ascii_iequals(value, "maximized")) return WindowStartupMode::Maximized;
+    if (ascii_iequals(value, "fullscreen")) return WindowStartupMode::Fullscreen;
+    if (ascii_iequals(value, "simplefullscreen") ||
+        ascii_iequals(value, "simple-fullscreen") ||
+        ascii_iequals(value, "simple_fullscreen")) {
+        return WindowStartupMode::SimpleFullscreen;
+    }
     return std::nullopt;
 }
 

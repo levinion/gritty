@@ -14,8 +14,43 @@ namespace {
 
 AppDelegateCallbacks g_app_callbacks;
 bool g_app_initialized = false;
+int g_simple_fullscreen_windows = 0;
 
 } // namespace
+
+WindowOrigin compute_initial_window_origin(
+    double outer_w,
+    double outer_h,
+    const ScreenRect& visible_frame,
+    double primary_screen_max_y,
+    std::optional<WindowPosition> explicit_position,
+    std::optional<ScreenRect> cascade_reference
+) noexcept {
+    if (explicit_position) {
+        return {
+            static_cast<double>(explicit_position->x),
+            primary_screen_max_y - static_cast<double>(explicit_position->y) - outer_h
+        };
+    }
+    if (cascade_reference) {
+        double x = cascade_reference->x + 24.0;
+        double y = (cascade_reference->y + cascade_reference->height) - 24.0 - outer_h;
+        if (x + outer_w > visible_frame.x + visible_frame.width) {
+            x = visible_frame.x + 24.0;
+        }
+        if (y < visible_frame.y) {
+            y = std::max(visible_frame.y,
+                         visible_frame.y + visible_frame.height - outer_h - 24.0);
+        }
+        return {x, y};
+    }
+    const double avail_w = std::max(0.0, visible_frame.width - outer_w);
+    const double avail_h = std::max(0.0, visible_frame.height - outer_h);
+    return {
+        visible_frame.x + std::floor(avail_w * 0.5),
+        visible_frame.y + std::floor(avail_h * 0.55)
+    };
+}
 
 } // namespace gritty::platform::macos
 
@@ -153,6 +188,13 @@ CocoaLayerSurface::~CocoaLayerSurface() {
             [(id)native_delegate_ release];
             native_delegate_ = nullptr;
         }
+        if (simple_fullscreen_active_) {
+            simple_fullscreen_active_ = false;
+            if (--g_simple_fullscreen_windows <= 0) {
+                g_simple_fullscreen_windows = 0;
+                if (NSApp) [NSApp setPresentationOptions:NSApplicationPresentationDefault];
+            }
+        }
     }
 }
 
@@ -212,23 +254,32 @@ void CocoaLayerSurface::present(const util::PixmanRegion& damage) {
 void CocoaLayerSurface::show_window(const std::string& title) {
     ensure_cocoa_app_initialized();
     @autoreleasepool {
-        const CGFloat win_w = pixel_width_ / scale_;
-        const CGFloat win_h = pixel_height_ / scale_;
-        NSRect frame = NSMakeRect(100, 100, win_w, win_h);
-        if (NSWindow* ref = [NSApp keyWindow] ? [NSApp keyWindow] : [NSApp mainWindow]) {
-            const NSRect ref_frame = ref.frame;
-            const NSRect visible = ref.screen ? ref.screen.visibleFrame
-                : ([NSScreen mainScreen] ? [NSScreen mainScreen].visibleFrame : NSMakeRect(0, 0, 4096, 4096));
-            CGFloat x = NSMinX(ref_frame) + 24.0;
-            CGFloat y = NSMaxY(ref_frame) - 24.0 - win_h;
-            if (x + win_w > NSMaxX(visible)) x = NSMinX(visible) + 24.0;
-            if (y < NSMinY(visible)) y = std::max(NSMinY(visible), NSMaxY(visible) - win_h - 24.0);
-            frame = NSMakeRect(x, y, win_w, win_h);
+        NSWindow* ref = [NSApp keyWindow] ? [NSApp keyWindow] : [NSApp mainWindow];
+        NSScreen* target_screen = nil;
+        if (ref && ref.screen) {
+            target_screen = ref.screen;
+        } else {
+            const NSPoint mouse = [NSEvent mouseLocation];
+            for (NSScreen* screen in [NSScreen screens]) {
+                if (NSPointInRect(mouse, screen.frame)) {
+                    target_screen = screen;
+                    break;
+                }
+            }
         }
+        if (!target_screen) target_screen = [NSScreen mainScreen];
+        if (!target_screen && [NSScreen screens].count > 0) {
+            target_screen = [[NSScreen screens] firstObject];
+        }
+
+        const NSRect visible = target_screen ? target_screen.visibleFrame
+            : NSMakeRect(0, 0, 4096, 4096);
+        const CGFloat win_w = std::min(pixel_width_ / scale_, visible.size.width);
+        const CGFloat win_h = std::min(pixel_height_ / scale_, visible.size.height);
         const NSWindowStyleMask mask = style_mask_for_decorations(decorations_);
         window_title_ = title;
 
-        GrittyWindow* window = [[GrittyWindow alloc] initWithContentRect:frame
+        GrittyWindow* window = [[GrittyWindow alloc] initWithContentRect:NSMakeRect(0, 0, win_w, win_h)
                                                                 styleMask:mask
                                                                   backing:NSBackingStoreBuffered
                                                                     defer:NO];
@@ -237,6 +288,7 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         window.backgroundColor = transparent_ ? NSColor.clearColor : NSColor.blackColor;
         window.title = [NSString stringWithUTF8String:title.c_str()];
         [window setAcceptsMouseMovedEvents:YES];
+        window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
 
         GrittyView* view = [[GrittyView alloc] initWithSurface:this];
         [window setContentView:view];
@@ -250,8 +302,59 @@ void CocoaLayerSurface::show_window(const std::string& title) {
         native_view_ = (void*)view;
         apply_window_decorations();
 
-        [window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        NSScreen* primary = [NSScreen screens].count > 0
+            ? [[NSScreen screens] firstObject] : target_screen;
+        const double primary_max_y = primary ? NSMaxY(primary.frame) : 0.0;
+        const ScreenRect vis_rect{
+            visible.origin.x, visible.origin.y, visible.size.width, visible.size.height
+        };
+        std::optional<ScreenRect> ref_rect;
+        if (ref) {
+            const NSRect rf = ref.frame;
+            ref_rect = ScreenRect{rf.origin.x, rf.origin.y, rf.size.width, rf.size.height};
+        }
+        const NSRect outer = window.frame;
+        const WindowOrigin origin = compute_initial_window_origin(
+            outer.size.width, outer.size.height, vis_rect, primary_max_y,
+            initial_position_, ref_rect);
+        [window setFrameOrigin:NSMakePoint(origin.x, origin.y)];
+
+        switch (startup_mode_) {
+            case WindowStartupMode::Maximized:
+                [window makeKeyAndOrderFront:nil];
+                [window setFrame:visible display:YES];
+                flush_pending_resize();
+                [NSApp activateIgnoringOtherApps:YES];
+                break;
+            case WindowStartupMode::Fullscreen:
+                [window makeKeyAndOrderFront:nil];
+                [NSApp activateIgnoringOtherApps:YES];
+                [window toggleFullScreen:nil];
+                break;
+            case WindowStartupMode::SimpleFullscreen: {
+                const NSRect full = target_screen ? target_screen.frame : visible;
+                [window setStyleMask:NSWindowStyleMaskBorderless];
+                [window setFrame:full display:YES];
+                [window setContentView:view];
+                [window makeFirstResponder:view];
+                if (!simple_fullscreen_active_) {
+                    simple_fullscreen_active_ = true;
+                    ++g_simple_fullscreen_windows;
+                }
+                [NSApp setPresentationOptions:
+                    NSApplicationPresentationAutoHideMenuBar |
+                    NSApplicationPresentationAutoHideDock];
+                flush_pending_resize();
+                [window makeKeyAndOrderFront:nil];
+                [NSApp activateIgnoringOtherApps:YES];
+                break;
+            }
+            case WindowStartupMode::Windowed:
+            default:
+                [window makeKeyAndOrderFront:nil];
+                [NSApp activateIgnoringOtherApps:YES];
+                break;
+        }
     }
 }
 

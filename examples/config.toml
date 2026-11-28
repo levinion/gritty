@@ -15,7 +15,12 @@ decorations = "Full"
 opacity = 1.0
 # padding = 8
 padding = { x = 0, y = 0 }
-dimensions = { columns = 80, lines = 24 }
+# Set columns/lines to 0 to match Alacritty's default 800x600 window size
+dimensions = { columns = 0, lines = 0 }
+# "None" (center first window, cascade new ones) or { x = 100, y = 100 }
+position = "None"
+# Windowed | Maximized | Fullscreen | SimpleFullscreen
+startup_mode = "Windowed"
 # always | needed | never (needed confirms Cmd+Q when multiple windows are open)
 confirm_quit = "needed"
 

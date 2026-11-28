@@ -888,3 +888,36 @@ TEST_CASE("Two TerminalSessions share one event loop with isolated exit callback
         static_cast<uintptr_t>(platform::IEventLoop::TimerId::SyncWatchdog))) == 1);
     CHECK(exited2 == 0);
 }
+
+TEST_CASE("TerminalSession derives cols and rows from 800x600 default logical box when cols/rows are 0") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+
+    auto surface = std::make_unique<TestSurface>();
+    surface->scaling = 2.0;
+    auto* output = surface.get();
+
+    core::SessionConfig cfg;
+    cfg.font_path = font;
+    cfg.font_size = 11.25;
+    cfg.font_dpi = 72;
+    cfg.padding_x = 8;
+    cfg.padding_y = 8;
+    cfg.cols = 0;
+    cfg.rows = 0;
+    cfg.initial_width_pt = 800;
+    cfg.initial_height_pt = 600;
+    cfg.shell = "/bin/sh";
+    cfg.args = {"-c", "read line"};
+
+    core::TerminalSession session(cfg, std::move(surface), std::make_unique<TestLoop>(), nullptr);
+    REQUIRE(session.start());
+
+    const auto& metrics = session.font_engine().metrics();
+    const int expected_cols = (1600 - 2 * 16) / metrics.cell_width;
+    const int expected_rows = (1200 - 2 * 16) / metrics.cell_height;
+    CHECK(session.engine().cols() == expected_cols);
+    CHECK(session.engine().rows() == expected_rows);
+    CHECK(output->width == 1600);
+    CHECK(output->height == 1200);
+}
