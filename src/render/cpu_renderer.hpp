@@ -50,6 +50,7 @@ public:
     }
     void set_preedit(std::string_view utf8, size_t sel_start, size_t sel_end);
     void set_status_banner(std::string_view utf8);
+    void reset_glyph_atlas() noexcept;
     struct RenderStats {
         size_t scroll_moves{0};
         size_t scroll_skips{0};    // Move was redundant: destinations are fully repainted anyway.

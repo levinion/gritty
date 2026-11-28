@@ -111,12 +111,15 @@ bool FontEngine::load_font(std::string_view font_path, double pt_size, unsigned 
     return true;
 }
 
-bool FontEngine::set_dpi(unsigned int dpi) {
-    if (faces_.empty() || dpi == 0) return false;
-    if (dpi_ == dpi) return true;
-    if (faces_[0].face.valid() && !apply_face_size(faces_[0].face.get(), pt_size_, dpi)) {
+bool FontEngine::update_size_and_dpi(double pt_size, unsigned int dpi) {
+    if (faces_.empty() || dpi == 0 || !std::isfinite(pt_size) || pt_size < 1.0 || pt_size > 200.0) {
         return false;
     }
+    if (dpi_ == dpi && std::abs(pt_size_ - pt_size) < 1e-6) return true;
+    if (faces_[0].face.valid() && !apply_face_size(faces_[0].face.get(), pt_size, dpi)) {
+        return false;
+    }
+    pt_size_ = pt_size;
     dpi_ = dpi;
     if (faces_[0].face.valid() && faces_[0].hb_font.valid()) {
         hb_ft_font_changed(faces_[0].hb_font.get());
@@ -136,6 +139,14 @@ bool FontEngine::set_dpi(unsigned int dpi) {
     compute_metrics();
     clear_cache();
     return true;
+}
+
+bool FontEngine::set_size(double pt_size) {
+    return update_size_and_dpi(pt_size, dpi_);
+}
+
+bool FontEngine::set_dpi(unsigned int dpi) {
+    return update_size_and_dpi(pt_size_, dpi);
 }
 
 bool FontEngine::set_style_font(bool bold, bool italic, std::string_view font_path,

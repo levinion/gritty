@@ -544,6 +544,15 @@ CpuRenderer::~CpuRenderer() {
     if (glyph_atlas_) pixman_glyph_cache_destroy(glyph_atlas_);
 }
 
+void CpuRenderer::reset_glyph_atlas() noexcept {
+    if (glyph_atlas_) {
+        pixman_glyph_cache_destroy(glyph_atlas_);
+        glyph_atlas_ = nullptr;
+    }
+    ++atlas_generation_;
+    atlas_entries_ = 0;
+}
+
 uint32_t CpuRenderer::resolve_foreground(
     const core::Cell& cell, const core::TerminalEngine& engine
 ) const noexcept {

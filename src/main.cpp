@@ -246,6 +246,12 @@ public:
         surf_ptr->set_quit_request_callback([this, id] { handle_quit_request(id); });
         surf_ptr->set_new_window_callback([this] { (void)open_default_window(); });
         surf_ptr->set_activity_callback([this] { disarm_quit_confirm(); });
+        surf_ptr->set_zoom_callback([sess_ptr](platform::macos::CocoaLayerSurface::ZoomAction action) {
+            using Zoom = platform::macos::CocoaLayerSurface::ZoomAction;
+            if (action == Zoom::In) (void)sess_ptr->zoom_in();
+            else if (action == Zoom::Out) (void)sess_ptr->zoom_out();
+            else (void)sess_ptr->reset_zoom();
+        });
         surf_ptr->set_focus_callback([this, id, sess_ptr](bool focused) {
             sess_ptr->on_window_focus(focused);
             on_window_focus(id, focused);
@@ -540,6 +546,10 @@ int main(int argc, char* argv[]) {
     AppController controller(active_server, home_dir);
     platform::macos::initialize_cocoa_application({
         .on_reopen_no_windows = [&controller] { controller.handle_reopen(); },
+        .on_new_window = [&controller] {
+            controller.disarm_quit_confirm();
+            (void)controller.open_default_window();
+        },
         .on_quit_requested = [&controller] { controller.handle_quit_request(0); },
     });
 

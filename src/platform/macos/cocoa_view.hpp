@@ -17,6 +17,7 @@ namespace gritty::platform::macos { class CocoaLayerSurface; }
     NSRange _selectedRange;
     BOOL _imeHandled;
     CGFloat _scrollAccumY;
+    CGFloat _magnifyAccum;
 }
 - (instancetype)initWithSurface:(gritty::platform::macos::CocoaLayerSurface*)surface;
 - (void)detachSurface;
@@ -24,6 +25,10 @@ namespace gritty::platform::macos { class CocoaLayerSurface; }
 - (BOOL)requestFrame;
 - (void)stopFrames;
 - (void)sendKeyCode:(gritty::input::KeyCode)key;
+- (void)paste:(id)sender;
+- (void)zoomIn:(id)sender;
+- (void)zoomOut:(id)sender;
+- (void)resetZoom:(id)sender;
 - (void)resetCursorRects;
 - (void)cursorUpdate:(NSEvent*)event;
 @end

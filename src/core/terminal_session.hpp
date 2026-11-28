@@ -89,6 +89,11 @@ public:
     void paste_text(std::string_view text);
     void handle_mouse_event(const input::MouseEvent& ev);
     void handle_surface_resize(int px_w, int px_h, double scale);
+    bool set_font_size(double pt_size);
+    bool zoom_in();
+    bool zoom_out();
+    bool reset_zoom();
+    [[nodiscard]] double current_font_size() const noexcept { return current_font_size_; }
     void write_pty(std::string_view data);
 
     // foot's commit/frame-callback pacing: disabled only for A/B measurement.
@@ -112,6 +117,7 @@ public:
 private:
     void init_session();
     void request_exit();
+    void sync_grid_to_pixels(int px_w, int px_h, int min_cols, int min_rows);
     void update_padding_pixels() noexcept;
     void finish_synchronized_update();
     void render_pending_frame();
@@ -135,6 +141,7 @@ private:
     std::array<uint8_t, 65536> read_buf_{};
     std::string last_title_;
     double font_scale_{1.0};
+    double current_font_size_{11.25};
     int padding_x_px_{0};
     int padding_y_px_{0};
     std::string pending_write_;

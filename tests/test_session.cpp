@@ -921,3 +921,52 @@ TEST_CASE("TerminalSession derives cols and rows from 800x600 default logical bo
     CHECK(output->width == 1600);
     CHECK(output->height == 1200);
 }
+
+TEST_CASE("TerminalSession zoom_in, zoom_out, and reset_zoom adjust grid inside fixed surface pixels") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+
+    auto surface = std::make_unique<TestSurface>();
+    surface->scaling = 2.0;
+    auto* output = surface.get();
+
+    core::SessionConfig cfg;
+    cfg.font_path = font;
+    cfg.font_size = 12.0;
+    cfg.font_dpi = 72;
+    cfg.cols = 60;
+    cfg.rows = 20;
+    cfg.shell = "/bin/sh";
+    cfg.args = {"-c", "read line"};
+
+    core::TerminalSession session(cfg, std::move(surface), std::make_unique<TestLoop>(), nullptr);
+    REQUIRE(session.start());
+    const int initial_w = output->width;
+    const int initial_h = output->height;
+    const int cols0 = session.engine().cols();
+    const int rows0 = session.engine().rows();
+    CHECK(session.current_font_size() == doctest::Approx(12.0));
+
+    REQUIRE(session.zoom_in());
+    REQUIRE(session.zoom_in());
+    CHECK(session.current_font_size() == doctest::Approx(14.0));
+    CHECK(output->width == initial_w);
+    CHECK(output->height == initial_h);
+    CHECK(session.engine().cols() < cols0);
+    CHECK(session.engine().rows() < rows0);
+
+    REQUIRE(session.zoom_out());
+    CHECK(session.current_font_size() == doctest::Approx(13.0));
+
+    REQUIRE(session.reset_zoom());
+    CHECK(session.current_font_size() == doctest::Approx(12.0));
+    CHECK(session.engine().cols() == cols0);
+    CHECK(session.engine().rows() == rows0);
+
+    CHECK(session.set_font_size(200.0));
+    CHECK(session.current_font_size() == doctest::Approx(96.0));
+    CHECK_FALSE(session.zoom_in());
+    CHECK(session.set_font_size(1.0));
+    CHECK(session.current_font_size() == doctest::Approx(4.0));
+    CHECK_FALSE(session.zoom_out());
+}

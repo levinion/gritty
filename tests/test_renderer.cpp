@@ -1483,3 +1483,34 @@ TEST_CASE("CpuRenderer draws bottom status banner and restores underlying cells 
         REQUIRE(target.data()[i] == baseline.data()[i]);
     }
 }
+
+TEST_CASE("FontEngine::set_size scales metrics cleanly and CpuRenderer::reset_glyph_atlas stays safe") {
+    const auto path = find_test_font();
+    if (path.empty()) return;
+    FontEngine fonts;
+    REQUIRE(fonts.load_font(path, 12.0, 72));
+    REQUIRE(fonts.set_style_font(true, false, path));
+    fonts.add_fallback_font(path);
+
+    const int cw12 = fonts.metrics().cell_width;
+    const int ch12 = fonts.metrics().cell_height;
+
+    TerminalEngine engine(8, 2);
+    engine.print_ascii_run("ZoomTest");
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, 8 * cw12, 2 * ch12, nullptr, 0));
+    CpuRenderer renderer(fonts);
+    renderer.render(engine, target.get(), nullptr, true);
+
+    REQUIRE(fonts.set_size(24.0));
+    CHECK(fonts.pt_size() == doctest::Approx(24.0));
+    CHECK(fonts.metrics().cell_width > cw12);
+    CHECK(fonts.metrics().cell_height > ch12);
+
+    renderer.reset_glyph_atlas();
+    gritty::util::PixmanImage larger(pixman_image_create_bits(
+        PIXMAN_a8r8g8b8, 8 * fonts.metrics().cell_width, 2 * fonts.metrics().cell_height, nullptr, 0));
+    renderer.render(engine, larger.get(), nullptr, true);
+    CHECK(fonts.set_size(12.0));
+    CHECK(fonts.metrics().cell_width == cw12);
+    CHECK(fonts.metrics().cell_height == ch12);
+}

@@ -124,7 +124,7 @@ Common CLI flags (`gritty --help` for the full list):
 - `--cols <n>`, `--rows <n>` — initial grid size (defaults to `800×600` logical points when unset / `0`)
 - `--working-directory <dir>` (`--cwd`), `-T <title>`, `--class <id>`, `--hold`, `--standalone`
 
-Gritty runs under a single Dock icon/instance across launches while keeping every window independent: `Cmd+N` or launching `gritty` / `open -n -a Gritty` opens a new independent window, `Cmd+W` closes the focused window, closing the last window exits the instance cleanly, and `window.confirm_quit` (`"needed"` by default, `"always"`, or `"never"`) controls double-`Cmd+Q` quit confirmation.
+Gritty runs under a single Dock icon/instance across launches while keeping every window independent: `Cmd+N` or launching `gritty` / `open -n -a Gritty` opens a new independent window, `Cmd+W` closes the focused window, closing the last window exits the instance cleanly, `Cmd++` / `Cmd+-` / `Cmd+0` (and trackpad pinch) zoom font size per window, and `window.confirm_quit` (`"needed"` by default, `"always"`, or `"never"`) controls double-`Cmd+Q` quit confirmation.
 
 ## Benchmarks
 

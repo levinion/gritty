@@ -107,8 +107,10 @@ public:
     // Load primary font from file path
     bool load_font(std::string_view font_path, double pt_size, unsigned int dpi = 96,
                    std::string_view postscript_name = {});
-    // Update DPI without clearing registered fallback or style faces.
+    // Update font size or DPI without clearing registered fallback or style faces.
+    bool set_size(double pt_size);
     bool set_dpi(unsigned int dpi);
+    [[nodiscard]] double pt_size() const noexcept { return pt_size_; }
     // Register a lazy style face (bold / italic / bold-italic).
     bool set_style_font(bool bold, bool italic, std::string_view font_path,
                         std::string_view postscript_name = {});
@@ -177,6 +179,7 @@ private:
                                              bool constrain_icon = false);
     LoadedFace* face_for_idx(uint16_t face_idx) noexcept;
     bool open_fallback(LoadedFace& face);
+    bool update_size_and_dpi(double pt_size, unsigned int dpi);
     void compute_metrics();
     const CachedGlyph* rasterize_glyph(uint16_t face_idx, uint32_t glyph_index, bool bold, bool italic,
                                        GlyphCacheEntry** entry_out = nullptr, bool constrain_icon = false);

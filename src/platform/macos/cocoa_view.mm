@@ -20,6 +20,7 @@
         _selectedRange = NSMakeRange(0, 0);
         _imeHandled = NO;
         _scrollAccumY = 0.0;
+        _magnifyAccum = 0.0;
         // Host our own CPU-image layer. A layer-backed NSView lets AppKit
         // allocate additional resize backing bitmaps we never draw into.
         [self setLayer:[CALayer layer]];
@@ -198,6 +199,15 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
         } else if (plain && command_key_is(event, @"v")) {
             _surface->on_user_activity();
             _surface->paste_from_pasteboard();
+        } else if (plain && (command_key_is(event, @"=") || command_key_is(event, @"+"))) {
+            _surface->on_user_activity();
+            _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::In);
+        } else if (plain && (command_key_is(event, @"-") || command_key_is(event, @"_"))) {
+            _surface->on_user_activity();
+            _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Out);
+        } else if (plain && command_key_is(event, @"0")) {
+            _surface->on_user_activity();
+            _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Reset);
         } else if (plain && command_key_is(event, @"h")) {
             _surface->on_user_activity();
             [NSApp hide:nil];
@@ -301,6 +311,51 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
         auto ev = gritty::platform::macos::MacInput::translate_mouse_event(
             event, 0, 0, self.bounds.size.height);
         _surface->on_mouse_event(ev);
+    }
+}
+
+- (void)paste:(id)sender {
+    (void)sender;
+    if (!_surface) return;
+    _surface->on_user_activity();
+    _surface->paste_from_pasteboard();
+}
+
+- (void)zoomIn:(id)sender {
+    (void)sender;
+    if (!_surface) return;
+    _surface->on_user_activity();
+    _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::In);
+}
+
+- (void)zoomOut:(id)sender {
+    (void)sender;
+    if (!_surface) return;
+    _surface->on_user_activity();
+    _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Out);
+}
+
+- (void)resetZoom:(id)sender {
+    (void)sender;
+    if (!_surface) return;
+    _surface->on_user_activity();
+    _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Reset);
+}
+
+- (void)magnifyWithEvent:(NSEvent *)event {
+    if (!_surface) return;
+    if (event.phase == NSEventPhaseBegan) _magnifyAccum = 0.0;
+    _magnifyAccum += [event magnification];
+    constexpr CGFloat kStep = 0.15;
+    while (_magnifyAccum >= kStep) {
+        _surface->on_user_activity();
+        _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::In);
+        _magnifyAccum -= kStep;
+    }
+    while (_magnifyAccum <= -kStep) {
+        _surface->on_user_activity();
+        _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Out);
+        _magnifyAccum += kStep;
     }
 }
 

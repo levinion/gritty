@@ -284,3 +284,95 @@ TEST_CASE("macOS window placement centers first window, converts top-left positi
     CHECK(wrapped.x == doctest::Approx(24.0));
     CHECK(wrapped.y == doctest::Approx(40.0 + 860.0 - 600.0 - 24.0));
 }
+
+TEST_CASE("Cocoa main menu populates App, File, Edit, View, Window and dispatches actions") {
+    @autoreleasepool {
+        NSPasteboard* board = [NSPasteboard generalPasteboard];
+        NSString* previous = [board stringForType:NSPasteboardTypeString];
+        [board clearContents];
+        REQUIRE([board setString:@"menu-paste" forType:NSPasteboardTypeString]);
+
+        int reopens = 0;
+        int new_windows = 0;
+        int quits = 0;
+        gritty::platform::macos::initialize_cocoa_application({
+            .on_reopen_no_windows = [&] { ++reopens; },
+            .on_new_window = [&] { ++new_windows; },
+            .on_quit_requested = [&] { ++quits; },
+        });
+
+        NSMenu* main_menu = [NSApp mainMenu];
+        REQUIRE(main_menu != nil);
+        REQUIRE([main_menu numberOfItems] == 5);
+        CHECK([[[main_menu itemAtIndex:0] title] isEqualToString:@"Gritty"]);
+        CHECK([[[main_menu itemAtIndex:1] title] isEqualToString:@"File"]);
+        CHECK([[[main_menu itemAtIndex:2] title] isEqualToString:@"Edit"]);
+        CHECK([[[main_menu itemAtIndex:3] title] isEqualToString:@"View"]);
+        CHECK([[[main_menu itemAtIndex:4] title] isEqualToString:@"Window"]);
+        CHECK([NSApp windowsMenu] == [[main_menu itemAtIndex:4] submenu]);
+
+        NSMenu* app_menu = [[main_menu itemAtIndex:0] submenu];
+        NSMenuItem* quit_item = [app_menu itemWithTitle:@"Quit Gritty"];
+        REQUIRE(quit_item != nil);
+        [NSApp sendAction:quit_item.action to:quit_item.target from:quit_item];
+        CHECK(quits == 1);
+
+        NSMenu* file_menu = [[main_menu itemAtIndex:1] submenu];
+        NSMenuItem* new_item = [file_menu itemWithTitle:@"New Window"];
+        REQUIRE(new_item != nil);
+        [NSApp sendAction:new_item.action to:new_item.target from:new_item];
+        CHECK(new_windows == 1);
+
+        NSMenu* view_menu = [[main_menu itemAtIndex:3] submenu];
+        CHECK([view_menu itemWithTitle:@"Zoom In"] != nil);
+        CHECK([view_menu itemWithTitle:@"Zoom Out"] != nil);
+        CHECK([view_menu itemWithTitle:@"Actual Size"] != nil);
+        CHECK([view_menu itemWithTitle:@"Toggle Full Screen"] != nil);
+
+        auto surface = std::make_unique<gritty::platform::macos::CocoaLayerSurface>(80, 25);
+        std::string pasted;
+        int activities = 0;
+        std::vector<gritty::platform::macos::CocoaLayerSurface::ZoomAction> zooms;
+        surface->set_paste_callback([&](std::string_view text) { pasted.assign(text); });
+        surface->set_activity_callback([&] { ++activities; });
+        surface->set_zoom_callback([&](auto action) { zooms.push_back(action); });
+        auto* view = [[GrittyView alloc] initWithSurface:surface.get()];
+        REQUIRE(view != nil);
+        [view paste:nil];
+        CHECK(pasted == "menu-paste");
+        CHECK(activities == 1);
+
+        [view zoomIn:nil];
+        [view zoomOut:nil];
+        [view resetZoom:nil];
+        auto key = [](NSString* chars, NSEventModifierFlags flags, unsigned short code) {
+            return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+                timestamp:0 windowNumber:0 context:nil characters:chars
+                charactersIgnoringModifiers:chars isARepeat:NO keyCode:code];
+        };
+        [view keyDown:key(@"=", NSEventModifierFlagCommand, 24)];
+        [view keyDown:key(@"+", NSEventModifierFlagCommand | NSEventModifierFlagShift, 24)];
+        [view keyDown:key(@"-", NSEventModifierFlagCommand, 27)];
+        [view keyDown:key(@"0", NSEventModifierFlagCommand, 29)];
+        using Zoom = gritty::platform::macos::CocoaLayerSurface::ZoomAction;
+        REQUIRE(zooms.size() == 7);
+        CHECK(zooms[0] == Zoom::In);
+        CHECK(zooms[1] == Zoom::Out);
+        CHECK(zooms[2] == Zoom::Reset);
+        CHECK(zooms[3] == Zoom::In);
+        CHECK(zooms[4] == Zoom::In);
+        CHECK(zooms[5] == Zoom::Out);
+        CHECK(zooms[6] == Zoom::Reset);
+        CHECK(activities == 8);
+
+        [view detachSurface];
+        [view release];
+        gritty::platform::macos::shutdown_cocoa_application();
+        CHECK([[NSApp mainMenu] numberOfItems] == 0);
+        CHECK([[NSApp windowsMenu] numberOfItems] == 0);
+        CHECK(reopens == 0);
+
+        [board clearContents];
+        if (previous) [board setString:previous forType:NSPasteboardTypeString];
+    }
+}

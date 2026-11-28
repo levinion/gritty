@@ -89,6 +89,7 @@ public:
     using KeyCallback = std::function<void(const input::KeyEvent&)>;
     using MouseCallback = std::function<void(const input::MouseEvent&)>;
     using ResizeCallback = std::function<void(int px_w, int px_h, double scale)>;
+    enum class ZoomAction : uint8_t { In = 0, Out = 1, Reset = 2 };
 
     void set_key_callback(KeyCallback cb) override { key_cb_ = std::move(cb); }
     void set_text_commit_callback(TextCommitCallback cb) override { text_commit_cb_ = std::move(cb); }
@@ -102,6 +103,7 @@ public:
     void set_quit_request_callback(std::function<void()> cb) { quit_request_cb_ = std::move(cb); }
     void set_new_window_callback(std::function<void()> cb) { new_window_cb_ = std::move(cb); }
     void set_activity_callback(std::function<void()> cb) { activity_cb_ = std::move(cb); }
+    void set_zoom_callback(std::function<void(ZoomAction)> cb) { zoom_cb_ = std::move(cb); }
     void set_cursor_rect_provider(CursorRectProvider cb) override { cursor_rect_cb_ = std::move(cb); }
     void set_bracketed_paste_provider(BracketedPasteProvider cb) override { bracketed_paste_cb_ = std::move(cb); }
     void set_mouse_reporting_provider(MouseReportingProvider cb) override {
@@ -135,6 +137,7 @@ public:
     void on_quit_requested();
     void on_new_window_requested();
     void on_user_activity();
+    void on_zoom(ZoomAction action);
 
 private:
     void reallocate_buffer();
@@ -186,6 +189,7 @@ private:
     std::function<void()> quit_request_cb_;
     std::function<void()> new_window_cb_;
     std::function<void()> activity_cb_;
+    std::function<void(ZoomAction)> zoom_cb_;
     CursorRectProvider cursor_rect_cb_;
     BracketedPasteProvider bracketed_paste_cb_;
     MouseReportingProvider mouse_reporting_cb_;
@@ -193,6 +197,7 @@ private:
 
 struct AppDelegateCallbacks {
     std::function<void()> on_reopen_no_windows;
+    std::function<void()> on_new_window;
     std::function<void()> on_quit_requested;
 };
 

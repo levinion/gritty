@@ -1,6 +1,6 @@
 # Maintainer: levinion <https://github.com/levinion>
 pkgname=gritty
-pkgver=2026.11.26.1
+pkgver=2026.11.28
 pkgrel=1
 pkgdesc="CPU-rendered terminal emulator for tmux on Linux and macOS"
 arch=('x86_64' 'aarch64')

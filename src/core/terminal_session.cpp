@@ -48,6 +48,7 @@ TerminalSession::TerminalSession(
 }
 
 void TerminalSession::init_session() {
+    current_font_size_ = config_.font_size;
     engine_.configure_palette(config_.palette);
     engine_.configure_initial_colors(config_.render_config.default_fg,
                                      config_.render_config.default_bg,
@@ -535,28 +536,68 @@ void TerminalSession::on_window_focus(bool focused) {
     write_pty(focused ? "\x1b[I" : "\x1b[O");
 }
 
-void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
-    if (px_w <= 0 || px_h <= 0 || scale <= 0) return;
-    if (scale != font_scale_) {
-        if (!font_engine_.set_dpi(
-                static_cast<unsigned int>(std::lround(config_.font_dpi * scale)))) return;
-        font_scale_ = scale;
-    }
-    update_padding_pixels();
+void TerminalSession::sync_grid_to_pixels(int px_w, int px_h, int min_cols, int min_rows) {
     const auto& metrics = font_engine_.metrics();
     if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
     engine_.set_cell_size(metrics.cell_width, metrics.cell_height);
-    int new_cols = (px_w - 2 * padding_x_px_) / metrics.cell_width;
-    int new_rows = (px_h - 2 * padding_y_px_) / metrics.cell_height;
+    const int raw_cols = (px_w - 2 * padding_x_px_) / metrics.cell_width;
+    const int raw_rows = (px_h - 2 * padding_y_px_) / metrics.cell_height;
+    const int new_cols = min_cols > 0 ? std::max(min_cols, raw_cols) : raw_cols;
+    const int new_rows = min_rows > 0 ? std::max(min_rows, raw_rows) : raw_rows;
 
     if (new_cols > 0 && new_rows > 0 && (new_cols != engine_.cols() || new_rows != engine_.rows())) {
         engine_.resize(new_cols, new_rows);
     }
     // The surface may have been reallocated even when its cell count is the
     // same. Update PTY pixel dimensions and repaint the entire new buffer.
-    if (new_cols > 0 && new_rows > 0)
-        pty_.resize(new_cols, new_rows, new_cols * metrics.cell_width, new_rows * metrics.cell_height);
+    if (new_cols > 0 && new_rows > 0) {
+        pty_.resize(new_cols, new_rows,
+                    new_cols * metrics.cell_width, new_rows * metrics.cell_height);
+    }
+}
+
+void TerminalSession::handle_surface_resize(int px_w, int px_h, double scale) {
+    if (px_w <= 0 || px_h <= 0 || scale <= 0) return;
+    if (scale != font_scale_) {
+        if (!font_engine_.set_dpi(
+                static_cast<unsigned int>(std::lround(config_.font_dpi * scale)))) return;
+        font_scale_ = scale;
+        renderer_.reset_glyph_atlas();
+    }
+    update_padding_pixels();
+    const auto& metrics = font_engine_.metrics();
+    if (metrics.cell_width <= 0 || metrics.cell_height <= 0) return;
+    sync_grid_to_pixels(px_w, px_h, 0, 0);
     render_frame(true);
+}
+
+bool TerminalSession::set_font_size(double pt_size) {
+    constexpr double kMinFontSize = 4.0;
+    constexpr double kMaxFontSize = 96.0;
+    if (!std::isfinite(pt_size)) return false;
+    const double clamped = std::clamp(pt_size, kMinFontSize, kMaxFontSize);
+    const double rounded = std::round(clamped * 100.0) / 100.0;
+    if (std::abs(rounded - current_font_size_) < 1e-6) return false;
+    if (!font_engine_.set_size(rounded)) return false;
+    current_font_size_ = rounded;
+    renderer_.reset_glyph_atlas();
+    if (surface_ && surface_->pixel_width() > 0 && surface_->pixel_height() > 0) {
+        sync_grid_to_pixels(surface_->pixel_width(), surface_->pixel_height(), 2, 1);
+    }
+    render_frame(true);
+    return true;
+}
+
+bool TerminalSession::zoom_in() {
+    return set_font_size(current_font_size_ + 1.0);
+}
+
+bool TerminalSession::zoom_out() {
+    return set_font_size(current_font_size_ - 1.0);
+}
+
+bool TerminalSession::reset_zoom() {
+    return set_font_size(config_.font_size);
 }
 
 void TerminalSession::update_padding_pixels() noexcept {
