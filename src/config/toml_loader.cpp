@@ -1,5 +1,6 @@
 #include "config/toml_loader.hpp"
 
+#include "config/parse_helpers.hpp"
 #include "config/tomlc17.h"
 
 #include <algorithm>
@@ -67,16 +68,10 @@ bool as_bool(toml_datum_t datum, bool& out) noexcept {
     return true;
 }
 
-std::string lower(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const char c : text)
-        out.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
-    return out;
-}
+using detail::lower_ascii;
 
 std::string target_platform(std::string_view override) {
-    if (!override.empty()) return lower(override);
+    if (!override.empty()) return lower_ascii(override);
 #if defined(PLATFORM_MACOS)
     return "macos";
 #elif defined(PLATFORM_LINUX)
@@ -222,7 +217,7 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         const toml_datum_t wd = find_key(table, "working_directory");
         if (wd.type != TOML_UNKNOWN) {
             if (const auto value = as_string(wd)) {
-                cfg.main.working_directory = (lower(*value) == "none") ? std::string{} : std::string(*value);
+                cfg.main.working_directory = (lower_ascii(*value) == "none") ? std::string{} : std::string(*value);
             } else {
                 errors.set("general.working_directory must be a string");
             }
@@ -336,7 +331,7 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         const toml_datum_t aa_datum = find_key(table, "antialias");
         if (aa_datum.type != TOML_UNKNOWN) {
             if (const auto value = as_string(aa_datum)) {
-                const std::string mode = lower(*value);
+                const std::string mode = lower_ascii(*value);
                 if (mode == "grayscale") cfg.font.antialias = render::AntialiasMode::Grayscale;
                 else if (mode == "subpixel" || mode == "lcd") cfg.font.antialias = render::AntialiasMode::SubpixelLcd;
                 else if (mode == "none") cfg.font.antialias = render::AntialiasMode::None;
@@ -351,7 +346,7 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         const toml_datum_t style_datum = find_key(table, "style");
         if (style_datum.type != TOML_UNKNOWN) {
             auto apply_shape = [&](std::string_view sv) {
-                const std::string shape = lower(sv);
+                const std::string shape = lower_ascii(sv);
                 if (shape == "block") cfg.cursor.style = core::CursorShape::Block;
                 else if (shape == "beam") cfg.cursor.style = core::CursorShape::Beam;
                 else if (shape == "underline") cfg.cursor.style = core::CursorShape::Underline;
@@ -369,7 +364,7 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
                 if (blink_d.type != TOML_UNKNOWN) {
                     bool b = false;
                     if (const auto bv = as_string(blink_d)) {
-                        const std::string mode = lower(*bv);
+                        const std::string mode = lower_ascii(*bv);
                         if (mode == "never" || mode == "off") cfg.cursor.blink = false;
                         else if (mode == "on" || mode == "always") cfg.cursor.blink = true;
                         else errors.set("cursor.style.blinking must be never, off, on, or always");
@@ -459,7 +454,7 @@ void apply_section(AppConfig& cfg, std::string_view section, toml_datum_t table,
         const toml_datum_t pos_d = find_key(table, "position");
         if (pos_d.type != TOML_UNKNOWN) {
             if (const auto s = as_string(pos_d)) {
-                if (lower(*s) == "none") cfg.window.position.reset();
+                if (lower_ascii(*s) == "none") cfg.window.position.reset();
                 else errors.set("window.position must be 'None' or a table { x = int, y = int }");
             } else if (pos_d.type == TOML_TABLE) {
                 const toml_datum_t x_d = find_key(pos_d, "x");

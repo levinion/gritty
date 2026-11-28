@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -216,13 +217,14 @@ private:
     util::PixmanImage opaque_solid_src_;
     uint32_t dynamic_solid_pixel_{0};
     util::PixmanImage dynamic_solid_src_;
+    static constexpr size_t kMinGlyphBatch = 4;
     struct BatchGlyph {
         int x{0}, y{0}, width{0}, height{0};
         int row{0};
         const void* handle{nullptr};
-        util::PixmanImage mask;
     };
     std::vector<BatchGlyph> glyph_batch_;
+    std::array<util::PixmanImage, kMinGlyphBatch - 1> glyph_batch_fallback_masks_;
     std::vector<pixman_glyph_t> glyph_write_;
     uint32_t glyph_batch_color_{0};
     int glyph_batch_x0_{0}, glyph_batch_y0_{0}, glyph_batch_x1_{0}, glyph_batch_y1_{0};

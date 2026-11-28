@@ -8,6 +8,7 @@ if host_os == 'darwin'
     'platform/macos/ct_discovery.mm',
     'platform/macos/mac_input.mm',
     'platform/macos/kqueue_loop.mm',
+    'platform/macos/cocoa_app.mm',
     'platform/macos/cocoa_surface.mm',
     'platform/macos/cocoa_view.mm',
     'platform/macos/iosurface_pool.mm',

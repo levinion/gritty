@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <expected>
 #include <string_view>
-#include <memory>
 #include <optional>
 #include <vector>
 #include "core/terminal_engine.hpp"
@@ -119,23 +118,6 @@ struct AppConfig {
         size_t* cols_out = nullptr,
         size_t* rows_out = nullptr
     );
-};
-
-class ConfigStore final {
-public:
-    ConfigStore();
-    explicit ConfigStore(std::shared_ptr<const AppConfig> initial);
-
-    [[nodiscard]] std::shared_ptr<const AppConfig> get() const noexcept {
-        return config_;
-    }
-
-    void update(std::shared_ptr<const AppConfig> new_config) noexcept {
-        config_ = std::move(new_config);
-    }
-
-private:
-    std::shared_ptr<const AppConfig> config_;
 };
 
 } // namespace gritty::config

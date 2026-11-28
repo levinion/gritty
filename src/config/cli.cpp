@@ -1,20 +1,12 @@
 #include "config/cli.hpp"
 
+#include "config/parse_helpers.hpp"
 #include "util/version.hpp"
 
-#include <cerrno>
-#include <charconv>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
+#include <cstdint>
 #include <iterator>
-#include <limits>
 #include <string>
-#include <system_error>
 #include <utility>
-#if defined(__APPLE__)
-#include <xlocale.h>
-#endif
 
 namespace gritty::config {
 
@@ -49,37 +41,15 @@ struct Argument {
 }
 
 [[nodiscard]] bool parse_geometry(std::string_view text, size_t& out) noexcept {
-    const char* first = text.data();
-    const char* last = first + text.size();
-    if (first != last && *first == '+') ++first;
-    int parsed = 0;
-    const auto [end, ec] = std::from_chars(first, last, parsed);
-    if (ec != std::errc{} || end != last || parsed < 1 || parsed > kMaxGeometry) return false;
+    int64_t parsed = 0;
+    if (!detail::parse_integer(text, parsed) || parsed < 1 || parsed > kMaxGeometry) return false;
     out = static_cast<size_t>(parsed);
     return true;
 }
 
 [[nodiscard]] bool parse_font_size(std::string_view text, double& out) noexcept {
-    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
-    if (text.empty() || text.size() >= 64) return false;
-    const unsigned char lead = static_cast<unsigned char>(text.front());
-    if (!((lead >= '0' && lead <= '9') || lead == '-' || lead == '.')) return false;
-    for (const char c : text) {
-        if (c == 'x' || c == 'X') return false;
-    }
-    char buf[64];
-    std::memcpy(buf, text.data(), text.size());
-    buf[text.size()] = '\0';
-    errno = 0;
-    char* end = nullptr;
-#if defined(__APPLE__)
-    const double value = strtod_l(buf, &end, nullptr);
-#else
-    const double value = std::strtod(buf, &end);
-#endif
-    if (end != buf + text.size() || !std::isfinite(value) ||
-        (errno == ERANGE && value != 0.0) ||
-        value < kMinFontSize || value > kMaxFontSize) {
+    double value = 0.0;
+    if (!detail::parse_double(text, value) || value < kMinFontSize || value > kMaxFontSize) {
         return false;
     }
     out = value;

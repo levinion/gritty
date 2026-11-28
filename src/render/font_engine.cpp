@@ -293,8 +293,7 @@ const CachedGlyph* FontEngine::cached_or_rasterize(const GlyphKey& key, GlyphCac
     auto it = glyph_cache_.find(key);
     if (it != glyph_cache_.end()) {
         ++cache_hits_;
-        if (it->second.recency != glyph_lru_.begin())
-            glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, it->second.recency);
+        if (!it->second.referenced) it->second.referenced = true;
         if (entry_out) *entry_out = &it->second;
         return &it->second.glyph;
     }
@@ -320,8 +319,7 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
         auto& l1 = ascii_glyph_table_[style][slot];
         if (l1.entry) {
             ++cache_hits_;
-            if (l1.entry->recency != glyph_lru_.begin())
-                glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, l1.entry->recency);
+            if (!l1.entry->referenced) l1.entry->referenced = true;
             return &l1.entry->glyph;
         }
     }

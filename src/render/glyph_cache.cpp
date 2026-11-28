@@ -46,7 +46,12 @@ const CachedGlyph* FontEngine::cache_glyph(const GlyphKey& key, CachedGlyph glyp
     }
     while (glyph_cache_.size() >= cache_limits_.max_entries ||
            cache_bitmap_bytes_ > cache_limits_.max_bitmap_bytes - bytes) {
-        const auto oldest = glyph_cache_.find(glyph_lru_.back());
+        auto oldest = glyph_cache_.find(glyph_lru_.back());
+        while (glyph_lru_.size() > 1 && oldest->second.referenced) {
+            oldest->second.referenced = false;
+            glyph_lru_.splice(glyph_lru_.begin(), glyph_lru_, oldest->second.recency);
+            oldest = glyph_cache_.find(glyph_lru_.back());
+        }
         auto& old_entry = oldest->second;
         const CachedGlyph* evicted = &old_entry.glyph;
         if (old_entry.l1_kind == 1) {
@@ -75,7 +80,7 @@ const CachedGlyph* FontEngine::cache_glyph(const GlyphKey& key, CachedGlyph glyp
     }
     glyph_lru_.push_front(key);
     auto [it, inserted] = glyph_cache_.emplace(key,
-        GlyphCacheEntry{std::move(glyph), glyph_lru_.begin(), bytes, 0, 0, 0});
+        GlyphCacheEntry{std::move(glyph), glyph_lru_.begin(), bytes, 0, 0, 0, false});
     if (!inserted) {
         glyph_lru_.pop_front();
         if (entry_out) *entry_out = &it->second;

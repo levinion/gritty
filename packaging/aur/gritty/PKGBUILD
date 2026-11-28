@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="CPU-rendered terminal emulator for tmux on Linux and macOS"
 arch=('x86_64' 'aarch64')
 url='https://github.com/levinion/gritty'
-license=('MIT')
+license=('GPL-3.0-only')
 depends=(
   'pixman'
   'freetype2'

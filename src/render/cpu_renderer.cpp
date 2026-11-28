@@ -26,6 +26,50 @@ void composite_cached_glyph(pixman_image_t* target, pixman_image_t* solid,
             0, 0, 0, 0, x, y, glyph.width, glyph.height);
     }
 }
+
+struct OverlayGlyph {
+    char32_t cp{0};
+    int width{0};
+    int col_offset{0};
+    bool selected{false};
+};
+
+int decode_overlay_glyphs(
+    std::string_view utf8,
+    int max_cols,
+    size_t sel_start,
+    size_t sel_end,
+    std::vector<OverlayGlyph>& out,
+    int* caret_rel_col = nullptr
+) {
+    out.clear();
+    out.reserve(utf8.size());
+    int total_cols = 0;
+    int caret_col = 0;
+    size_t offset = 0;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(utf8.data());
+    while (offset < utf8.size() && total_cols < max_cols) {
+        utf8proc_int32_t cp = 0;
+        const utf8proc_ssize_t n = utf8proc_iterate(
+            bytes + offset, static_cast<utf8proc_ssize_t>(utf8.size() - offset), &cp);
+        if (n <= 0) {
+            ++offset;
+            continue;
+        }
+        const size_t char_start = offset;
+        offset += static_cast<size_t>(n);
+        if (caret_rel_col && char_start < sel_start) caret_col = total_cols;
+        const int w = utf8proc_charwidth(cp);
+        if (w <= 0) continue;
+        const int span = std::min(w, max_cols - total_cols);
+        const bool selected = char_start >= sel_start && char_start < sel_end;
+        out.push_back({static_cast<char32_t>(cp), span, total_cols, selected});
+        total_cols += span;
+        if (caret_rel_col && offset <= sel_start) caret_col = total_cols;
+    }
+    if (caret_rel_col) *caret_rel_col = caret_col;
+    return total_cols;
+}
 } // namespace
 
 CpuRenderer::CpuRenderer(FontEngine& font_engine, RenderConfig config)
@@ -182,21 +226,26 @@ void CpuRenderer::render(
         if (row.cells[end_col].attrs.width == 2 && end_col + 1 < cols) ++end_col;
     };
 
+    const bool has_images = !engine.images().empty();
+    const bool has_placeholders = !engine.kitty_graphics().virtual_placements().empty();
+
     // Placeholder images use OVER compositing. Restrict them to cells whose
     // background was rebuilt this frame: recompositing a clean row on every
     // cursor blink would compound alpha and visibly darken transparent PNGs.
     util::PixmanRegion placeholder_clip;
-    if (full_redraw) {
-        placeholder_clip.union_rect(0, 0,
-            static_cast<unsigned>(target_w), static_cast<unsigned>(target_h));
-    } else {
-        for (int y = 0; y < rows; ++y) {
-            if (!grid.row(y).dirty) continue;
-            int start_col = 0, end_col = 0;
-            damage_range(y, start_col, end_col);
-            placeholder_clip.union_rect(start_col * cell_w, y * cell_h,
-                static_cast<unsigned>((end_col - start_col + 1) * cell_w),
-                static_cast<unsigned>(cell_h));
+    if (has_images || has_placeholders) {
+        if (full_redraw) {
+            placeholder_clip.union_rect(0, 0,
+                static_cast<unsigned>(target_w), static_cast<unsigned>(target_h));
+        } else {
+            for (int y = 0; y < rows; ++y) {
+                if (!grid.row(y).dirty) continue;
+                int start_col = 0, end_col = 0;
+                damage_range(y, start_col, end_col);
+                placeholder_clip.union_rect(start_col * cell_w, y * cell_h,
+                    static_cast<unsigned>((end_col - start_col + 1) * cell_w),
+                    static_cast<unsigned>(cell_h));
+            }
         }
     }
 
@@ -214,10 +263,11 @@ void CpuRenderer::render(
         draw_row_backgrounds(grid, y, start_col, end_col, cell_w, cell_h, engine, target);
     }
 
-    if (!engine.images().empty())
+    if (has_images)
         draw_images(engine, target, cell_w, cell_h, true, -1, damage_out, placeholder_clip.get());
 
-    draw_placeholders(engine, target, true, placeholder_clip.get(), cell_w, cell_h, metrics, damage_out);
+    if (has_placeholders)
+        draw_placeholders(engine, target, true, placeholder_clip.get(), cell_w, cell_h, metrics, damage_out);
 
     for (int y = 0; y < rows; ++y) {
         auto& row = grid.row(y);
@@ -253,8 +303,11 @@ void CpuRenderer::render(
                     if (const void* handle = glyph_atlas_handle(*glyph)) {
                         const int gx = x * cell_w + glyph->bearing_x;
                         const int gy = y * cell_h + metrics.ascent - glyph->bearing_y;
-                        glyph_batch_.push_back(BatchGlyph{gx, gy, glyph->width, glyph->height,
-                            y, handle, util::PixmanImage(pixman_image_ref(glyph->mask.get()))});
+                        if (glyph_batch_.size() < kMinGlyphBatch - 1) {
+                            glyph_batch_fallback_masks_[glyph_batch_.size()].reset(
+                                pixman_image_ref(glyph->mask.get()));
+                        }
+                        glyph_batch_.push_back(BatchGlyph{gx, gy, glyph->width, glyph->height, y, handle});
                         glyph_batch_x0_ = std::min(glyph_batch_x0_, gx);
                         glyph_batch_y0_ = std::min(glyph_batch_y0_, gy);
                         glyph_batch_x1_ = std::max(glyph_batch_x1_, gx + glyph->width);
@@ -275,8 +328,10 @@ void CpuRenderer::render(
     // non-batchable cells already flushed above.
     flush_glyph_batch(target);
 
-    draw_images(engine, target, cell_w, cell_h, false, -1, damage_out, placeholder_clip.get());
-    draw_placeholders(engine, target, false, placeholder_clip.get(), cell_w, cell_h, metrics, damage_out);
+    if (has_images)
+        draw_images(engine, target, cell_w, cell_h, false, -1, damage_out, placeholder_clip.get());
+    if (has_placeholders)
+        draw_placeholders(engine, target, false, placeholder_clip.get(), cell_w, cell_h, metrics, damage_out);
 
     if (has_preedit) {
         render_preedit(engine, cell_w, cell_h, metrics, target, damage_out);
@@ -631,9 +686,8 @@ void CpuRenderer::flush_glyph_batch(pixman_image_t* target) {
     if (glyph_batch_.empty()) return;
     // Short runs (interleaved with box glyphs or decorations) are cheaper as
     // plain per-glyph composites; the atlas only pays off for longer runs.
-    constexpr size_t min_batch = 4;
     pixman_image_t* batch_solid = get_solid_fill(glyph_batch_color_);
-    if (glyph_batch_.size() >= min_batch && glyph_atlas_ && batch_solid &&
+    if (glyph_batch_.size() >= kMinGlyphBatch && glyph_atlas_ && batch_solid &&
         glyph_batch_x1_ > glyph_batch_x0_ && glyph_batch_y1_ > glyph_batch_y0_) {
         // Glyphs arrive in screen-row order. Keep cross-row batching, but cap
         // each composite's vertical span: Pixman's cost includes the bounding
@@ -667,11 +721,16 @@ void CpuRenderer::flush_glyph_batch(pixman_image_t* target) {
             begin = end;
         }
     } else if (batch_solid) {
-        for (const auto& glyph : glyph_batch_) {
-            pixman_image_composite32(PIXMAN_OP_OVER, batch_solid, glyph.mask.get(), target,
-                0, 0, 0, 0, glyph.x, glyph.y, glyph.width, glyph.height);
+        for (size_t i = 0; i < glyph_batch_.size(); ++i) {
+            const auto& glyph = glyph_batch_[i];
+            if (pixman_image_t* mask = glyph_batch_fallback_masks_[i].get()) {
+                pixman_image_composite32(PIXMAN_OP_OVER, batch_solid, mask, target,
+                    0, 0, 0, 0, glyph.x, glyph.y, glyph.width, glyph.height);
+            }
         }
     }
+    const size_t fallback_count = std::min(glyph_batch_.size(), glyph_batch_fallback_masks_.size());
+    for (size_t i = 0; i < fallback_count; ++i) glyph_batch_fallback_masks_[i].reset();
     glyph_batch_.clear();
 }
 
@@ -1234,37 +1293,10 @@ void CpuRenderer::render_preedit(
         return;
     }
 
-    struct PreeditGlyph {
-        char32_t cp;
-        int width;
-        int col_offset;
-        bool selected;
-    };
-    std::vector<PreeditGlyph> glyphs;
-    glyphs.reserve(preedit_text_.size());
-    int total_cols = 0;
+    std::vector<OverlayGlyph> glyphs;
     int caret_rel_col = 0;
-    size_t offset = 0;
-    const auto* bytes = reinterpret_cast<const uint8_t*>(preedit_text_.data());
-    while (offset < preedit_text_.size() && total_cols < cols) {
-        utf8proc_int32_t cp = 0;
-        const utf8proc_ssize_t n = utf8proc_iterate(
-            bytes + offset, static_cast<utf8proc_ssize_t>(preedit_text_.size() - offset), &cp);
-        if (n <= 0) {
-            ++offset;
-            continue;
-        }
-        const size_t char_start = offset;
-        offset += static_cast<size_t>(n);
-        if (char_start < preedit_sel_start_) caret_rel_col = total_cols;
-        const int w = utf8proc_charwidth(cp);
-        if (w <= 0) continue;
-        const int span = std::min(w, cols - total_cols);
-        const bool selected = char_start >= preedit_sel_start_ && char_start < preedit_sel_end_;
-        glyphs.push_back({static_cast<char32_t>(cp), span, total_cols, selected});
-        total_cols += span;
-        if (offset <= preedit_sel_start_) caret_rel_col = total_cols;
-    }
+    const int total_cols = decode_overlay_glyphs(
+        preedit_text_, cols, preedit_sel_start_, preedit_sel_end_, glyphs, &caret_rel_col);
     if (total_cols <= 0) {
         previous_preedit_row_ = -1;
         previous_preedit_end_col_ = -1;
@@ -1356,31 +1388,8 @@ void CpuRenderer::render_status_banner(
         return;
     }
 
-    struct BannerGlyph {
-        char32_t cp;
-        int width;
-        int col_offset;
-    };
-    std::vector<BannerGlyph> glyphs;
-    glyphs.reserve(status_banner_text_.size());
-    int total_cols = 0;
-    size_t offset = 0;
-    const auto* bytes = reinterpret_cast<const uint8_t*>(status_banner_text_.data());
-    while (offset < status_banner_text_.size() && total_cols < cols) {
-        utf8proc_int32_t cp = 0;
-        const utf8proc_ssize_t n = utf8proc_iterate(
-            bytes + offset, static_cast<utf8proc_ssize_t>(status_banner_text_.size() - offset), &cp);
-        if (n <= 0) {
-            ++offset;
-            continue;
-        }
-        offset += static_cast<size_t>(n);
-        const int w = utf8proc_charwidth(cp);
-        if (w <= 0) continue;
-        const int span = std::min(w, cols - total_cols);
-        glyphs.push_back({static_cast<char32_t>(cp), span, total_cols});
-        total_cols += span;
-    }
+    std::vector<OverlayGlyph> glyphs;
+    const int total_cols = decode_overlay_glyphs(status_banner_text_, cols, 0, 0, glyphs);
     if (total_cols <= 0) {
         previous_banner_row_ = -1;
         previous_banner_end_col_ = -1;

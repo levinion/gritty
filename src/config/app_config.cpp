@@ -1,36 +1,29 @@
 #include "config/app_config.hpp"
 
+#include "config/parse_helpers.hpp"
 #include "config/toml_loader.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
-#if defined(__APPLE__)
-#include <xlocale.h>
-#endif
 
 namespace gritty::config {
 
 namespace {
 
-std::string_view trim(std::string_view text) noexcept {
-    const auto first = text.find_first_not_of(" \t");
-    if (first == std::string_view::npos) return {};
-    const auto last = text.find_last_not_of(" \t");
-    return text.substr(first, last - first + 1);
-}
+using detail::equals_ignore_case;
+using detail::lower_into;
+using detail::parse_double;
+using detail::parse_integer;
 
 std::string unquote(std::string_view text) {
-    text = trim(text);
+    text = detail::trim_ascii(text);
     if (text.size() >= 2 &&
         ((text.front() == '"' && text.back() == '"') ||
          (text.front() == '\'' && text.back() == '\'')))
@@ -38,50 +31,8 @@ std::string unquote(std::string_view text) {
     return std::string(text);
 }
 
-void lower_into(std::string& out, std::string_view text) {
-    out.clear();
-    out.reserve(text.size());
-    for (const char c : text)
-        out.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
-}
-
-bool parse_integer(std::string_view text, int64_t& out) noexcept {
-    const char* first = text.data();
-    const char* last = first + text.size();
-    if (first != last && *first == '+') ++first;
-    if (first == last) return false;
-    const auto [end, ec] = std::from_chars(first, last, out);
-    return ec == std::errc{} && end == last;
-}
-
-bool parse_double(std::string_view text, double& out) noexcept {
-    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
-    if (text.empty() || text.size() >= 64) return false;
-    const unsigned char lead = static_cast<unsigned char>(text.front());
-    if (!((lead >= '0' && lead <= '9') || lead == '-' || lead == '.')) return false;
-    for (const char c : text) {
-        if (c == 'x' || c == 'X') return false;
-    }
-    char buf[64];
-    std::memcpy(buf, text.data(), text.size());
-    buf[text.size()] = '\0';
-    errno = 0;
-    char* end = nullptr;
-#if defined(__APPLE__)
-    const double value = strtod_l(buf, &end, nullptr);
-#else
-    const double value = std::strtod(buf, &end);
-#endif
-    if (end != buf + text.size() || !std::isfinite(value) ||
-        (errno == ERANGE && value != 0.0)) {
-        return false;
-    }
-    out = value;
-    return true;
-}
-
 bool parse_bool(std::string_view text, bool& out) noexcept {
-    const std::string value = std::string(trim(text));
+    const std::string_view value = detail::trim_ascii(text);
     if (value == "true" || value == "1") {
         out = true;
         return true;
@@ -101,37 +52,22 @@ std::unexpected<std::string> invalid(std::string_view key, std::string_view valu
 } // namespace
 
 std::optional<Osc52Mode> parse_osc52_mode(std::string_view value) noexcept {
-    const auto text = trim(value);
-    auto equals = [text](std::string_view expected) noexcept {
-        if (text.size() != expected.size()) return false;
-        for (size_t i = 0; i < text.size(); ++i) {
-            const char c = text[i];
-            const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-            if (lowered != expected[i]) return false;
-        }
-        return true;
-    };
-    if (equals("disabled")) return Osc52Mode::Disabled;
-    if (equals("copy-only") || equals("copyonly") || equals("onlycopy")) return Osc52Mode::CopyOnly;
-    if (equals("paste-only") || equals("pasteonly") || equals("onlypaste")) return Osc52Mode::PasteOnly;
-    if (equals("enabled") || equals("copypaste")) return Osc52Mode::Enabled;
+    const auto text = detail::trim_ascii(value);
+    if (equals_ignore_case(text, "disabled")) return Osc52Mode::Disabled;
+    if (equals_ignore_case(text, "copy-only") || equals_ignore_case(text, "copyonly") ||
+        equals_ignore_case(text, "onlycopy")) return Osc52Mode::CopyOnly;
+    if (equals_ignore_case(text, "paste-only") || equals_ignore_case(text, "pasteonly") ||
+        equals_ignore_case(text, "onlypaste")) return Osc52Mode::PasteOnly;
+    if (equals_ignore_case(text, "enabled") || equals_ignore_case(text, "copypaste"))
+        return Osc52Mode::Enabled;
     return std::nullopt;
 }
 
 std::optional<QuitConfirmation> parse_quit_confirmation(std::string_view value) noexcept {
-    const auto text = trim(value);
-    auto equals = [text](std::string_view expected) noexcept {
-        if (text.size() != expected.size()) return false;
-        for (size_t i = 0; i < text.size(); ++i) {
-            const char c = text[i];
-            const char lowered = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-            if (lowered != expected[i]) return false;
-        }
-        return true;
-    };
-    if (equals("always")) return QuitConfirmation::Always;
-    if (equals("needed")) return QuitConfirmation::Needed;
-    if (equals("never")) return QuitConfirmation::Never;
+    const auto text = detail::trim_ascii(value);
+    if (equals_ignore_case(text, "always")) return QuitConfirmation::Always;
+    if (equals_ignore_case(text, "needed")) return QuitConfirmation::Needed;
+    if (equals_ignore_case(text, "never")) return QuitConfirmation::Never;
     return std::nullopt;
 }
 
@@ -152,13 +88,13 @@ void MainConfig::set_env(std::string_view key, std::string_view value) {
 std::optional<platform::WindowDecorations> parse_window_decorations(
     std::string_view value
 ) noexcept {
-    return platform::parse_window_decorations(trim(value));
+    return platform::parse_window_decorations(detail::trim_ascii(value));
 }
 
 std::optional<platform::WindowStartupMode> parse_window_startup_mode(
     std::string_view value
 ) noexcept {
-    return platform::parse_window_startup_mode(trim(value));
+    return platform::parse_window_startup_mode(detail::trim_ascii(value));
 }
 
 AppConfig::AppConfig() {
@@ -190,7 +126,7 @@ std::expected<void, std::string> AppConfig::apply_override(
     if (equals == std::string_view::npos || equals == 0)
         return invalid(expr, {});
 
-    const std::string key = std::string(trim(expr.substr(0, equals)));
+    const std::string key = std::string(detail::trim_ascii(expr.substr(0, equals)));
     const std::string value = unquote(expr.substr(equals + 1));
     std::string lowered;
     lower_into(lowered, key);
@@ -401,10 +337,5 @@ std::expected<void, std::string> AppConfig::apply_override(
 
     return invalid(key, value);
 }
-
-ConfigStore::ConfigStore() : config_(std::make_shared<AppConfig>()) {}
-
-ConfigStore::ConfigStore(std::shared_ptr<const AppConfig> initial)
-    : config_(std::move(initial)) {}
 
 } // namespace gritty::config

@@ -56,10 +56,11 @@ struct Storage {
     bool locked{false};
     Storage(IOSurfaceRef value, std::shared_ptr<Statistics> stats)
         : surface(value), statistics(std::move(stats)), bytes(IOSurfaceGetAllocSize(value)) {
-        const auto live = statistics->bytes.fetch_add(bytes) + bytes;
-        statistics->frames.fetch_add(1);
-        auto peak = statistics->peak.load();
-        while (live > peak && !statistics->peak.compare_exchange_weak(peak, live)) {}
+        const auto live = statistics->bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+        statistics->frames.fetch_add(1, std::memory_order_relaxed);
+        auto peak = statistics->peak.load(std::memory_order_relaxed);
+        while (live > peak && !statistics->peak.compare_exchange_weak(
+            peak, live, std::memory_order_relaxed, std::memory_order_relaxed)) {}
     }
     bool lock() {
         if (locked) return true;
@@ -73,8 +74,8 @@ struct Storage {
     ~Storage() {
         unlock();
         CFRelease(surface);
-        statistics->bytes.fetch_sub(bytes);
-        statistics->frames.fetch_sub(1);
+        statistics->bytes.fetch_sub(bytes, std::memory_order_relaxed);
+        statistics->frames.fetch_sub(1, std::memory_order_relaxed);
     }
 };
 
@@ -170,12 +171,12 @@ pixman_image_t* IOSurfaceFramePool::get_back_buffer(bool skip_baseline_copy) {
     p.prune();
     if (p.drawing && valid()) return p.current->pixels.get();
     if (p.prepared || p.width <= 0 || p.height <= 0) return nullptr;
-    std::shared_ptr<Frame> next;
+    const std::shared_ptr<Frame>* best = nullptr;
     for (const auto& frame : p.frames) {
         if (frame->matches(p.width, p.height) && frame->available() &&
-            (!next || frame->serial > next->serial)) next = frame;
+            (!best || frame->serial > (*best)->serial)) best = &frame;
     }
-    if (!next) next = p.allocate();
+    std::shared_ptr<Frame> next = best ? *best : p.allocate();
     if (!next || !next->storage->lock()) { ++p.blocked; return nullptr; }
 
     // foot's reapply_old_damage: repair the selected buffer to the previously
@@ -276,9 +277,9 @@ void IOSurfaceFramePool::detach_displayed() {
 }
 void IOSurfaceFramePool::release_spare_buffers() { impl_->prune(true); }
 size_t IOSurfaceFramePool::allocation_count() const noexcept { return impl_->allocations; }
-size_t IOSurfaceFramePool::live_bytes() const noexcept { return impl_->statistics->bytes.load(); }
-size_t IOSurfaceFramePool::peak_bytes() const noexcept { return impl_->statistics->peak.load(); }
-size_t IOSurfaceFramePool::live_frames() const noexcept { return impl_->statistics->frames.load(); }
+size_t IOSurfaceFramePool::live_bytes() const noexcept { return impl_->statistics->bytes.load(std::memory_order_relaxed); }
+size_t IOSurfaceFramePool::peak_bytes() const noexcept { return impl_->statistics->peak.load(std::memory_order_relaxed); }
+size_t IOSurfaceFramePool::live_frames() const noexcept { return impl_->statistics->frames.load(std::memory_order_relaxed); }
 size_t IOSurfaceFramePool::blocked_acquisitions() const noexcept { return impl_->blocked; }
 size_t IOSurfaceFramePool::copied_bytes() const noexcept { return impl_->copied; }
 bool IOSurfaceFramePool::has_pending_releases() const noexcept {

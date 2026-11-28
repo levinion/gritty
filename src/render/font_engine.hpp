@@ -165,6 +165,7 @@ private:
         uint8_t l1_kind{0}; // 0 = none, 1 = ascii, 2 = non_ascii, 3 = multiple
         uint8_t l1_style{0};
         uint16_t l1_slot{0};
+        bool referenced{false};
     };
 
     struct CharIndex {

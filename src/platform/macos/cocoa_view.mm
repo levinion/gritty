@@ -197,17 +197,13 @@ bool direct_key_event(NSEvent* event, BOOL has_marked_text) {
             _surface->on_user_activity();
             _surface->on_new_window_requested();
         } else if (plain && command_key_is(event, @"v")) {
-            _surface->on_user_activity();
-            _surface->paste_from_pasteboard();
+            [self paste:nil];
         } else if (plain && (command_key_is(event, @"=") || command_key_is(event, @"+"))) {
-            _surface->on_user_activity();
-            _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::In);
+            [self zoomIn:nil];
         } else if (plain && (command_key_is(event, @"-") || command_key_is(event, @"_"))) {
-            _surface->on_user_activity();
-            _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Out);
+            [self zoomOut:nil];
         } else if (plain && command_key_is(event, @"0")) {
-            _surface->on_user_activity();
-            _surface->on_zoom(gritty::platform::macos::CocoaLayerSurface::ZoomAction::Reset);
+            [self resetZoom:nil];
         } else if (plain && command_key_is(event, @"h")) {
             _surface->on_user_activity();
             [NSApp hide:nil];
