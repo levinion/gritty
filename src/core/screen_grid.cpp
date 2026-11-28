@@ -9,6 +9,10 @@ namespace gritty::core {
 namespace {
 
 void fill_cells(Cell* dst, size_t count, const Cell& value) noexcept {
+    if (count < 4) {
+        for (size_t i = 0; i < count; ++i) dst[i] = value;
+        return;
+    }
 #if defined(__aarch64__) || defined(_M_ARM64)
     const uint32x4_t cp = vdupq_n_u32(static_cast<uint32_t>(value.codepoint));
     const uint32x4_t fg = vdupq_n_u32(value.fg.value);

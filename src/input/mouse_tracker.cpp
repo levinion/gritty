@@ -7,7 +7,16 @@ namespace gritty::input {
 
 std::string InputMapper::map_mouse(const MouseEvent& event, const core::TerminalEngine& engine) {
     const auto tracking = engine.mouse_tracking();
-    if (tracking == core::MouseTrackingMode::None || event.col < 0 || event.row < 0) return {};
+    if (tracking == core::MouseTrackingMode::None) {
+        if (engine.is_alt_screen() && engine.alternate_scroll() &&
+            event.action == MouseAction::Press &&
+            (event.button == MouseButton::WheelUp || event.button == MouseButton::WheelDown)) {
+            const bool up = event.button == MouseButton::WheelUp;
+            return engine.cursor_key_mode() ? (up ? "\x1bOA" : "\x1bOB") : (up ? "\x1b[A" : "\x1b[B");
+        }
+        return {};
+    }
+    if (event.col < 0 || event.row < 0) return {};
     const bool release = event.action == MouseAction::Release;
     const bool wheel = event.button == MouseButton::WheelUp || event.button == MouseButton::WheelDown;
     if (release && (wheel || tracking == core::MouseTrackingMode::X10)) return {};

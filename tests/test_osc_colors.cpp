@@ -95,6 +95,17 @@ TEST_CASE("OSC 4/12 queries and palette resets use request terminators") {
     replies.clear();
     parser.feed("\033]12;?\a");
     CHECK(replies == color_reply(12, 0xff0a0b0c, false));
+
+    // Semicolon chaining across OSC 10/11/12.
+    replies.clear();
+    parser.feed("\033]10;?;?;?\033\\");
+    CHECK(replies == color_reply(10, 0xff010203, true) + color_reply(11, 0x80040506, true) +
+          color_reply(12, 0xff0a0b0c, true));
+    parser.feed("\033]10;#223344;;#556677\a");
+    replies.clear();
+    parser.feed("\033]10;?;?;?\a");
+    CHECK(replies == color_reply(10, 0xff223344, false) + color_reply(11, 0x80040506, false) +
+          color_reply(12, 0xff556677, false));
 }
 
 TEST_CASE("Malformed OSC colors and cancelled setters cannot change query or renderer state") {

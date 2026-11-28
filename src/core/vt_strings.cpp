@@ -1,9 +1,11 @@
 #include "core/vt_parser.hpp"
 #include "util/base64.hpp"
 #include "util/format.hpp"
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstring>
+#include <iterator>
 #include <optional>
 #include <unistd.h>
 
@@ -187,6 +189,13 @@ void append_channel(std::string& out, uint32_t channel8) {
     return true;
 }
 
+[[nodiscard]] bool is_dark_color(uint32_t argb) noexcept {
+    const uint32_t r = (argb >> 16) & 255;
+    const uint32_t g = (argb >> 8) & 255;
+    const uint32_t b = argb & 255;
+    return (2126u * r + 7152u * g + 722u * b) < 1280000u;
+}
+
 } // namespace
 
 namespace {
@@ -223,18 +232,122 @@ std::optional<uint32_t> parse_dynamic_rgb(std::string_view value) {
 }
 
 void VtParser::update_default_color(int command, uint32_t rgb) {
+    const bool was_dark = is_dark_color(default_bg_);
     auto& color = command == 10 ? default_fg_ : default_bg_;
     // Ordinary OSC color changes do not override the configured window alpha.
     const auto updated = (color & 0xff000000) | (rgb & 0xffffff);
     if (updated == color) return;
     color = updated;
     if (default_color_handler_) default_color_handler_(default_fg_, default_bg_);
+    if (command == 11 && engine_.color_scheme_updates() && is_dark_color(default_bg_) != was_dark) {
+        send_color_scheme_report();
+    }
 }
 
 void VtParser::update_cursor_color(uint32_t argb) {
     if (cursor_color_ == argb) return;
     cursor_color_ = argb;
     if (cursor_color_handler_) cursor_color_handler_(argb);
+}
+
+void VtParser::send_color_scheme_report() {
+    send_response(is_dark_color(default_bg_) ? "\x1b[?997;1n" : "\x1b[?997;2n");
+}
+
+void VtParser::send_in_band_resize_report() {
+    char reply[80];
+    const int height_px = engine_.rows() * std::max(0, engine_.cell_height());
+    const int width_px = engine_.cols() * std::max(0, engine_.cell_width());
+    const auto text = util::format_to_buffer(reply, "\x1b[48;{};{};{};{}t",
+        engine_.rows(), engine_.cols(), height_px, width_px);
+    if (!text.empty()) send_response(text);
+}
+
+void VtParser::handle_osc99(std::string_view payload) {
+    const auto semi = payload.find(';');
+    const auto meta = payload.substr(0, semi);
+    const auto data = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
+
+    std::string_view id;
+    std::string_view part = "title";
+    bool done = true;
+    bool base64_encoded = false;
+
+    size_t pos = 0;
+    while (pos < meta.size()) {
+        const auto colon = meta.find(':', pos);
+        const auto token = meta.substr(pos, colon == std::string_view::npos
+            ? std::string_view::npos : colon - pos);
+        const auto eq = token.find('=');
+        if (eq != std::string_view::npos) {
+            const auto key = token.substr(0, eq);
+            const auto val = token.substr(eq + 1);
+            if (key == "i") {
+                id = val.substr(0, std::min<size_t>(val.size(), 64));
+            } else if (key == "p") {
+                part = val;
+            } else if (key == "d") {
+                done = val != "0";
+            } else if (key == "e") {
+                if (val == "1") base64_encoded = true;
+                else if (val == "0") base64_encoded = false;
+                else return;
+            }
+        }
+        if (colon == std::string_view::npos) break;
+        pos = colon + 1;
+    }
+
+    if (part == "?") {
+        std::string reply = "\x1b]99;";
+        if (!id.empty()) {
+            reply += "i=";
+            reply.append(id);
+            reply.push_back(':');
+        }
+        reply += "p=?;p=title,body:e=0,1:d=0,1";
+        if (osc_reply_with_st_) reply += "\x1b\\";
+        else reply.push_back('\x07');
+        send_response(reply);
+        return;
+    }
+
+    if (part != "title" && part != "body") return;
+
+    std::string decoded_buf;
+    std::string_view text = data;
+    if (base64_encoded && !data.empty()) {
+        auto decoded = util::decode_base64(data, util::Base64Mode::Strict, 65536);
+        if (!decoded) return;
+        decoded_buf.assign(reinterpret_cast<const char*>(decoded->data()), decoded->size());
+        text = decoded_buf;
+    }
+
+    auto it = std::find_if(osc99_pending_.begin(), osc99_pending_.end(),
+        [&](const Osc99Pending& entry) { return entry.id == id; });
+    if (it == osc99_pending_.end()) {
+        if (osc99_pending_.size() >= 8) osc99_pending_.erase(osc99_pending_.begin());
+        osc99_pending_.push_back(Osc99Pending{std::string(id), {}, {}});
+        it = std::prev(osc99_pending_.end());
+    }
+
+    constexpr size_t kMaxOsc99Bytes = 65536;
+    const size_t used = it->title.size() + it->body.size();
+    const size_t room = used < kMaxOsc99Bytes ? (kMaxOsc99Bytes - used) : 0;
+    const size_t take = std::min(text.size(), room);
+    if (take > 0) {
+        if (part == "title") it->title.append(text.data(), take);
+        else it->body.append(text.data(), take);
+    }
+
+    if (done) {
+        if (notification_handler_ && (!it->title.empty() || !it->body.empty())) {
+            notification_handler_(
+                it->title.empty() ? std::string_view("Gritty") : std::string_view(it->title),
+                it->body);
+        }
+        osc99_pending_.erase(it);
+    }
 }
 
 void VtParser::handle_osc() {
@@ -286,18 +399,42 @@ void VtParser::handle_osc() {
             }
             break;
         }
-        case 10:
-        case 11:
-        case 12: {
-            if (payload == "?") {
-                const auto color = cmd == 10 ? default_fg_ : cmd == 11 ? default_bg_ : cursor_color_;
-                send_response(color_reply(cmd, color, osc_reply_with_st_));
-            } else if (const auto rgb = parse_dynamic_rgb(payload)) {
-                if (cmd == 12) update_cursor_color((cursor_color_ & 0xff000000) | *rgb);
-                else update_default_color(cmd, *rgb);
+        case 9: {
+            // Suppress ConEmu/Windows Terminal progress sequences (OSC 9;4;...).
+            if (payload == "4" || payload.starts_with("4;")) break;
+            if (!payload.empty() && notification_handler_) {
+                notification_handler_("Gritty", payload);
             }
             break;
         }
+        case 10:
+        case 11:
+        case 12: {
+            int target_cmd = cmd;
+            size_t pos = 0;
+            while (pos <= payload.size() && target_cmd <= 12) {
+                const auto next = payload.find(';', pos);
+                const auto token = payload.substr(pos, next == std::string_view::npos
+                    ? std::string_view::npos : next - pos);
+                if (!token.empty()) {
+                    if (token == "?") {
+                        const auto color = target_cmd == 10 ? default_fg_
+                            : target_cmd == 11 ? default_bg_ : cursor_color_;
+                        send_response(color_reply(target_cmd, color, osc_reply_with_st_));
+                    } else if (const auto rgb = parse_dynamic_rgb(token)) {
+                        if (target_cmd == 12) update_cursor_color((cursor_color_ & 0xff000000) | *rgb);
+                        else update_default_color(target_cmd, *rgb);
+                    }
+                }
+                if (next == std::string_view::npos) break;
+                pos = next + 1;
+                ++target_cmd;
+            }
+            break;
+        }
+        case 99:
+            handle_osc99(payload);
+            break;
         case 104: {
             if (payload.empty() || payload == ";") {
                 engine_.reset_palette();
@@ -411,6 +548,7 @@ void VtParser::handle_dcs() {
             inner.notification_handler_ = notification_handler_;
             inner.cursor_color_handler_ = cursor_color_handler_;
             inner.mouse_cursor_shape_handler_ = mouse_cursor_shape_handler_;
+            inner.bell_handler_ = bell_handler_;
             inner.cursor_color_ = cursor_color_;
             inner.configured_cursor_ = configured_cursor_;
             inner.sync_handler_ = sync_handler_;
@@ -434,6 +572,52 @@ void VtParser::handle_dcs() {
             const int mode = (shape == CursorShape::Block ? 2 : shape == CursorShape::Underline ? 4 : 6) - engine_.cursor_blink();
             const auto text = util::format_to_buffer(reply, "\x1bP1$r{} q\x1b\\", mode);
             if (!text.empty()) send_response(text);
+        } else if (query == "m") {
+            std::string sgr = "\x1bP1$r0";
+            const auto& attrs = engine_.current_attrs();
+            if (attrs.bold) sgr += ";1";
+            if (attrs.dim) sgr += ";2";
+            if (attrs.italic) sgr += ";3";
+            if (attrs.underline_style == 1) {
+                sgr += ";4";
+            } else if (attrs.underline_style > 1) {
+                sgr += ";4:";
+                append_decimal(sgr, attrs.underline_style);
+            }
+            if (attrs.blink) sgr += ";5";
+            if (attrs.inverse) sgr += ";7";
+            if (attrs.invisible) sgr += ";8";
+            if (attrs.strikethrough) sgr += ";9";
+            auto append_color = [&](const Color& c, uint32_t base, uint32_t bright_base, uint32_t ext_code) {
+                if (c.is_default()) return;
+                if (c.is_indexed()) {
+                    const uint32_t idx = c.index();
+                    sgr.push_back(';');
+                    if (ext_code != 58 && idx < 8) {
+                        append_decimal(sgr, base + idx);
+                    } else if (ext_code != 58 && idx < 16) {
+                        append_decimal(sgr, bright_base + (idx - 8));
+                    } else {
+                        append_decimal(sgr, ext_code);
+                        sgr += ":5:";
+                        append_decimal(sgr, idx);
+                    }
+                } else if (c.is_rgb()) {
+                    sgr.push_back(';');
+                    append_decimal(sgr, ext_code);
+                    sgr += ":2::";
+                    append_decimal(sgr, c.r());
+                    sgr.push_back(':');
+                    append_decimal(sgr, c.g());
+                    sgr.push_back(':');
+                    append_decimal(sgr, c.b());
+                }
+            };
+            append_color(engine_.current_fg(), 30, 90, 38);
+            append_color(engine_.current_bg(), 40, 100, 48);
+            append_color(engine_.current_underline_color(), 0, 0, 58);
+            sgr += "m\x1b\\";
+            send_response(sgr);
         } else {
             // A negative reply is preferable to falsely claiming an unsupported status.
             send_response("\x1bP0$r\x1b\\");

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <deque>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -243,6 +244,30 @@ public:
     [[nodiscard]] bool synchronized_updates() const noexcept { return synchronized_updates_; }
     void set_synchronized_updates(bool enable) noexcept { synchronized_updates_ = enable; }
 
+    // DECSCNM (DECSET 5), Alternate Scroll (1007), Grapheme Clustering (2027),
+    // Color Scheme Updates (2031), In-band Resize (2048).
+    [[nodiscard]] bool reverse_video() const noexcept { return reverse_video_; }
+    void set_reverse_video(bool enable) noexcept {
+        if (reverse_video_ == enable) return;
+        reverse_video_ = enable;
+        active_grid_->mark_all_dirty();
+    }
+    [[nodiscard]] bool alternate_scroll() const noexcept { return alternate_scroll_; }
+    void set_alternate_scroll(bool enable) noexcept { alternate_scroll_ = enable; }
+    [[nodiscard]] bool grapheme_clustering() const noexcept { return grapheme_clustering_; }
+    void set_grapheme_clustering(bool enable) noexcept {
+        grapheme_clustering_ = enable;
+        reset_grapheme_state();
+    }
+    [[nodiscard]] bool color_scheme_updates() const noexcept { return color_scheme_updates_; }
+    void set_color_scheme_updates(bool enable) noexcept { color_scheme_updates_ = enable; }
+    [[nodiscard]] bool in_band_resize() const noexcept { return in_band_resize_; }
+    void set_in_band_resize(bool enable) noexcept { in_band_resize_ = enable; }
+
+    // XTSAVE / XTRESTORE saved private DEC modes.
+    void save_dec_mode(int mode, bool value);
+    [[nodiscard]] std::optional<bool> saved_dec_mode(int mode) const noexcept;
+
     // Mouse tracking
     [[nodiscard]] MouseTrackingMode mouse_tracking() const noexcept { return mouse_tracking_; }
     void set_mouse_tracking(MouseTrackingMode mode) noexcept { mouse_tracking_ = mode; }
@@ -274,6 +299,8 @@ public:
     // Window title & OSC properties
     [[nodiscard]] std::string_view window_title() const noexcept { return window_title_; }
     void set_window_title(std::string_view title) { window_title_ = title; }
+    void push_window_title();
+    bool pop_window_title();
     [[nodiscard]] std::string_view cwd() const noexcept { return cwd_; }
     void set_cwd(std::string_view path) { cwd_ = path; }
 
@@ -287,6 +314,12 @@ private:
     void init_tabs();
     void scroll_if_needed();
     void clear_hyperlink_references(uint16_t id) noexcept;
+    void reset_grapheme_state() noexcept {
+        if (last_grapheme_valid_) {
+            last_grapheme_valid_ = false;
+            grapheme_state_ = 0;
+        }
+    }
 
     int cols_;
     int rows_;
@@ -322,7 +355,17 @@ private:
     bool insert_mode_{false};
     bool cursor_key_mode_{false};
     bool synchronized_updates_{false};
+    bool reverse_video_{false};
+    bool alternate_scroll_{true};
+    bool grapheme_clustering_{false};
+    bool color_scheme_updates_{false};
+    bool in_band_resize_{false};
     int modify_other_keys_{0};
+    char32_t last_grapheme_cp_{0};
+    int32_t grapheme_state_{0};
+    bool last_grapheme_valid_{false};
+    std::unordered_map<int, bool> saved_dec_modes_;
+    std::vector<std::string> title_stack_;
 
     MouseTrackingMode mouse_tracking_{MouseTrackingMode::None};
     MouseFormat mouse_format_{MouseFormat::Normal};

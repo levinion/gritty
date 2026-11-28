@@ -166,6 +166,8 @@ public:
         (void)title;
         (void)body;
     }
+    // BEL (0x07): optional unfocused window attention request.
+    virtual void ring_bell() {}
 };
 
 // Event loop abstraction for I/O watches, scoped one-shot timers, and deferred callbacks.

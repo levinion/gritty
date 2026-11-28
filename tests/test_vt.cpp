@@ -79,6 +79,23 @@ TEST_CASE("VtParser UTF-8 multibyte and wide characters") {
     CHECK(narrow_fast.cursor_row() == narrow_slow.cursor_row());
     for (int y = 0; y < 2; ++y)
         CHECK(narrow_fast.grid().cell(0, y) == narrow_slow.grid().cell(0, y));
+
+    // >= 16 CJK chars exercises NEON vld3q_u8 + print_wide_run alongside boundary marks
+    // (U+3099/U+309A must combine, never hit wide run) and an incomplete UTF-8 tail.
+    TerminalEngine neon_bulk(40, 2), neon_scalar(40, 2);
+    VtParser p_bulk(neon_bulk);
+    const std::string utf8_mixed =
+        "一二三四五六七八九十甲乙丙丁戊己"
+        "かが\xE3\x82\x99ぱ\xE3\x82\x9A"
+        "漢字かな한글ABC";
+    p_bulk.feed(utf8_mixed);
+    p_bulk.feed("\xE4\xB8"); // incomplete 3-byte UTF-8 lead/cont without final byte
+    neon_scalar.print_utf8(utf8_mixed);
+    CHECK(neon_bulk.cursor_col() == neon_scalar.cursor_col());
+    CHECK(neon_bulk.cursor_row() == neon_scalar.cursor_row());
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 40; ++x)
+            CHECK(neon_bulk.grid().cell(x, y) == neon_scalar.grid().cell(x, y));
 }
 
 TEST_CASE("VtParser SGR styling and colors") {

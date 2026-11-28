@@ -56,6 +56,7 @@ public:
     using NotificationHandler = std::function<void(std::string_view, std::string_view)>;
     using CursorColorHandler = std::function<void(uint32_t)>;
     using MouseCursorShapeHandler = std::function<void(platform::MouseCursorShape)>;
+    using BellHandler = std::function<void()>;
 
     void set_apc_handler(ApcHandler handler) { apc_handler_ = std::move(handler); }
     void set_dcs_handler(DcsHandler handler) { dcs_handler_ = std::move(handler); }
@@ -67,6 +68,7 @@ public:
     void set_notification_handler(NotificationHandler handler) { notification_handler_ = std::move(handler); }
     void set_cursor_color_handler(CursorColorHandler handler) { cursor_color_handler_ = std::move(handler); }
     void set_mouse_cursor_shape_handler(MouseCursorShapeHandler handler) { mouse_cursor_shape_handler_ = std::move(handler); }
+    void set_bell_handler(BellHandler handler) { bell_handler_ = std::move(handler); }
     void set_sync_handler(std::function<void(bool)> handler) { sync_handler_ = std::move(handler); }
     void set_default_color_handler(std::function<void(uint32_t, uint32_t)> handler) { default_color_handler_ = std::move(handler); }
 
@@ -93,9 +95,13 @@ private:
     void handle_csi(uint8_t final_char);
     void handle_sgr();
     void handle_osc();
+    void handle_osc99(std::string_view payload);
     void update_default_color(int command, uint32_t rgb);
     void update_cursor_color(uint32_t argb);
+    void send_color_scheme_report();
+    void send_in_band_resize_report();
     void handle_decset(bool set);
+    void apply_dec_mode(int code, bool set);
 
     void parse_csi_param_byte(uint8_t byte);
     void ensure_csi_param(int idx) noexcept;
@@ -182,8 +188,16 @@ private:
     NotificationHandler notification_handler_;
     CursorColorHandler cursor_color_handler_;
     MouseCursorShapeHandler mouse_cursor_shape_handler_;
+    BellHandler bell_handler_;
     std::function<void(bool)> sync_handler_;
     std::function<void(uint32_t, uint32_t)> default_color_handler_;
+
+    struct Osc99Pending {
+        std::string id;
+        std::string title;
+        std::string body;
+    };
+    std::vector<Osc99Pending> osc99_pending_;
 
     // UTF-8 state for multibyte characters in Ground state
     uint32_t utf8_state_{0};

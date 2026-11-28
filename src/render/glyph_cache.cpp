@@ -16,10 +16,8 @@ void FontEngine::clear_cache() noexcept {
     for (auto& row : ascii_glyph_table_)
         for (auto& slot : row) slot = {};
     for (int style = 0; style < 4; ++style)
-        for (size_t slot = 0; slot < 4096; ++slot) {
-            non_ascii_l1_[style][slot] = nullptr;
-            non_ascii_l1_cp_[style][slot] = 0;
-        }
+        for (size_t slot = 0; slot < kNonAsciiL1Size; ++slot)
+            non_ascii_l1_[style][slot] = {};
 }
 
 void FontEngine::set_cache_limits(GlyphCacheLimits limits) noexcept {
@@ -58,20 +56,19 @@ const CachedGlyph* FontEngine::cache_glyph(const GlyphKey& key, CachedGlyph glyp
             auto& slot = ascii_glyph_table_[old_entry.l1_style][old_entry.l1_slot];
             if (slot.entry == &old_entry) slot.entry = nullptr;
         } else if (old_entry.l1_kind == 2) {
-            if (non_ascii_l1_[old_entry.l1_style][old_entry.l1_slot] == evicted) {
-                non_ascii_l1_[old_entry.l1_style][old_entry.l1_slot] = nullptr;
-                non_ascii_l1_cp_[old_entry.l1_style][old_entry.l1_slot] = 0;
-            }
+            auto& slot = non_ascii_l1_[old_entry.l1_style][old_entry.l1_slot];
+            if (slot.glyph == evicted) slot = {};
         } else if (old_entry.l1_kind == 3) {
             for (auto& row : ascii_glyph_table_)
                 for (auto& slot : row)
                     if (slot.entry == &old_entry) slot.entry = nullptr;
-            for (int style = 0; style < 4; ++style)
-                for (size_t slot = 0; slot < 4096; ++slot)
-                    if (non_ascii_l1_[style][slot] == evicted) {
-                        non_ascii_l1_[style][slot] = nullptr;
-                        non_ascii_l1_cp_[style][slot] = 0;
+            for (int style = 0; style < 4; ++style) {
+                for (size_t slot = 0; slot < kNonAsciiL1Size; ++slot) {
+                    if (non_ascii_l1_[style][slot].glyph == evicted) {
+                        non_ascii_l1_[style][slot] = {};
                     }
+                }
+            }
         }
         cache_bitmap_bytes_ -= old_entry.bitmap_bytes;
         glyph_cache_.erase(oldest);

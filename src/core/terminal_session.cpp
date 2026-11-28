@@ -1,5 +1,6 @@
 #include "core/terminal_session.hpp"
 #include "input/input_mapper.hpp"
+#include "util/format.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -82,6 +83,9 @@ void TerminalSession::init_session() {
     });
     parser_.set_notification_handler([this](std::string_view title, std::string_view body) {
         if (surface_) surface_->send_notification(title, body);
+    });
+    parser_.set_bell_handler([this] {
+        if (surface_) surface_->ring_bell();
     });
     parser_.set_response_callback([this](std::string_view resp) {
         write_pty(resp);
@@ -367,17 +371,13 @@ void TerminalSession::handle_pty_read() {
     std::chrono::steady_clock::time_point started{};
     bool timing_active = false;
     size_t budget = kByteBudget;
+    size_t next_time_check = kTimingThreshold;
     parsing_pty_ = true;
 
     // Small interactive reads avoid all clock queries. Large flows start the
-    // 2 ms budget only after 64 KiB so a continuously writing process cannot
-    // starve UI events.
+    // 2 ms budget only after 64 KiB and recheck per 64 KiB so a continuously
+    // writing process cannot starve UI events without paying per-read clock cost.
     while (budget > 0) {
-        if (timing_active &&
-            std::chrono::steady_clock::now() - started >= kTimeBudget) {
-            hit_budget = true;
-            break;
-        }
         const size_t req = std::min(read_buf_.size(), budget);
         ssize_t n = pty_.read(std::span<uint8_t>(read_buf_.data(), req));
         if (n > 0) {
@@ -386,13 +386,21 @@ void TerminalSession::handle_pty_read() {
             budget -= bytes;
             total_read += bytes;
             parser_.feed(read_buf_.data(), bytes);
-            if (!timing_active && total_read >= kTimingThreshold) {
-                started = std::chrono::steady_clock::now();
-                timing_active = true;
-            }
-            if (budget == 0 ||
-                (timing_active && std::chrono::steady_clock::now() - started >= kTimeBudget))
+            if (budget == 0) {
                 hit_budget = true; // Stopped by budget, not by EAGAIN.
+                break;
+            }
+            if (total_read >= next_time_check) {
+                const auto now = std::chrono::steady_clock::now();
+                if (!timing_active) {
+                    started = now;
+                    timing_active = true;
+                } else if (now - started >= kTimeBudget) {
+                    hit_budget = true; // Stopped by budget, not by EAGAIN.
+                    break;
+                }
+                next_time_check = total_read + kTimingThreshold;
+            }
         } else if (n == 0) { // EOF
             if (config_.hold_on_exit) {
                 // Stop polling the closed PTY but keep the event loop (and the
@@ -551,8 +559,21 @@ void TerminalSession::sync_grid_to_pixels(int px_w, int px_h, int min_cols, int 
     // The surface may have been reallocated even when its cell count is the
     // same. Update PTY pixel dimensions and repaint the entire new buffer.
     if (new_cols > 0 && new_rows > 0) {
-        pty_.resize(new_cols, new_rows,
-                    new_cols * metrics.cell_width, new_rows * metrics.cell_height);
+        const int text_px_w = new_cols * metrics.cell_width;
+        const int text_px_h = new_rows * metrics.cell_height;
+        pty_.resize(new_cols, new_rows, text_px_w, text_px_h);
+        if (engine_.in_band_resize() &&
+            (new_cols != last_in_band_cols_ || new_rows != last_in_band_rows_ ||
+             text_px_w != last_in_band_px_w_ || text_px_h != last_in_band_px_h_)) {
+            last_in_band_cols_ = new_cols;
+            last_in_band_rows_ = new_rows;
+            last_in_band_px_w_ = text_px_w;
+            last_in_band_px_h_ = text_px_h;
+            char report[80];
+            const auto text = util::format_to_buffer(report, "\x1b[48;{};{};{};{}t",
+                new_rows, new_cols, text_px_h, text_px_w);
+            if (!text.empty()) write_pty(text);
+        }
     }
 }
 

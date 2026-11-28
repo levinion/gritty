@@ -107,3 +107,25 @@ TEST_CASE("foot legacy and URXVT mouse formats are not mislabeled SGR reports") 
     event.col = 223;
     CHECK(InputMapper::map_mouse(event, engine).empty());
 }
+
+TEST_CASE("foot DECSET 1007 alternate scroll translates wheel events on alt screen only") {
+    TerminalEngine engine(80, 24);
+    VtParser parser(engine);
+    MouseEvent wheel;
+    wheel.action = MouseAction::Press;
+    wheel.button = MouseButton::WheelUp;
+
+    // Primary screen with no mouse tracking does not emit arrow keys.
+    CHECK(InputMapper::map_mouse(wheel, engine).empty());
+
+    // Alternate screen defaults to alternate scroll enabled.
+    parser.feed("\x1b[?1049h\x1b[?1007$p");
+    CHECK(InputMapper::map_mouse(wheel, engine) == "\x1b[A");
+    wheel.button = MouseButton::WheelDown;
+    engine.set_cursor_key_mode(true);
+    CHECK(InputMapper::map_mouse(wheel, engine) == "\x1bOB");
+
+    // Explicitly disabling DECSET 1007 suppresses alternate scroll.
+    parser.feed("\x1b[?1007l");
+    CHECK(InputMapper::map_mouse(wheel, engine).empty());
+}

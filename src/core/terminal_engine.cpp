@@ -67,6 +67,7 @@ void TerminalEngine::reset_palette() noexcept {
 
 void TerminalEngine::resize(int cols, int rows) {
     if (cols <= 0 || rows <= 0) return;
+    reset_grapheme_state();
     cols_ = cols;
     rows_ = rows;
 
@@ -97,12 +98,14 @@ void TerminalEngine::set_alt_screen(bool enable, int mode) {
         active_grid_ = &primary_grid_;
     }
     wrap_next_ = false;
+    reset_grapheme_state();
     if (!enable && mode == 1049) restore_cursor();
     active_grid_->mark_all_dirty();
 }
 
 void TerminalEngine::set_cursor_pos(int col, int row) {
     wrap_next_ = false;
+    reset_grapheme_state();
     if (origin_mode_) {
         row = margin_top_ + row;
         cursor_.row = std::clamp(row, margin_top_, margin_bottom_);
@@ -114,33 +117,39 @@ void TerminalEngine::set_cursor_pos(int col, int row) {
 
 void TerminalEngine::move_cursor_up(int count) {
     wrap_next_ = false;
+    reset_grapheme_state();
     const int min_row = origin_mode_ ? margin_top_ : 0;
     cursor_.row = std::max(min_row, cursor_.row - std::min(count, rows_));
 }
 
 void TerminalEngine::move_cursor_down(int count) {
     wrap_next_ = false;
+    reset_grapheme_state();
     const int max_row = origin_mode_ ? margin_bottom_ : rows_ - 1;
     cursor_.row = std::min(max_row, cursor_.row + std::min(count, rows_));
 }
 
 void TerminalEngine::move_cursor_forward(int count) {
     wrap_next_ = false;
+    reset_grapheme_state();
     cursor_.col = std::min(cols_ - 1, cursor_.col + std::min(count, cols_));
 }
 
 void TerminalEngine::move_cursor_backward(int count) {
     wrap_next_ = false;
+    reset_grapheme_state();
     cursor_.col = std::max(0, cursor_.col - std::min(count, cols_));
 }
 
 void TerminalEngine::set_cursor_col(int col) {
     wrap_next_ = false;
+    reset_grapheme_state();
     cursor_.col = std::clamp(col, 0, cols_ - 1);
 }
 
 void TerminalEngine::set_cursor_row(int row) {
     wrap_next_ = false;
+    reset_grapheme_state();
     if (origin_mode_) {
         row = margin_top_ + row;
         cursor_.row = std::clamp(row, margin_top_, margin_bottom_);
@@ -152,10 +161,12 @@ void TerminalEngine::set_cursor_row(int row) {
 void TerminalEngine::carriage_return() {
     cursor_.col = 0;
     wrap_next_ = false;
+    reset_grapheme_state();
 }
 
 void TerminalEngine::line_feed() {
     wrap_next_ = false;
+    reset_grapheme_state();
     if (cursor_.row == margin_bottom_) {
         scroll_up(1);
     } else if (cursor_.row < rows_ - 1) {
@@ -165,6 +176,7 @@ void TerminalEngine::line_feed() {
 
 void TerminalEngine::reverse_index() {
     wrap_next_ = false;
+    reset_grapheme_state();
     if (cursor_.row == margin_top_) {
         scroll_down(1);
     } else if (cursor_.row > 0) {
@@ -202,6 +214,7 @@ void TerminalEngine::restore_cursor() {
     selected_charset_ = src.selected_charset;
     cursor_.col = std::clamp(cursor_.col, 0, cols_ - 1);
     cursor_.row = std::clamp(cursor_.row, 0, rows_ - 1);
+    reset_grapheme_state();
 }
 
 void TerminalEngine::print_char(char32_t cp) {
@@ -210,7 +223,52 @@ void TerminalEngine::print_char(char32_t cp) {
         constexpr std::u32string_view graphics = U"◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
         cp = graphics[cp - 0x60];
     }
-    int width = (cp >= 0x20 && cp <= 0x7e) ? 1 : (common_wide_char(cp) ? 2 : utf8proc_charwidth(cp));
+    if (grapheme_clustering_ && last_grapheme_valid_ && (wrap_next_ || cursor_.col > 0)) {
+        if (!utf8proc_grapheme_break_stateful(
+                static_cast<utf8proc_int32_t>(last_grapheme_cp_),
+                static_cast<utf8proc_int32_t>(cp),
+                &grapheme_state_)) {
+            int target_col = wrap_next_ ? cursor_.col : (cursor_.col - 1);
+            if (active_grid_->cell(target_col, cursor_.row).attrs.width == 0 && target_col > 0) {
+                --target_col;
+            }
+            auto& prev_cell = active_grid_->cell(target_col, cursor_.row);
+            CellExtra extra = active_grid_->get_cell_extra(prev_cell.extra_idx);
+            extra.combining_idx = active_grid_->append_combining_codepoint(extra.combining_idx, cp);
+            prev_cell.extra_idx = active_grid_->intern_cell_extra(extra);
+            auto& row = active_grid_->row(cursor_.row);
+            if (prev_cell.attrs.width == 1 &&
+                (cp == 0xFE0F || (cp >= 0x1F1E6 && cp <= 0x1F1FF)) &&
+                target_col + 1 < cols_) {
+                prev_cell.attrs.width = 2;
+                active_grid_->repair_wide_span(target_col + 1, target_col + 1, cursor_.row);
+                Cell cont;
+                cont.codepoint = 0;
+                cont.fg = prev_cell.fg;
+                cont.bg = prev_cell.bg;
+                cont.attrs = prev_cell.attrs;
+                cont.attrs.width = 0;
+                cont.extra_idx = 0;
+                row.cells[target_col + 1] = cont;
+                if (target_col + 2 >= cols_) {
+                    cursor_.col = cols_ - 1;
+                    if (auto_wrap_) wrap_next_ = true;
+                } else {
+                    cursor_.col = target_col + 2;
+                    wrap_next_ = false;
+                }
+                row.mark_dirty_range(target_col, target_col + 1);
+                row.note_written(target_col + 1);
+            } else {
+                row.mark_dirty(target_col);
+                row.note_written(target_col);
+            }
+            last_grapheme_cp_ = cp;
+            return;
+        }
+        grapheme_state_ = 0;
+    }
+    const int width = (cp >= 0x20 && cp <= 0x7e) ? 1 : (common_wide_char(cp) ? 2 : utf8proc_charwidth(cp));
     if (width <= 0) {
         // Combining character: append to previous cell (or final cell when wrap_next_ is pending).
         if (width == 0 && (wrap_next_ || cursor_.col > 0)) {
@@ -290,6 +348,11 @@ void TerminalEngine::print_char(char32_t cp) {
             wrap_next_ = true;
         }
     }
+    if (grapheme_clustering_) {
+        last_grapheme_cp_ = cp;
+        grapheme_state_ = 0;
+        last_grapheme_valid_ = true;
+    }
 }
 
 void TerminalEngine::print_ascii_char(uint8_t ch) {
@@ -339,6 +402,11 @@ void TerminalEngine::print_ascii_char(uint8_t ch) {
         if (auto_wrap_) wrap_next_ = true;
     } else {
         cursor_.col = col + 1;
+    }
+    if (grapheme_clustering_) {
+        last_grapheme_cp_ = last_printed_;
+        grapheme_state_ = 0;
+        last_grapheme_valid_ = true;
     }
 }
 
@@ -439,6 +507,11 @@ void TerminalEngine::print_ascii_run(std::string_view ascii) {
             cursor_.col = cols_ - 1;
             if (auto_wrap_) wrap_next_ = true;
         }
+    }
+    if (grapheme_clustering_ && last_printed_ != 0) {
+        last_grapheme_cp_ = last_printed_;
+        grapheme_state_ = 0;
+        last_grapheme_valid_ = true;
     }
 }
 
@@ -602,6 +675,11 @@ void TerminalEngine::print_wide_run(std::span<const char32_t> cps) {
         cursor_.col = 0;
         line_feed();
     }
+    if (grapheme_clustering_ && last_printed_ != 0) {
+        last_grapheme_cp_ = last_printed_;
+        grapheme_state_ = 0;
+        last_grapheme_valid_ = true;
+    }
 }
 
 void TerminalEngine::print_utf8(std::string_view utf8_str) {
@@ -653,7 +731,10 @@ std::string TerminalEngine::format_paste_payload(std::string_view text) const {
 }
 
 void TerminalEngine::erase_in_display(int mode) {
-    if (mode != 3) wrap_next_ = false;
+    if (mode != 3) {
+        wrap_next_ = false;
+        reset_grapheme_state();
+    }
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->erase_in_display(cursor_.col, cursor_.row, mode, empty_cell);
@@ -672,6 +753,7 @@ void TerminalEngine::erase_in_display(int mode) {
 
 void TerminalEngine::erase_in_line(int mode) {
     wrap_next_ = false;
+    reset_grapheme_state();
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->erase_in_line(cursor_.col, cursor_.row, mode, empty_cell);
@@ -679,6 +761,7 @@ void TerminalEngine::erase_in_line(int mode) {
 
 void TerminalEngine::insert_lines(int count) {
     if (cursor_.row < margin_top_ || cursor_.row > margin_bottom_) return;
+    reset_grapheme_state();
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->insert_lines(cursor_.row, margin_bottom_, count, empty_cell);
@@ -687,6 +770,7 @@ void TerminalEngine::insert_lines(int count) {
 
 void TerminalEngine::delete_lines(int count) {
     if (cursor_.row < margin_top_ || cursor_.row > margin_bottom_) return;
+    reset_grapheme_state();
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->delete_lines(cursor_.row, margin_bottom_, count, empty_cell);
@@ -694,18 +778,21 @@ void TerminalEngine::delete_lines(int count) {
 }
 
 void TerminalEngine::insert_chars(int count) {
+    reset_grapheme_state();
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->insert_cells(cursor_.col, cursor_.row, count, empty_cell);
 }
 
 void TerminalEngine::delete_chars(int count) {
+    reset_grapheme_state();
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     active_grid_->delete_cells(cursor_.col, cursor_.row, count, empty_cell);
 }
 
 void TerminalEngine::erase_chars(int count) {
+    reset_grapheme_state();
     Cell empty_cell;
     empty_cell.bg = current_bg_;
     for (int i = 0; i < count && cursor_.col + i < cols_; ++i) {

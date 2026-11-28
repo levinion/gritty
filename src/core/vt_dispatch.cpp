@@ -5,6 +5,13 @@
 
 namespace gritty::core {
 
+namespace {
+constexpr int kSavedPrivateModes[] = {
+    1, 5, 6, 7, 12, 25, 47, 1000, 1002, 1003, 1004, 1005, 1006, 1007,
+    1015, 1016, 1047, 1049, 2004, 2026, 2027, 2031, 2048
+};
+} // namespace
+
 // Prefixes/intermediates are separate dispatch namespaces, as in foot csi.c.
 // In particular, CSI > 4 ; 2 m must never be interpreted as SGR 4;2.
 void VtParser::handle_csi(uint8_t final) {
@@ -31,7 +38,37 @@ void VtParser::handle_csi(uint8_t final) {
     }
     if (has_greater_ || has_less_ || has_equal_) return;
     if (is_private_) {
-        if (intermediate_char_ == 0 && (final == 'h' || final == 'l')) handle_decset(final == 'h');
+        if (intermediate_char_ == 0) {
+            if (final == 'h' || final == 'l') handle_decset(final == 'h');
+            else if (final == 's') {
+                if (param_count_ == 0) {
+                    for (const int code : kSavedPrivateModes) {
+                        engine_.save_dec_mode(code, dec_mode_status(code) == 1);
+                    }
+                } else {
+                    for (int i = 0; i < param_count_; ++i) {
+                        const int code = params_[i].value;
+                        const int status = dec_mode_status(code);
+                        if (status != 0) engine_.save_dec_mode(code, status == 1);
+                    }
+                }
+            } else if (final == 'r') {
+                if (param_count_ == 0) {
+                    for (const int code : kSavedPrivateModes) {
+                        if (const auto saved = engine_.saved_dec_mode(code)) {
+                            apply_dec_mode(code, *saved);
+                        }
+                    }
+                } else {
+                    for (int i = 0; i < param_count_; ++i) {
+                        const int code = params_[i].value;
+                        if (const auto saved = engine_.saved_dec_mode(code)) {
+                            apply_dec_mode(code, *saved);
+                        }
+                    }
+                }
+            }
+        }
         return;
     }
     if (intermediate_char_) {
@@ -75,7 +112,7 @@ void VtParser::handle_csi(uint8_t final) {
     }
 }
 
-void VtParser::handle_decset(bool set) {
+void VtParser::apply_dec_mode(int code, bool set) {
     const auto tracking = [&](MouseTrackingMode mode) {
         if (set) engine_.set_mouse_tracking(mode);
         else if (engine_.mouse_tracking() == mode) engine_.set_mouse_tracking(MouseTrackingMode::None);
@@ -84,35 +121,47 @@ void VtParser::handle_decset(bool set) {
         if (set) engine_.set_mouse_format(mode);
         else if (engine_.mouse_format() == mode) engine_.set_mouse_format(MouseFormat::Normal);
     };
+    switch (code) {
+        case 1: engine_.set_cursor_key_mode(set); break;
+        case 5: engine_.set_reverse_video(set); break;
+        case 6: engine_.set_origin_mode(set); break;
+        case 7: engine_.set_auto_wrap(set); break;
+        case 12: engine_.set_cursor_shape(engine_.cursor_shape(), set); break;
+        case 25: engine_.set_cursor_visible(set); break;
+        case 47: case 1047: case 1049: engine_.set_alt_screen(set, code); break;
+        case 1048: if (set) engine_.save_cursor(); else engine_.restore_cursor(); break;
+        case 1000: tracking(MouseTrackingMode::Normal); break;
+        case 1002: tracking(MouseTrackingMode::ButtonEvent); break;
+        case 1003: tracking(MouseTrackingMode::AnyEvent); break;
+        case 1005: format(MouseFormat::Utf8); break;
+        case 1006: format(MouseFormat::Sgr); break;
+        case 1007: engine_.set_alternate_scroll(set); break;
+        case 1015: format(MouseFormat::Urxvt); break;
+        case 1016: format(MouseFormat::SgrPixels); break;
+        case 1004: engine_.set_focus_events(set); break;
+        case 2004: engine_.set_bracketed_paste(set); break;
+        case 2026:
+            engine_.set_synchronized_updates(set);
+            if (sync_handler_) sync_handler_(set);
+            break;
+        case 2027: engine_.set_grapheme_clustering(set); break;
+        case 2031: engine_.set_color_scheme_updates(set); break;
+        case 2048:
+            engine_.set_in_band_resize(set);
+            if (set) send_in_band_resize_report();
+            break;
+        default: break;
+    }
+}
+
+void VtParser::handle_decset(bool set) {
     for (int i = 0; i < param_count_; ++i) {
         const int code = params_[i].value;
         if (!is_private_) {
             if (code == 4) engine_.set_insert_mode(set);
             continue;
         }
-        switch (code) {
-            case 1: engine_.set_cursor_key_mode(set); break;
-            case 6: engine_.set_origin_mode(set); break;
-            case 7: engine_.set_auto_wrap(set); break;
-            case 12: engine_.set_cursor_shape(engine_.cursor_shape(), set); break;
-            case 25: engine_.set_cursor_visible(set); break;
-            case 47: case 1047: case 1049: engine_.set_alt_screen(set, code); break;
-            case 1048: if (set) engine_.save_cursor(); else engine_.restore_cursor(); break;
-            case 1000: tracking(MouseTrackingMode::Normal); break;
-            case 1002: tracking(MouseTrackingMode::ButtonEvent); break;
-            case 1003: tracking(MouseTrackingMode::AnyEvent); break;
-            case 1005: format(MouseFormat::Utf8); break;
-            case 1006: format(MouseFormat::Sgr); break;
-            case 1015: format(MouseFormat::Urxvt); break;
-            case 1016: format(MouseFormat::SgrPixels); break;
-            case 1004: engine_.set_focus_events(set); break;
-            case 2004: engine_.set_bracketed_paste(set); break;
-            case 2026:
-                engine_.set_synchronized_updates(set);
-                if (sync_handler_) sync_handler_(set);
-                break;
-            default: break;
-        }
+        apply_dec_mode(code, set);
     }
 }
 
@@ -120,6 +169,7 @@ int VtParser::dec_mode_status(int mode) const noexcept {
     bool set;
     switch (mode) {
         case 1: set = engine_.cursor_key_mode(); break;
+        case 5: set = engine_.reverse_video(); break;
         case 6: set = engine_.origin_mode(); break;
         case 7: set = engine_.auto_wrap(); break;
         case 12: set = engine_.cursor_blink(); break;
@@ -130,11 +180,15 @@ int VtParser::dec_mode_status(int mode) const noexcept {
         case 1003: set = engine_.mouse_tracking() == MouseTrackingMode::AnyEvent; break;
         case 1005: set = engine_.mouse_format() == MouseFormat::Utf8; break;
         case 1006: set = engine_.mouse_format() == MouseFormat::Sgr; break;
+        case 1007: set = engine_.alternate_scroll(); break;
         case 1015: set = engine_.mouse_format() == MouseFormat::Urxvt; break;
         case 1016: set = engine_.mouse_format() == MouseFormat::SgrPixels; break;
         case 1004: set = engine_.focus_events(); break;
         case 2004: set = engine_.bracketed_paste(); break;
         case 2026: set = engine_.synchronized_updates(); break;
+        case 2027: set = engine_.grapheme_clustering(); break;
+        case 2031: set = engine_.color_scheme_updates(); break;
+        case 2048: set = engine_.in_band_resize(); break;
         default: return 0; // Do not advertise capabilities we have not implemented.
     }
     return set ? 1 : 2;
@@ -166,6 +220,8 @@ void VtParser::handle_query(uint8_t final) {
             reply = util::format_to_buffer(reply_buffer, "\x1b[{}{};{}R",
                 is_private_ ? std::string_view("?") : std::string_view(),
                 row, engine_.cursor_col() + 1);
+        } else if (query == 996 && is_private_) {
+            send_color_scheme_report();
         }
     } else if (!is_private_ && final == 'c' && get_param(0, 0) == 0) {
         // VT220 + ANSI color only. Image support is advertised via Kitty queries.
@@ -182,6 +238,12 @@ void VtParser::handle_query(uint8_t final) {
         } else if (op == 18) {
             reply = util::format_to_buffer(reply_buffer, "\x1b[8;{};{}t",
                 engine_.rows(), engine_.cols());
+        } else if (op == 22) {
+            const int which = get_param(1, 0);
+            if (which == 0 || which == 2) engine_.push_window_title();
+        } else if (op == 23) {
+            const int which = get_param(1, 0);
+            if (which == 0 || which == 2) engine_.pop_window_title();
         }
     }
     if (!reply.empty()) send_response(reply);

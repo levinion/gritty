@@ -560,6 +560,14 @@ void CocoaLayerSurface::set_cursor_shape(MouseCursorShape shape) {
     }
 }
 
+void CocoaLayerSurface::ring_bell() {
+    @autoreleasepool {
+        if (native_window_ && ![(NSWindow*)native_window_ isKeyWindow]) {
+            [NSApp requestUserAttention:NSInformationalRequest];
+        }
+    }
+}
+
 void CocoaLayerSurface::send_notification(std::string_view title, std::string_view body) {
     @autoreleasepool {
         if (@available(macOS 10.14, *)) {

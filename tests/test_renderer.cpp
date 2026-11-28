@@ -583,6 +583,7 @@ TEST_CASE("Batched glyph compositing is pixel-identical to per-glyph drawing") {
             if (y == 5 && x == 0) cell.attrs.strikethrough = true;
             if (y == 5 && x == 1) cell.attrs.inverse = true;
             if (y == 5 && x == 2) cell.attrs.dim = true;
+            if (y == 5 && x >= 10 && x < 24) cell.attrs.italic = true;         // Overlapping italic glyphs.
             grid.set_cell(x, y, cell);
         }
     }
@@ -1513,4 +1514,24 @@ TEST_CASE("FontEngine::set_size scales metrics cleanly and CpuRenderer::reset_gl
     CHECK(fonts.set_size(12.0));
     CHECK(fonts.metrics().cell_width == cw12);
     CHECK(fonts.metrics().cell_height == ch12);
+}
+
+TEST_CASE("DECSCNM reverse video swaps default foreground and background across grid and gutters") {
+    FontEngine fonts;
+    TerminalEngine engine(4, 2);
+    engine.set_cursor_visible(false);
+    engine.set_reverse_video(true);
+
+    const int cw = fonts.metrics().cell_width;
+    const int ch = fonts.metrics().cell_height;
+    const int width = 4 * cw + 6;
+    const int height = 2 * ch + 4;
+    gritty::util::PixmanImage target(pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, nullptr, 0));
+    REQUIRE(target.valid());
+
+    CpuRenderer renderer(fonts);
+    renderer.render(engine, target.get(), nullptr, true);
+    const int stride = target.stride() / 4;
+    CHECK(target.data()[0] == 0xFFDDDDDDu);
+    CHECK(target.data()[(height / 2) * stride + 4 * cw + 2] == 0xFFDDDDDDu);
 }

@@ -185,3 +185,116 @@ TEST_CASE("foot CSI parser keeps trailing empty parameters and rejects overflow 
     parser.feed("\x1b[" + std::string(40, ';') + "H");
     CHECK(engine.cursor_col() == before);
 }
+
+TEST_CASE("foot OSC 9 and Kitty OSC 99 notifications support capability queries, chunking, and base64") {
+    TerminalEngine engine(80, 24);
+    VtParser parser(engine);
+    std::string replies;
+    std::vector<std::pair<std::string, std::string>> notes;
+    parser.set_response_callback([&](std::string_view value) { replies += value; });
+    parser.set_notification_handler([&](std::string_view title, std::string_view body) {
+        notes.emplace_back(std::string(title), std::string(body));
+    });
+
+    // OSC 9: simple notification + ConEmu progress filter (OSC 9;4;...).
+    parser.feed("\x1b]9;Build complete\x1b\\\x1b]9;4;1;50\x07\x1b]9;4\a");
+    REQUIRE(notes.size() == 1);
+    CHECK(notes[0].first == "Gritty");
+    CHECK(notes[0].second == "Build complete");
+
+    // OSC 99 capability query preserves id and terminator.
+    parser.feed("\x1b]99;i=q1:p=?;\x1b\\");
+    CHECK(replies == "\x1b]99;i=q1:p=?;p=title,body:e=0,1:d=0,1\x1b\\");
+    replies.clear();
+    parser.feed("\x1b]99;p=?;\a");
+    CHECK(replies == "\x1b]99;p=?;p=title,body:e=0,1:d=0,1\a");
+
+    // Chunked base64 title + plain body under id n1.
+    notes.clear();
+    parser.feed("\x1b]99;i=n1:d=0:e=1:p=title;SGVsbG8=\x1b\\");
+    CHECK(notes.empty());
+    parser.feed("\x1b]99;i=n1:d=0:p=body;first \x1b\\");
+    CHECK(notes.empty());
+    parser.feed("\x1b]99;i=n1:d=1:p=body;second\x1b\\");
+    REQUIRE(notes.size() == 1);
+    CHECK(notes[0].first == "Hello");
+    CHECK(notes[0].second == "first second");
+}
+
+TEST_CASE("foot XTWINOPS title stack, XTSAVE/XTRESTORE, and DECRQSS m SGR queries") {
+    TerminalEngine engine(40, 10);
+    VtParser parser(engine);
+    std::string replies;
+    parser.set_response_callback([&](std::string_view value) { replies += value; });
+
+    parser.feed("\x1b]2;base\x1b\\\x1b[22;2t\x1b]2;nested\x1b\\");
+    CHECK(engine.window_title() == "nested");
+    parser.feed("\x1b[23;2t");
+    CHECK(engine.window_title() == "base");
+    parser.feed("\x1b[23;2t"); // Popping empty stack is a no-op.
+    CHECK(engine.window_title() == "base");
+
+    // XTSAVE / XTRESTORE across private modes.
+    parser.feed("\x1b[?2004h\x1b[?1004l\x1b[?2004;1004s");
+    parser.feed("\x1b[?2004l\x1b[?1004h");
+    CHECK_FALSE(engine.bracketed_paste());
+    CHECK(engine.focus_events());
+    parser.feed("\x1b[?2004;1004r");
+    CHECK(engine.bracketed_paste());
+    CHECK_FALSE(engine.focus_events());
+
+    // DECRQSS m reports current SGR state.
+    parser.feed("\x1b[0;1;3;4:3;31;48:2::10:20:30;58:5:9m");
+    replies.clear();
+    parser.feed("\x1bP$qm\x1b\\");
+    CHECK(replies == "\x1bP1$r0;1;3;4:3;31;48:2::10:20:30;58:5:9m\x1b\\");
+}
+
+TEST_CASE("foot DECSET 2027 grapheme clustering, DECSET 2031 color scheme, 2048 resize, and BEL") {
+    TerminalEngine engine(20, 4);
+    engine.set_cell_size(10, 20);
+    VtParser parser(engine);
+    std::string replies;
+    int bell_count = 0;
+    parser.set_response_callback([&](std::string_view value) { replies += value; });
+    parser.set_bell_handler([&] { ++bell_count; });
+
+    // Mode 2027 enables grapheme cluster segmentation (ZWJ emoji + regional flag + VS16).
+    parser.feed("\x1b[?2027h\x1b[?2027$p");
+    CHECK(replies == "\x1b[?2027;1$y");
+    parser.feed("👨\u200d👩\u200d👧X");
+    CHECK(engine.cursor_col() == 3);
+    CHECK(engine.grid().cell(0, 0).attrs.width == 2);
+    CHECK(engine.grid().cell(2, 0).codepoint == U'X');
+    const auto zwj_marks = engine.grid().get_combining_codepoints(
+        engine.grid().get_cell_extra(engine.grid().cell(0, 0).extra_idx).combining_idx);
+    CHECK(zwj_marks.size() == 4);
+
+    // Regional indicator pair (🇨🇳) stays within one double-width cluster.
+    parser.feed("\r\n\U0001F1E8\U0001F1F3Z");
+    CHECK(engine.cursor_col() == 3);
+    CHECK(engine.grid().cell(0, 1).attrs.width == 2);
+    CHECK(engine.grid().cell(2, 1).codepoint == U'Z');
+
+    // Mode 2031 + CSI ? 996 n color scheme query and dynamic dark<->light notification.
+    replies.clear();
+    parser.feed("\x1b[?996n\x1b[?2031h");
+    CHECK(replies == "\x1b[?997;1n");
+    replies.clear();
+    parser.feed("\x1b]11;#ffffff\x1b\\"); // Switch default bg from #111111 (dark) -> light.
+    CHECK(replies == "\x1b[?997;2n");
+    replies.clear();
+    parser.feed("\x1b]11;#eeeeee\x1b\\"); // Still light -> no duplicate report.
+    CHECK(replies.empty());
+    parser.feed("\x1b]11;#000000\x1b\\"); // Back to dark -> emits report.
+    CHECK(replies == "\x1b[?997;1n");
+
+    // Mode 2048 emits immediate resize report upon activation.
+    replies.clear();
+    parser.feed("\x1b[?2048h\x1b[?2048$p");
+    CHECK(replies == "\x1b[48;4;20;80;200t\x1b[?2048;1$y");
+
+    // BEL triggers handler directly and through tmux DCS passthrough.
+    parser.feed("\x07\x1bPtmux;\x07\x1b\\");
+    CHECK(bell_count == 2);
+}

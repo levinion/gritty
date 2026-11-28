@@ -205,7 +205,7 @@ private:
     // Fixed-size key: cluster lookups happen per combined cell per frame and
     // must not allocate (project rule for per-frame cell rendering).
     struct ShapedClusterKey {
-        std::array<char32_t, 8> text{};
+        std::array<char32_t, 16> text{};
         uint8_t length{0};
         bool bold{false};
         bool italic{false};
@@ -238,10 +238,18 @@ private:
         GlyphCacheEntry* entry{nullptr};
     };
     mutable AsciiGlyphSlot ascii_glyph_table_[4][95]{};
-    // 4096-slot direct-mapped L1 for non-ASCII codepoints. The folded index can
-    // collide, so parallel tags validate the cached pointer.
-    mutable const CachedGlyph* non_ascii_l1_[4][4096]{};
-    mutable char32_t non_ascii_l1_cp_[4][4096]{};
+    // 4096-slot interleaved L1 for non-ASCII codepoints. The folded index can
+    // collide, so the parallel cp tag validates the hit.
+    static constexpr size_t kNonAsciiL1Size = 4096;
+    static constexpr size_t non_ascii_l1_slot(char32_t cp) noexcept {
+        return static_cast<size_t>((static_cast<uint32_t>(cp) * 2654435761u) >> 20) &
+               (kNonAsciiL1Size - 1);
+    }
+    struct NonAsciiL1Slot {
+        const CachedGlyph* glyph{nullptr};
+        char32_t cp{0};
+    };
+    mutable NonAsciiL1Slot non_ascii_l1_[4][kNonAsciiL1Size]{};
 };
 
 } // namespace gritty::render

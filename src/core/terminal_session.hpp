@@ -144,6 +144,10 @@ private:
     double current_font_size_{11.25};
     int padding_x_px_{0};
     int padding_y_px_{0};
+    int last_in_band_cols_{0};
+    int last_in_band_rows_{0};
+    int last_in_band_px_w_{0};
+    int last_in_band_px_h_{0};
     std::string pending_write_;
     size_t write_offset_{0};
     bool watching_write_{false};

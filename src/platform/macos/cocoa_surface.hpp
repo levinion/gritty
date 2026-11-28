@@ -74,6 +74,7 @@ public:
     void set_cursor_shape(MouseCursorShape shape) override;
     [[nodiscard]] MouseCursorShape cursor_shape() const noexcept { return cursor_shape_; }
     void send_notification(std::string_view title, std::string_view body) override;
+    void ring_bell() override;
     [[nodiscard]] bool mouse_reporting() const noexcept {
         return mouse_reporting_cb_ && mouse_reporting_cb_();
     }

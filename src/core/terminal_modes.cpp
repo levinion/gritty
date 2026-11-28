@@ -20,6 +20,7 @@ void TerminalEngine::repeat_last_char(int count) {
 }
 
 void TerminalEngine::scroll_up(int count) {
+    reset_grapheme_state();
     Cell blank;
     blank.bg = current_bg_;
     active_grid_->scroll_up(margin_top_, margin_bottom_, count, blank);
@@ -27,6 +28,7 @@ void TerminalEngine::scroll_up(int count) {
 }
 
 void TerminalEngine::scroll_down(int count) {
+    reset_grapheme_state();
     Cell blank;
     blank.bg = current_bg_;
     active_grid_->scroll_down(margin_top_, margin_bottom_, count, blank);
@@ -46,17 +48,25 @@ void TerminalEngine::reset() {
     graphic_charsets_.fill(false);
     selected_charset_ = 0;
     wrap_next_ = false;
+    reset_grapheme_state();
     last_printed_ = 0;
     margin_top_ = 0;
     margin_bottom_ = rows_ - 1;
     auto_wrap_ = true;
     origin_mode_ = bracketed_paste_ = insert_mode_ = cursor_key_mode_ = synchronized_updates_ = false;
+    reverse_video_ = false;
+    alternate_scroll_ = true;
+    grapheme_clustering_ = false;
+    color_scheme_updates_ = false;
+    in_band_resize_ = false;
     focus_events_ = false;
     modify_other_keys_ = 0;
     mouse_tracking_ = MouseTrackingMode::None;
     mouse_format_ = MouseFormat::Normal;
     mouse_cursor_shape_ = platform::MouseCursorShape::Default;
     for (auto& stack : kitty_keyboard_stacks_) stack.clear();
+    saved_dec_modes_.clear();
+    title_stack_.clear();
     current_hyperlink_id_ = 0;
     hyperlinks_.clear();
     hyperlink_index_.clear();
@@ -150,6 +160,7 @@ void TerminalEngine::init_tabs() {
 }
 
 void TerminalEngine::tab_forward(int count) {
+    reset_grapheme_state();
     while (count-- > 0) {
         int next_tab = cols_ - 1;
         for (int c = cursor_.col + 1; c < cols_; ++c) {
@@ -164,6 +175,7 @@ void TerminalEngine::tab_forward(int count) {
 }
 
 void TerminalEngine::tab_backward(int count) {
+    reset_grapheme_state();
     while (count-- > 0) {
         int prev_tab = 0;
         for (int c = cursor_.col - 1; c >= 0; --c) {
@@ -198,6 +210,29 @@ void TerminalEngine::sgr_reset() {
     current_bg_ = Color::make_default();
     current_underline_color_ = Color::make_default();
     current_attrs_ = CellAttributes{};
+}
+
+void TerminalEngine::save_dec_mode(int mode, bool value) {
+    saved_dec_modes_[mode] = value;
+}
+
+std::optional<bool> TerminalEngine::saved_dec_mode(int mode) const noexcept {
+    const auto it = saved_dec_modes_.find(mode);
+    if (it == saved_dec_modes_.end()) return std::nullopt;
+    return it->second;
+}
+
+void TerminalEngine::push_window_title() {
+    constexpr size_t kMaxTitleStack = 16;
+    if (title_stack_.size() >= kMaxTitleStack) title_stack_.erase(title_stack_.begin());
+    title_stack_.push_back(window_title_);
+}
+
+bool TerminalEngine::pop_window_title() {
+    if (title_stack_.empty()) return false;
+    window_title_ = std::move(title_stack_.back());
+    title_stack_.pop_back();
+    return true;
 }
 
 } // namespace gritty::core

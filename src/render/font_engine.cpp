@@ -5,12 +5,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 
 namespace gritty::render {
 namespace {
-constexpr size_t non_ascii_l1_slot(char32_t cp) noexcept {
-    return static_cast<size_t>((static_cast<uint32_t>(cp) * 2654435761u) >> 20) & 0xfffu;
-}
 
 constexpr bool is_nerd_font_icon(char32_t cp) noexcept {
     // Powerline separators (U+E0B0..U+E0D7), progress bars (U+EE00..U+EE0B),
@@ -303,17 +303,12 @@ const CachedGlyph* FontEngine::cached_or_rasterize(const GlyphKey& key, GlyphCac
 
 const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
     if (faces_.empty()) return nullptr;
-    transient_glyph_ = CachedGlyph{};
-    transient_bitmap_bytes_ = 0;
+    if (transient_bitmap_bytes_ != 0 || transient_glyph_.mask.valid()) {
+        transient_glyph_ = CachedGlyph{};
+        transient_bitmap_bytes_ = 0;
+    }
 
     const auto style = static_cast<size_t>(bold) * 2 + (italic ? 1 : 0);
-    if (cp > 0x7e) {
-        const auto slot = non_ascii_l1_slot(cp);
-        if (non_ascii_l1_[style][slot] && non_ascii_l1_cp_[style][slot] == cp) {
-            ++cache_hits_; // Direct L1 hit: no unordered_map hash or LRU splice.
-            return non_ascii_l1_[style][slot];
-        }
-    }
     if (cp >= 0x20 && cp <= 0x7e) {
         const auto slot = static_cast<size_t>(cp - 0x20);
         auto& l1 = ascii_glyph_table_[style][slot];
@@ -321,6 +316,12 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
             ++cache_hits_;
             if (!l1.entry->referenced) l1.entry->referenced = true;
             return &l1.entry->glyph;
+        }
+    } else if (cp > 0x7e) {
+        const auto& entry = non_ascii_l1_[style][non_ascii_l1_slot(cp)];
+        if (entry.glyph && entry.cp == cp) {
+            ++cache_hits_; // Direct L1 hit: no unordered_map hash or LRU splice.
+            return entry.glyph;
         }
     }
 
@@ -345,8 +346,7 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
             }
         } else if (cp > 0x7e) {
             const auto slot = static_cast<uint16_t>(non_ascii_l1_slot(cp));
-            non_ascii_l1_[style][slot] = &entry->glyph;
-            non_ascii_l1_cp_[style][slot] = cp;
+            non_ascii_l1_[style][slot] = {&entry->glyph, cp};
             if (entry->l1_kind == 0) {
                 entry->l1_kind = 2;
                 entry->l1_style = static_cast<uint8_t>(style);
@@ -361,8 +361,10 @@ const CachedGlyph* FontEngine::get_glyph(char32_t cp, bool bold, bool italic) {
 
 const CachedGlyph* FontEngine::glyph_for_index(uint16_t face_idx, uint32_t glyph_index, bool bold, bool italic) {
     if (!face_for_idx(face_idx)) return nullptr;
-    transient_glyph_ = CachedGlyph{};
-    transient_bitmap_bytes_ = 0;
+    if (transient_bitmap_bytes_ != 0 || transient_glyph_.mask.valid()) {
+        transient_glyph_ = CachedGlyph{};
+        transient_bitmap_bytes_ = 0;
+    }
     return cached_or_rasterize(GlyphKey{
         .glyph_index = glyph_index,
         .face_idx = face_idx,
@@ -577,7 +579,17 @@ const CachedGlyph* FontEngine::rasterize_glyph(uint16_t face_idx, uint32_t glyph
         for (int y = 0; y < pixel_height; ++y) {
             const uint8_t* src_row = bitmap.buffer + y * bitmap.pitch;
             uint32_t* dst_row = dst + y * dst_stride;
-            for (int x = 0; x < pixel_width; ++x) {
+            int x = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+            auto* dst_u8 = reinterpret_cast<uint8_t*>(dst_row);
+            for (; x + 8 <= pixel_width; x += 8) {
+                const uint8x8x3_t rgb = vld3_u8(src_row + x * 3);
+                const uint8x8_t a = vmax_u8(vmax_u8(rgb.val[0], rgb.val[1]), rgb.val[2]);
+                const uint8x8x4_t bgra = {{rgb.val[2], rgb.val[1], rgb.val[0], a}};
+                vst4_u8(dst_u8 + x * 4, bgra);
+            }
+#endif
+            for (; x < pixel_width; ++x) {
                 uint8_t r = src_row[x * 3 + 0];
                 uint8_t g = src_row[x * 3 + 1];
                 uint8_t b = src_row[x * 3 + 2];

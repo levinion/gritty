@@ -65,11 +65,60 @@ nix build
 ./tools/build.sh release run
 ```
 
+## Features
+
+- **100% CPU Rendering**: Renders into CPU-mapped `IOSurface` Pixman buffers (`BGRA`) with FreeType2 + HarfBuzz shaping and procedural box/block drawing — no Metal, OpenGL, or CoreText rasterization (CoreText is used strictly for font/fallback discovery).
+- **Low-Latency Frame Pipeline**: Dirty-row damage tracking, row-index scroll rotation (`DECSTBM` in `O(1)`), `memmove` scroll blitting, ARM64 NEON fast paths, and 2 ms frame coalescing over a single-threaded `kqueue` loop.
+- **Native macOS Integration**: Single Dock icon with independent windows, Retina scaling, IME inline preedit, per-window font zoom, and optional `Cmd+Q` quit confirmation (`window.confirm_quit`: `"needed"` / `"always"` / `"never"`).
+- **`tmux`-First Non-Goals**: Deliberately omits built-in scrollback, resize reflow, copy/selection mode, search overlays, tabs, splits, daemon mode, and Sixel — `tmux` handles those.
+
+### Protocol & Terminal Support
+
+| Category | Supported |
+|---|---|
+| **Text & Colors** | 24-bit truecolor (`38;2` / `48;2` & colon syntax), 256-color palette, styled & colored underlines (`CSI 4:0..5 m` / `Smulx`, `CSI 58 m` / `Setulc`), `DECSCNM` reverse video (`DECSET 5`), procedural box/Braille drawing, color emoji, `DECSET 2027` Unicode grapheme clustering (`libutf8proc` + HarfBuzz) |
+| **Cursor & Screen** | `DECSCUSR` cursor shapes/blink, synchronized updates (`DECSET 2026`), `DECSET 2031` + `CSI ? 996 n` dark/light color-scheme reporting, `DECSET 2048` in-band resize notifications, `XTWINOPS` (`14/16/18t` size queries & `22/23t` title stack), `XTSAVE`/`XTRESTORE` (`CSI ? Pm s/r`), `BEL` unfocused Dock attention |
+| **Keyboard & Mouse** | Kitty Keyboard (`CSI u`), XTerm `modifyOtherKeys`, bracketed paste (`DECSET 2004`), focus events (`DECSET 1004`), mouse tracking (`X10` / `1000` / `1002` / `1003` with `Normal` / `UTF-8 1005` / `SGR 1006` / `URXVT 1015` / `SGR-Pixels 1016`), Alternate Scroll Mode (`DECSET 1007`) |
+| **Queries & `tmux`** | `XTVERSION`, `XTGETTCAP` (`RGB`, `Tc`, `Sync`, `Ms`, `Smulx`, `Setulc`), `DECRQM`, `DECRQSS` (`r` margins, `m` SGR, ` q` cursor style), `tmux` DCS passthrough |
+| **Graphics** | Kitty Graphics (`APC G` — `a=t/T/p/d/q`, `f=24/32/100` PNG, `o=z`, `t=d/f/t`, source crops, z-layers, `U=1` Unicode placeholders); Sixel omitted |
+
+### Supported OSC Sequences
+
+| OSC | Purpose | Notes |
+|---|---|---|
+| `0`, `2` | Window title | Updates native macOS window title |
+| `4`, `104` | 256-color palette | Query (`?`), set, or reset individual / all palette entries |
+| `7` | Current working directory | Local `file://` URL validation |
+| `8` | Hyperlinks | Clickable via `Cmd+Click` when mouse reporting is off |
+| `9` | Desktop notification (iTerm2) | Ignores ConEmu `OSC 9;4;...` progress sequences |
+| `10`, `11`, `12` / `110`, `111`, `112` | Default fg, bg, cursor color | Query/set/reset with `;` chaining; preserves window alpha |
+| `22` | Mouse pointer shape | `text`, `pointer`, resize arrows, `crosshair`, `move`, `not-allowed`, `none`, etc. |
+| `52` | Clipboard | `OnlyCopy` by default (`Disabled` / `OnlyCopy` / `OnlyPaste` / `CopyPaste`, up to 1 MiB) |
+| `99` | Desktop notification (Kitty) | `p=?` query, `p=title`/`body`, `d=0/1` chunking, `e=1` base64 |
+| `777` | Desktop notification (urxvt/VTE) | `notify;title;body` via macOS UserNotifications |
+
+## Shortcuts (macOS)
+
+| Shortcut | Action |
+|---|---|
+| `Cmd+N` | Open a new independent window |
+| `Cmd+W` | Close the focused window (closing the last window exits) |
+| `Cmd+Q` | Quit Gritty (double-press confirmation via `window.confirm_quit`) |
+| `Cmd+V` | Paste from system clipboard (respects `DECSET 2004` bracketed paste) |
+| `Cmd+=` / `Cmd++` | Zoom in (per-window font size `+1pt`) |
+| `Cmd+-` | Zoom out (per-window font size `-1pt`) |
+| `Cmd+0` | Reset font size to configured default |
+| Trackpad Pinch | Zoom font size in/out per window |
+| `Cmd+Click` | Open `OSC 8` hyperlink (when mouse reporting is off) |
+| `Ctrl+Cmd+F` | Toggle native full screen |
+| `Cmd+M` | Minimize window |
+| `Cmd+H` / `Option+Cmd+H` | Hide Gritty / Hide Others |
+
 ## Using with `tmux`
 
-Gritty renders what modern `tmux` and Neovim expect out of the box: 24-bit color, styled and colored underlines (`Smulx` / `Setulc`), `DECSCUSR` cursor shapes, synchronized updates (`DECSET 2026`), bracketed paste, focus events, mouse reporting (`X10` / `SGR` / `SGR-Pixels`), `OSC 52` clipboard writes, `XTGETTCAP`, Kitty keyboard (`CSI u`), and Kitty graphics (`APC G`, including `tmux` DCS passthrough and `U=1` Unicode placeholders). Sixel is intentionally not implemented.
+*(Gritty defaults `TERM` to `xterm-256color` and answers `XTVERSION` / `XTGETTCAP` directly.)*
 
-If you want passthrough images, clipboard sync, styled underlines, and Kitty keys inside `tmux`, add this to `~/.tmux.conf`:
+Add this to `~/.tmux.conf` to enable passthrough images, clipboard sync, styled underlines, and extended keys inside `tmux`:
 
 ```tmux
 set -g allow-passthrough on
@@ -78,9 +127,7 @@ set -g extended-keys on
 set -as terminal-features ',xterm-256color:RGB:extkeys:usstyle'
 ```
 
-*(Gritty defaults `TERM` to `xterm-256color` and answers `XTVERSION` / `XTGETTCAP` directly.)*
-
-Optionally, launch Gritty directly into a named `tmux` session (attach if `main` exists, otherwise create it):
+Launch Gritty directly into a named `tmux` session (attach if `main` exists, otherwise create it):
 
 ```sh
 gritty -e tmux new -As main
@@ -124,26 +171,24 @@ Common CLI flags (`gritty --help` for the full list):
 - `--cols <n>`, `--rows <n>` — initial grid size (defaults to `800×600` logical points when unset / `0`)
 - `--working-directory <dir>` (`--cwd`), `-T <title>`, `--class <id>`, `--hold`, `--standalone`
 
-Gritty runs under a single Dock icon/instance across launches while keeping every window independent: `Cmd+N` or launching `gritty` / `open -n -a Gritty` opens a new independent window, `Cmd+W` closes the focused window, closing the last window exits the instance cleanly, `Cmd++` / `Cmd+-` / `Cmd+0` (and trackpad pinch) zoom font size per window, and `window.confirm_quit` (`"needed"` by default, `"always"`, or `"never"`) controls double-`Cmd+Q` quit confirmation.
-
 ## Benchmarks
 
 Running [`alacritty/vtebench`](https://github.com/alacritty/vtebench) on Apple Silicon macOS (`160×48`, 2× Retina) with empty default configs on both terminals (`Menlo 11.25pt`; Gritty `14×27` px cells vs Alacritty `13×26` px cells):
 
 | Workload | Gritty (ms) | Alacritty (ms) | Ratio |
 |---|---:|---:|---:|
-| `cursor_motion` | **60.0** | 63.5 | 0.94x |
-| `dense_cells` | **52.0** | 88.0 | 0.59x |
-| `light_cells` | **63.5** | 93.0 | 0.68x |
-| `scrolling` | **159.0** | 222.0 | 0.72x |
-| `scrolling_bottom_region` | **175.0** | 802.0 | 0.22x |
-| `scrolling_bottom_small_region` | **173.0** | 954.0 | 0.18x |
-| `scrolling_fullscreen` | **77.5** | 106.0 | 0.73x |
-| `scrolling_top_region` | **175.0** | 480.0 | 0.36x |
-| `scrolling_top_small_region` | **174.0** | 274.0 | 0.64x |
-| `unicode` | 97.0 | **91.0** | 1.07x |
+| `cursor_motion` | **70.0** | 81.0 | 0.86x |
+| `dense_cells` | **68.0** | 93.5 | 0.73x |
+| `light_cells` | **101.0** | 109.5 | 0.92x |
+| `scrolling` | **192.0** | 275.5 | 0.70x |
+| `scrolling_bottom_region` | **214.5** | 807.0 | 0.27x |
+| `scrolling_bottom_small_region` | **199.0** | 996.0 | 0.20x |
+| `scrolling_fullscreen` | **89.5** | 135.5 | 0.66x |
+| `scrolling_top_region` | **211.5** | 485.0 | 0.44x |
+| `scrolling_top_small_region` | **196.0** | 317.5 | 0.62x |
+| `unicode` | 117.5 | **105.5** | 1.11x |
 
-Median over 20 runs (`n=13`/`11` for Alacritty's slowest region cases). Reproduce with:
+Median over 20 runs (`n=12`/`10` for Alacritty's slowest region cases). Reproduce with:
 
 ```sh
 python3 benchmark/run.py --targets gritty,alacritty

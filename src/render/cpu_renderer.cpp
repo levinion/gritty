@@ -197,7 +197,10 @@ void CpuRenderer::render(
         const int grid_w = std::min(target_w, cols * cell_w);
         const int grid_h = std::min(target_h, rows * cell_h);
         if (target_w > grid_w || target_h > grid_h) {
-            const auto bg = to_pixman_color(config_.default_bg);
+            const uint32_t gutter_bg = engine.reverse_video()
+                ? (config_.default_fg | 0xff000000u)
+                : config_.default_bg;
+            const auto bg = to_pixman_color(gutter_bg);
             pixman_rectangle16_t gutters[2];
             int count = 0;
             if (target_w > grid_w) {
@@ -276,21 +279,26 @@ void CpuRenderer::render(
         damage_range(y, start_col, end_col);
         for (int x = start_col; x <= end_col; ++x) {
             const auto& cell = row.cells[x];
-            const core::CellExtra extra = grid.get_cell_extra(cell.extra_idx);
             if (cell.attrs.width == 0 || cell.attrs.invisible) continue;
             const char32_t cp = cell.codepoint;
             const bool has_glyph = cp != ' ' && cp != 0;
+            const bool has_extra = cell.extra_idx != 0;
+            if (!has_glyph && cell.attrs.underline_style == 0 &&
+                !cell.attrs.strikethrough && !has_extra) continue;
+            const core::CellExtra extra = has_extra
+                ? grid.get_cell_extra(cell.extra_idx)
+                : core::CellExtra{};
             if (!has_glyph && cell.attrs.underline_style == 0 &&
                 !cell.attrs.strikethrough && extra.hyperlink_id == 0) continue;
 
-            const bool plain_glyph = glyph_batching_ && has_glyph && cell.extra_idx == 0 &&
+            const bool plain_glyph = glyph_batching_ && has_glyph && !has_extra &&
                 cp != 0x10EEEE &&
                 cell.attrs.underline_style == 0 && !cell.attrs.strikethrough &&
                 !BoxDrawingRenderer::is_box_or_block(cp);
             if (plain_glyph) {
                 const CachedGlyph* glyph = font_engine_.get_glyph(cp, cell.attrs.bold, cell.attrs.italic);
                 if (glyph && glyph->mask.valid() && glyph->width > 0 && glyph->height > 0 &&
-                    pixman_image_get_format(glyph->mask.get()) == PIXMAN_a8) {
+                    !glyph->is_color && !glyph->is_subpixel) {
                     const uint32_t fg = resolve_foreground(cell, engine);
                     const bool atlas_reset = glyph_atlas_ && atlas_entries_ >= 8192 &&
                         (glyph->atlas_generation != atlas_generation_ || !glyph->atlas_handle);
@@ -300,7 +308,10 @@ void CpuRenderer::render(
                         glyph_batch_x0_ = glyph_batch_y0_ = std::numeric_limits<int>::max();
                         glyph_batch_x1_ = glyph_batch_y1_ = std::numeric_limits<int>::min();
                     }
-                    if (const void* handle = glyph_atlas_handle(*glyph)) {
+                    const void* handle = (glyph_atlas_ && glyph->atlas_generation == atlas_generation_ && glyph->atlas_handle)
+                        ? glyph->atlas_handle
+                        : glyph_atlas_handle(*glyph);
+                    if (handle) {
                         const int gx = x * cell_w + glyph->bearing_x;
                         const int gy = y * cell_h + metrics.ascent - glyph->bearing_y;
                         if (glyph_batch_.size() < kMinGlyphBatch - 1) {
@@ -525,10 +536,11 @@ void CpuRenderer::apply_pending_scrolls(
 uint32_t CpuRenderer::effective_background(
     const core::Cell& cell, const core::TerminalEngine& engine
 ) const noexcept {
-    // SGR inverse swaps fg/bg and, as in foot, makes the swapped background
+    // SGR inverse (or DECSCNM) swaps fg/bg and makes the swapped background
     // opaque; dim only affects the foreground.
-    const uint32_t bg_argb = resolve_color(cell.attrs.inverse ? cell.fg : cell.bg, engine, !cell.attrs.inverse);
-    return cell.attrs.inverse ? (bg_argb | 0xff000000) : bg_argb;
+    const bool inv = cell.attrs.inverse ^ engine.reverse_video();
+    const uint32_t bg_argb = resolve_color(inv ? cell.fg : cell.bg, engine, !inv);
+    return inv ? (bg_argb | 0xff000000) : bg_argb;
 }
 
 void CpuRenderer::draw_row_backgrounds(
@@ -604,14 +616,15 @@ void CpuRenderer::reset_glyph_atlas() noexcept {
         pixman_glyph_cache_destroy(glyph_atlas_);
         glyph_atlas_ = nullptr;
     }
-    ++atlas_generation_;
+    atlas_generation_ = next_atlas_generation();
     atlas_entries_ = 0;
 }
 
 uint32_t CpuRenderer::resolve_foreground(
     const core::Cell& cell, const core::TerminalEngine& engine
 ) const noexcept {
-    uint32_t fg_argb = cell.attrs.inverse
+    const bool inv = cell.attrs.inverse ^ engine.reverse_video();
+    uint32_t fg_argb = inv
         ? (resolve_color(cell.bg, engine, true) | 0xff000000)
         : resolve_color(cell.fg, engine, false);
     if (cell.attrs.dim) {
@@ -657,7 +670,7 @@ const void* CpuRenderer::glyph_atlas_handle(const CachedGlyph& glyph) {
     if (!glyph_atlas_) {
         glyph_atlas_ = pixman_glyph_cache_create();
         if (!glyph_atlas_) return nullptr;
-        ++atlas_generation_;
+        atlas_generation_ = next_atlas_generation();
         atlas_entries_ = 0;
     }
     if (glyph.atlas_generation == atlas_generation_ && glyph.atlas_handle)
@@ -668,7 +681,7 @@ const void* CpuRenderer::glyph_atlas_handle(const CachedGlyph& glyph) {
         pixman_glyph_cache_destroy(glyph_atlas_);
         glyph_atlas_ = pixman_glyph_cache_create();
         if (!glyph_atlas_) return nullptr;
-        ++atlas_generation_;
+        atlas_generation_ = next_atlas_generation();
         atlas_entries_ = 0;
     }
     pixman_glyph_cache_freeze(glyph_atlas_);
@@ -712,16 +725,15 @@ void CpuRenderer::flush_glyph_batch(pixman_image_t* target) {
                 for (size_t i = begin; i < end; ++i)
                     glyph_write_.push_back(pixman_glyph_t{
                         glyph_batch_[i].x - x0, glyph_batch_[i].y - y0, glyph_batch_[i].handle});
-                const auto format = pixman_glyph_get_mask_format(
-                    glyph_atlas_, static_cast<int>(glyph_write_.size()), glyph_write_.data());
-                pixman_composite_glyphs(PIXMAN_OP_OVER, batch_solid, target, format,
+                pixman_composite_glyphs(PIXMAN_OP_OVER, batch_solid, target, PIXMAN_a8,
                     0, 0, 0, 0, x0, y0, x1 - x0, y1 - y0,
                     glyph_atlas_, static_cast<int>(glyph_write_.size()), glyph_write_.data());
             }
             begin = end;
         }
     } else if (batch_solid) {
-        for (size_t i = 0; i < glyph_batch_.size(); ++i) {
+        const size_t n = std::min(glyph_batch_.size(), glyph_batch_fallback_masks_.size());
+        for (size_t i = 0; i < n; ++i) {
             const auto& glyph = glyph_batch_[i];
             if (pixman_image_t* mask = glyph_batch_fallback_masks_[i].get()) {
                 pixman_image_composite32(PIXMAN_OP_OVER, batch_solid, mask, target,
@@ -1148,7 +1160,7 @@ void CpuRenderer::render_cell_foreground(
             // The store holds the marks only; the base codepoint lives in the
             // cell. Shape them together so marks get their anchors.
             const auto marks = engine.grid().get_combining_codepoints(extra.combining_idx);
-            std::array<char32_t, 8> cluster{};
+            std::array<char32_t, 16> cluster{};
             size_t count = 1;
             cluster[0] = cp;
             for (const char32_t mark : marks) {
@@ -1466,11 +1478,12 @@ void CpuRenderer::render_cursor(
             int col = engine.cursor_col();
             if (engine.grid().cell(col, engine.cursor_row()).attrs.width == 0 && col > 0) --col;
             auto cell = engine.grid().cell(col, engine.cursor_row());
-            const auto bg = resolve_color(cell.attrs.inverse ? cell.fg : cell.bg, engine, !cell.attrs.inverse);
+            const bool inv = cell.attrs.inverse ^ engine.reverse_video();
+            const auto bg = resolve_color(inv ? cell.fg : cell.bg, engine, !inv);
             cell.fg = core::Color::make_rgb((bg >> 16) & 255, (bg >> 8) & 255, bg & 255);
             cell.bg = core::Color::make_rgb((config_.cursor_color >> 16) & 255,
                 (config_.cursor_color >> 8) & 255, config_.cursor_color & 255);
-            cell.attrs.inverse = false;
+            cell.attrs.inverse = engine.reverse_video();
             const core::CellExtra extra = engine.grid().get_cell_extra(cell.extra_idx);
             render_cell(cell, extra, col, engine.cursor_row(), cell_w, cell_h,
                 font_engine_.metrics(), engine, target);

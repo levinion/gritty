@@ -51,7 +51,6 @@ size_t printable_ascii_run(const uint8_t* data, size_t length) {
     return i;
 }
 
-// Codepoints eligible for the bulk wide-character path. These are the common
 // three-byte CJK ranges; everything else keeps the exact print_char() path.
 bool common_wide_run_char(char32_t cp) noexcept {
     if (cp == 0x3099 || cp == 0x309a) return false;
@@ -142,6 +141,7 @@ void VtParser::reset() noexcept {
     string_overflow_ = false;
     dcs_tmux_escape_pending_ = false;
     utf8_state_ = utf8_codepoint_ = utf8_minimum_ = 0;
+    osc99_pending_.clear();
 }
 
 void VtParser::feed(std::string_view data) {
@@ -246,7 +246,8 @@ void VtParser::feed(const uint8_t* data, size_t length) {
             if (b >= 0x80) {
                 while (length - i >= 4 && data[i] >= 0x80) {
                     const uint8_t lead = data[i];
-                    if (lead >= 0xe0 && lead <= 0xef && length - i >= 12) {
+                    if (!engine_.grapheme_clustering() &&
+                        lead >= 0xe0 && lead <= 0xef && length - i >= 12) {
                         std::array<char32_t, 128> wide{};
                         const auto run = common_wide_run(data + i, length - i, wide.data(), wide.size());
                         if (run.count >= 4) {
@@ -452,6 +453,7 @@ void VtParser::process_byte(uint8_t byte) {
 
 void VtParser::handle_c0(uint8_t byte) {
     switch (byte) {
+        case 0x07: if (bell_handler_) bell_handler_(); break;
         case 0x08: engine_.move_cursor_backward(1); break;
         case 0x09: engine_.tab_forward(1); break;
         case 0x0a: case 0x0b: case 0x0c: engine_.line_feed(); break;
@@ -486,6 +488,7 @@ void VtParser::handle_escape(uint8_t byte) {
         case 'E': engine_.carriage_return(); engine_.line_feed(); break;
         case 'H': engine_.set_tab_stop(); break;
         case 'c':
+            osc99_pending_.clear();
             engine_.reset();
             update_default_color(10, configured_fg_);
             update_default_color(11, configured_bg_);

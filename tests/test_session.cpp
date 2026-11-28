@@ -38,6 +38,8 @@ public:
     void set_title(const std::string& value) override { title = value; }
     void open_url(std::string_view url) override { opened_url.assign(url); }
     std::string opened_url;
+    void ring_bell() override { ++bell_count; }
+    int bell_count{0};
     void set_transparent(bool value) override { transparent = value; }
     bool transparent{false};
     bool pacing{false};
@@ -969,4 +971,26 @@ TEST_CASE("TerminalSession zoom_in, zoom_out, and reset_zoom adjust grid inside 
     CHECK(session.set_font_size(1.0));
     CHECK(session.current_font_size() == doctest::Approx(4.0));
     CHECK_FALSE(session.zoom_out());
+}
+
+TEST_CASE("TerminalSession forwards PTY BEL to surface ring_bell") {
+    const auto font = session_test_font();
+    if (font.empty()) { WARN("No test font found"); return; }
+
+    auto surface = std::make_unique<TestSurface>();
+    auto* output = surface.get();
+    auto loop = std::make_unique<TestLoop>();
+    auto* loop_ptr = loop.get();
+
+    core::SessionConfig cfg;
+    cfg.font_path = font;
+    cfg.cols = 20;
+    cfg.rows = 5;
+    cfg.shell = "/bin/sh";
+    cfg.args = {"-c", "printf '\\a'; read line"};
+
+    core::TerminalSession session(cfg, std::move(surface), std::move(loop), nullptr);
+    REQUIRE(session.start());
+    for (int i = 0; i < 10 && output->bell_count == 0; ++i) loop_ptr->pump();
+    CHECK(output->bell_count == 1);
 }
